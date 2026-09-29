@@ -12,6 +12,10 @@ FSM:
       id: 5
       type: Mimic
 
+    Mimic_Dance2_v3:
+      id: 6
+      type: Mimic
+
 
   Passive:
     transitions: 
@@ -67,6 +71,7 @@ FSM:
     transitions: 
       Passive: LT + B.on_pressed
       Mimic_Dance1_subject2: RB + A.on_pressed
+      Mimic_Dance2_v3: RB + Y.on_pressed
 
     policy_dir: config/policy/velocity
 
@@ -78,5 +83,16 @@ FSM:
 
     motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
     policy_dir: config/policy/mimic/dance1_subject2/
+    time_start: 0.0
+    time_end: 1000.0
+
+
+  Mimic_Dance2_v3:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+
+    motion_file: config/policy/mimic/dance2_v3/params/dance2_v3.npz
+    policy_dir: config/policy/mimic/dance2_v3/
     time_start: 0.0
     time_end: 1000.0
