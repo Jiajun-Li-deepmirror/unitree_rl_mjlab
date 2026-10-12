@@ -69,6 +69,13 @@ def unitree_g1_flat_tracking_env_cfg(
     "right_wrist_yaw_link",
   )
 
+  # ankle_roll_link sits ~0.011m above the floor when the foot is flat, so
+  # contact_height=0.05 also counts a moderately raised heel as planted.
+  cfg.rewards["foot_contact_slip"].params["body_names"] = (
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+  )
+
   cfg.viewer.body_name = "torso_link"
 
   # Modify observations if we don't have state estimation.

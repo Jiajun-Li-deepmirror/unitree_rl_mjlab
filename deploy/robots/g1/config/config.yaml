@@ -12,9 +12,18 @@ FSM:
       id: 5
       type: Mimic
 
-    Mimic_Dance2_v3:
-      id: 6
-      type: Mimic
+    # Every enabled state is built at startup, and a Mimic state loads its
+    # policy.onnx then -- enabling one whose folder has no trained policy
+    # makes g1_ctrl fail to start at all. Re-enable (here, in Velocity's
+    # transitions, and the block at the bottom) after creating the folder with
+    #   scripts/make_deploy_folder.py --run-dir logs/rsl_rl/g1_dance2_v3/<run> \
+    #     --motion src/assets/motions/g1/dance2_v3.npz \
+    #     --out deploy/robots/g1/config/policy/mimic/dance2_v3
+    # Never copy another motion's deploy.yaml: it must match the training env's
+    # default pose (dance1_subject2's does not -- up to 0.37 rad off).
+    # Mimic_Dance2_v3:
+    #   id: 6
+    #   type: Mimic
 
 
   Passive:
@@ -71,7 +80,7 @@ FSM:
     transitions: 
       Passive: LT + B.on_pressed
       Mimic_Dance1_subject2: RB + A.on_pressed
-      Mimic_Dance2_v3: RB + Y.on_pressed
+      # Mimic_Dance2_v3: RB + Y.on_pressed
 
     policy_dir: config/policy/velocity
 
@@ -87,12 +96,12 @@ FSM:
     time_end: 1000.0
 
 
-  Mimic_Dance2_v3:
-    transitions:
-      Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
-
-    motion_file: config/policy/mimic/dance2_v3/params/dance2_v3.npz
-    policy_dir: config/policy/mimic/dance2_v3/
-    time_start: 0.0
-    time_end: 1000.0
+  # Mimic_Dance2_v3:
+  #   transitions:
+  #     Passive: LT + B.on_pressed
+  #     Velocity: RT + A.on_pressed
+  #
+  #   motion_file: config/policy/mimic/dance2_v3/params/dance2_v3.npz
+  #   policy_dir: config/policy/mimic/dance2_v3/
+  #   time_start: 0.0
+  #   time_end: 1000.0

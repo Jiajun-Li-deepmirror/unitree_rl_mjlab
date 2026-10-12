@@ -113,6 +113,39 @@ def motion_global_body_angular_velocity_error_exp(
   return torch.exp(-error.mean(-1) / std**2)
 
 
+def motion_foot_contact_slip(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  body_names: tuple[str, ...],
+  contact_height: float = 0.05,
+  contact_speed: float = 0.3,
+) -> torch.Tensor:
+  """Penalize robot foot sliding while the reference foot is planted.
+
+  A reference foot counts as planted when its body is within
+  ``contact_height`` of the ground and moving slower than ``contact_speed``
+  horizontally. The cost is the squared horizontal speed of the matching
+  robot foot, summed over feet -- the same form as mjlab's locomotion
+  ``feet_slip``, but with contact taken from the reference motion rather than
+  a contact sensor, so it targets dragging a foot the reference keeps still.
+  The body-tracking terms only reward foot *position*, so a policy can trade
+  small position errors for shuffling; this closes that gap.
+  """
+  command = cast(MotionCommand, env.command_manager.get_term(command_name))
+  body_indexes = _get_body_indexes(command, body_names)
+  ref_height = (
+    command.body_pos_w[:, body_indexes, 2] - env.scene.env_origins[:, None, 2]
+  )
+  ref_speed = torch.norm(command.body_lin_vel_w[:, body_indexes, :2], dim=-1)
+  planted = ((ref_height < contact_height) & (ref_speed < contact_speed)).float()
+  robot_speed = torch.norm(command.robot_body_lin_vel_w[:, body_indexes, :2], dim=-1)
+  cost = torch.sum(torch.square(robot_speed) * planted, dim=-1)
+  env.extras["log"]["Metrics/ref_contact_slip_velocity_mean"] = torch.sum(
+    robot_speed * planted
+  ) / torch.clamp(torch.sum(planted), min=1)
+  return cost
+
+
 def self_collision_cost(
   env: ManagerBasedRlEnv,
   sensor_name: str,
