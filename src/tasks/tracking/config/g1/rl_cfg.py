@@ -44,3 +44,11 @@ def unitree_g1_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=30001,
   )
+
+
+def unitree_g1_leg_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = unitree_g1_tracking_ppo_runner_cfg()
+  cfg.algorithm.learning_rate = 1e-4
+  cfg.algorithm.schedule = "fixed"
+  cfg.algorithm.entropy_coef = .001
+  return cfg

@@ -28,6 +28,8 @@ from dataclasses import asdict
 import numpy as np
 import torch
 from project_paths import motion_output_dir, project_relative
+from tracking_diagnostics import TrackingDiagnostics, summarize
+from tracking_targets import initialize_reference_targets
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -94,24 +96,6 @@ def prepare_eval_cfg(cfg, motion, num_envs, randomize, seed):
     cfg.events = {}
   return cfg
 
-
-def initialize_reference_targets(cmd):
-  """Fill mjlab 1.2's relative targets at t=0 without advancing physics/time.
-
-  MotionCommand.reset() leaves these buffers uninitialized until its first
-  update. Match MotionCommand._update_command's alignment, but do not increment
-  time_steps, resample the motion, or discard a policy step.
-  """
-  from mjlab.utils.lab_api.math import quat_apply, quat_inv, quat_mul, yaw_quat
-
-  anchor = cmd.anchor_pos_w[:, None, :]
-  delta_pos = cmd.robot_anchor_pos_w[:, None, :].clone()
-  delta_pos[..., 2] = anchor[..., 2]
-  delta_quat = yaw_quat(quat_mul(cmd.robot_anchor_quat_w, quat_inv(cmd.anchor_quat_w)))
-  delta_quat = delta_quat[:, None, :].expand(-1, len(cmd.cfg.body_names), -1)
-  cmd.body_pos_relative_w = delta_pos + quat_apply(delta_quat, cmd.body_pos_w - anchor)
-  cmd.body_quat_relative_w = quat_mul(delta_quat, cmd.body_quat_w)
-  cmd._update_metrics()
 
 
 def rollout(venv, policy, on_step=None):
@@ -227,6 +211,7 @@ def main():
   ap.add_argument("--device", default=None)
   ap.add_argument("--seed", type=int, default=42)
   ap.add_argument("--video", help="stream the trained policy rollout for env 0 to this MP4")
+  ap.add_argument("--trajectory", help="save synchronized joint/foot/force samples to NPZ plus a leg tracking plot")
   ap.add_argument("--reference-overlay", action=argparse.BooleanOptionalAction, default=True,
                   help="overlay the current reference in translucent light blue (default: enabled)")
   args = ap.parse_args()
@@ -261,10 +246,16 @@ def main():
 
   n = args.num_envs
   artifacts = RolloutArtifacts(args.video, args.reference_overlay)
+  diagnostics = TrackingDiagnostics()
+  def record(env, cmd, t, valid):
+    artifacts(env, cmd, t, valid)
+    diagnostics(env, cmd, t, valid)
   try:
-    duration, completed, terminations, samples = rollout(venv, policy, artifacts)
+    duration, completed, terminations, samples = rollout(venv, policy, record)
   finally:
     artifacts.close()
+  if args.trajectory:
+    diagnostics.save(args.trajectory)
   bins = {}
   for t, e, m in samples:
     bins.setdefault(int(t // args.bin), []).append((e, m))
@@ -274,13 +265,15 @@ def main():
     row.update({k: float(np.mean([m[k] for _, m in ms])) for k in ms[0][1]})
     per_bin.append(row)
   report = {
-    "checkpoint": project_relative(args.checkpoint), "motion": project_relative(args.motion),
+    "checkpoint": project_relative(args.checkpoint), "motion": project_relative(args.motion), "task": args.task,
     "path_base": "project_root", "num_envs": n,
     "checkpoint_sha256": hashlib.sha256(pathlib.Path(args.checkpoint).read_bytes()).hexdigest(),
     "motion_sha256": hashlib.sha256(pathlib.Path(args.motion).read_bytes()).hexdigest(),
     "randomize": args.randomize, "seed": args.seed, "motion_duration_s": duration,
     "completed_envs": completed,
     "physical_diagnostics": artifacts.report(),
+    "limb_diagnostics": summarize(diagnostics.data()),
+    "trajectory": project_relative(args.trajectory) if args.trajectory else None,
     "terminations": terminations,
     "mean": {k: float(np.mean([m[k] for _, _, m in samples])) for k in METRICS if samples and k in samples[0][2]},
     "worst_bins": sorted(per_bin, key=lambda r: -r.get("error_body_pos", 0))[:5],

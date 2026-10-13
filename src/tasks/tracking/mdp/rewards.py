@@ -146,6 +146,30 @@ def motion_foot_contact_slip(
   return cost
 
 
+def motion_joint_position_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float,
+  joint_names: tuple[str, ...],
+) -> torch.Tensor:
+  """Track a named subset without diluting its errors across the whole body."""
+  command = env.command_manager.get_term(command_name)
+  ids = [command.robot.joint_names.index(name) for name in joint_names]
+  error = (command.joint_pos[:, ids] - command.robot_joint_pos[:, ids]).square()
+  return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_swing_height_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float,
+  body_names: tuple[str, ...], swing_height: float = 0.06,
+) -> torch.Tensor:
+  """Reward matching lifted reference feet; grounded feet get a neutral value."""
+  command = env.command_manager.get_term(command_name)
+  ids = _get_body_indexes(command, body_names)
+  reference = command.body_pos_w[:, ids, 2] - env.scene.env_origins[:, None, 2]
+  actual = command.robot_body_pos_w[:, ids, 2] - env.scene.env_origins[:, None, 2]
+  error = (actual - reference).square() * (reference > swing_height)
+  return torch.exp(-error / std**2).mean(-1)
+
+
 def self_collision_cost(
   env: ManagerBasedRlEnv,
   sensor_name: str,

@@ -107,3 +107,23 @@ def unitree_g1_flat_tracking_env_cfg(
     motion_cmd.sampling_mode = "start"
 
   return cfg
+
+
+def unitree_g1_leg_tracking_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Opt-in refinement with the baseline's observations, actuators and safety terms."""
+  from mjlab.managers.reward_manager import RewardTermCfg
+  from src.tasks.tracking import mdp
+  cfg = unitree_g1_flat_tracking_env_cfg(has_state_estimation=False, play=play)
+  feet = ("left_ankle_roll_link", "right_ankle_roll_link")
+  joints = tuple(f"{side}_{part}_joint" for side in ("left", "right")
+                 for part in ("hip_pitch", "hip_roll", "hip_yaw", "knee", "ankle_pitch", "ankle_roll"))
+  cfg.rewards["motion_leg_joint_pos"] = RewardTermCfg(
+    func=mdp.motion_joint_position_error_exp, weight=1.0,
+    params={"command_name": "motion", "std": .25, "joint_names": joints})
+  cfg.rewards["motion_feet_pos"] = RewardTermCfg(
+    func=mdp.motion_relative_body_position_error_exp, weight=1.0,
+    params={"command_name": "motion", "std": .10, "body_names": feet})
+  cfg.rewards["motion_swing_height"] = RewardTermCfg(
+    func=mdp.motion_swing_height_error_exp, weight=.5,
+    params={"command_name": "motion", "std": .05, "body_names": feet, "swing_height": .06})
+  return cfg

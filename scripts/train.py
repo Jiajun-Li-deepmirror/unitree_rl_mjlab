@@ -27,6 +27,7 @@ class TrainConfig:
   env: ManagerBasedRlEnvCfg
   agent: RslRlBaseRunnerCfg
   motion_file: str | None = None
+  warm_start: str | None = None
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
@@ -42,6 +43,8 @@ class TrainConfig:
 
 
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
+  if cfg.warm_start and cfg.agent.resume:
+    raise ValueError("--warm-start and --agent.resume are mutually exclusive")
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
     device = "cpu"
@@ -117,6 +120,11 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     print("[INFO] Recording videos during training.")
 
   env = RslRlVecEnvWrapper(env, clip_actions=cfg.agent.clip_actions)
+  if is_tracking_task:
+    # The wrapper resets the environment; mjlab 1.2 leaves relative reference
+    # buffers empty until the first step, causing a spurious first termination.
+    from tracking_targets import initialize_reference_targets
+    initialize_reference_targets(env.unwrapped.command_manager.get_term("motion"))
 
   agent_cfg = asdict(cfg.agent)
   env_cfg = asdict(cfg.env)
@@ -132,6 +140,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))
+  elif cfg.warm_start:
+    # Preserve learned behavior and normalization, but use the new optimizer,
+    # learning rate and iteration count for the changed reward objective.
+    runner.load(cfg.warm_start, load_cfg={"actor": True, "critic": True}, map_location=device)
 
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:
