@@ -17,6 +17,7 @@ Reference time and initial joints remain fixed in both modes. The first policy
 step is evaluated, including any real termination on that step.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -33,6 +34,48 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 TASK = "Unitree-G1-Tracking-No-State-Estimation"
 METRICS = ("error_anchor_pos", "error_anchor_rot", "error_body_pos", "error_body_rot",
            "error_joint_pos", "error_joint_vel")
+REFERENCE_RGBA = (0.45, 0.78, 1.0, 0.35)
+
+
+def configure_video(cfg, reference_overlay=True):
+  cfg.viewer.width, cfg.viewer.height = 1280, 720
+  cfg.viewer.distance = 3.0
+  cfg.viewer.azimuth, cfg.viewer.elevation = 135, -15
+  cfg.viewer.max_extra_envs = 0
+  cfg.commands["motion"].debug_vis = reference_overlay
+  cfg.commands["motion"].viz.mode = "ghost"
+  cfg.commands["motion"].viz.ghost_color = REFERENCE_RGBA
+  return cfg
+
+
+def prepare_reference_overlay(env):
+  """Prepare mjlab's render-only model; keep the trained motion command intact."""
+  cmd = env.command_manager.get_term("motion")
+  ghost = copy.deepcopy(env.sim.mj_model)
+  visible = ghost.geom_rgba[:, 3] > 0
+  ghost.geom_rgba[visible] = REFERENCE_RGBA
+  ghost.geom_matid[:] = -1
+  # mjlab enables mjVIS_TRANSPARENT; avoid multiplying opacity by its 0.3 default.
+  ghost.vis.map.alpha = 1.0
+  cmd._ghost_model = ghost
+
+
+def video_legend(frame, t, cmd):
+  """Label the two robots without changing the scene or simulation state."""
+  from PIL import Image, ImageDraw, ImageFont
+  image = Image.fromarray(frame)
+  draw = ImageDraw.Draw(image, "RGBA")
+  font = ImageFont.load_default(size=20)
+  draw.rounded_rectangle((18, 18, 494, 125), radius=10, fill=(12, 22, 34, 210))
+  draw.rectangle((32, 32, 47, 47), fill=(235, 235, 235, 255))
+  draw.text((58, 27), "Policy - solid robot", font=font, fill=(245, 245, 245, 255))
+  draw.rectangle((32, 64, 47, 79), fill=(115, 199, 255, 255))
+  draw.text((58, 59), "Reference - light blue, 35% opacity", font=font, fill=(155, 220, 255, 255))
+  body = cmd.metrics["error_body_pos"][0].item() * 100
+  root = cmd.metrics["error_anchor_pos"][0].item() * 100
+  draw.text((32, 94), f"t {t:05.2f}s  |  Body {body:4.1f} cm  |  Anchor {root:4.1f} cm",
+            font=font, fill=(230, 236, 242, 255))
+  return np.asarray(image)
 
 
 def prepare_eval_cfg(cfg, motion, num_envs, randomize, seed):
@@ -114,7 +157,7 @@ def rollout(venv, policy, on_step=None):
 
 class RolloutArtifacts:
   """Stream policy video and summarize velocities before the first reset."""
-  def __init__(self, video=None):
+  def __init__(self, video=None, reference_overlay=True):
     self.video = pathlib.Path(video) if video else None
     self.writer = None
     self.video_frames = 0
@@ -122,6 +165,7 @@ class RolloutArtifacts:
     self.planted_samples = 0
     self.foot_speed_max = 0.0
     self.joint_speed_max = 0.0
+    self.reference_overlay = reference_overlay
 
   def __call__(self, env, cmd, t, valid):
     if t > 0 and valid.any():
@@ -142,6 +186,8 @@ class RolloutArtifacts:
       frame = env.render()
       if frame is None:
         raise RuntimeError("policy video requires rgb_array rendering")
+      if self.reference_overlay:
+        frame = video_legend(frame, t, cmd)
       if self.writer is None:
         self.video.parent.mkdir(parents=True, exist_ok=True)
         h, w = frame.shape[:2]
@@ -159,6 +205,9 @@ class RolloutArtifacts:
   def report(self):
     return {"video": project_relative(self.video) if self.video else None,
             "video_frames": self.video_frames,
+            "reference_overlay": {"enabled": bool(self.video and self.reference_overlay),
+                                  "rgba": list(REFERENCE_RGBA), "coordinates": "world",
+                                  "timing": "current reference frame; no per-frame pose alignment"},
             "peak_joint_speed_rad_s": self.joint_speed_max,
             "reference_planted_foot_samples": self.planted_samples,
             "reference_planted_foot_speed_mean_m_s": self.foot_speed_sum / self.planted_samples if self.planted_samples else None,
@@ -178,6 +227,8 @@ def main():
   ap.add_argument("--device", default=None)
   ap.add_argument("--seed", type=int, default=42)
   ap.add_argument("--video", help="stream the trained policy rollout for env 0 to this MP4")
+  ap.add_argument("--reference-overlay", action=argparse.BooleanOptionalAction, default=True,
+                  help="overlay the current reference in translucent light blue (default: enabled)")
   args = ap.parse_args()
   if args.num_envs < 1 or not np.isfinite(args.bin) or args.bin <= 0:
     ap.error("--num-envs and --bin must be positive")
@@ -198,11 +249,10 @@ def main():
     if motion_fps.size != 1 or not np.isclose(motion_fps[0], expected_fps, rtol=0, atol=1e-6):
       ap.error(f"motion fps must match the environment rate ({expected_fps:g} Hz)")
   if args.video:
-    cfg.viewer.width, cfg.viewer.height = 1280, 720
-    cfg.viewer.distance = 3.0
-    cfg.viewer.azimuth, cfg.viewer.elevation = 135, -15
-    cfg.commands["motion"].debug_vis = False
+    configure_video(cfg, args.reference_overlay)
   env = ManagerBasedRlEnv(cfg=cfg, device=device, render_mode="rgb_array" if args.video else None)
+  if args.video and args.reference_overlay:
+    prepare_reference_overlay(env)
   agent_cfg = load_rl_cfg(args.task)
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
   runner = (load_runner_cls(args.task) or MjlabOnPolicyRunner)(venv, asdict(agent_cfg), device=device)
@@ -210,7 +260,7 @@ def main():
   policy = runner.get_inference_policy(device=device)
 
   n = args.num_envs
-  artifacts = RolloutArtifacts(args.video)
+  artifacts = RolloutArtifacts(args.video, args.reference_overlay)
   try:
     duration, completed, terminations, samples = rollout(venv, policy, artifacts)
   finally:

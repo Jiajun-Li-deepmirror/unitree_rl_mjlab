@@ -61,6 +61,15 @@ class RolloutTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+  def test_video_overlay_can_be_disabled_without_changing_training_config(self):
+    import src.tasks  # noqa: F401
+    from mjlab.tasks.registry import load_env_cfg
+    for enabled in (True, False):
+      cfg = ev.configure_video(load_env_cfg(ev.TASK, play=True), enabled)
+      self.assertEqual(cfg.commands["motion"].debug_vis, enabled)
+      self.assertEqual(cfg.commands["motion"].viz.ghost_color, ev.REFERENCE_RGBA)
+      self.assertEqual(cfg.viewer.max_extra_envs, 0)
+
   def test_play_modes_remove_joint_noise_without_changing_training(self):
     import src.tasks  # noqa: F401
     from mjlab.tasks.registry import load_env_cfg
@@ -140,6 +149,43 @@ class CpuResetTests(unittest.TestCase):
     _, _, dones, _ = self.venv.step(torch.zeros((2, 29)))
     self.assertEqual(dones.tolist(), [0, 0])
     self.assertEqual(self.cmd.time_steps.tolist(), [1, 1])
+
+  def test_ghost_uses_current_reference_world_pose_and_does_not_mutate_physics(self):
+    import mujoco
+    import numpy as np
+    from mjlab.viewer.native.visualizer import MujocoNativeDebugVisualizer
+    self.venv.reset()
+    model = self.env.sim.mj_model
+    original_color, original_material = model.geom_rgba.copy(), model.geom_matid.copy()
+    before = self.env.sim.data.qpos.clone()
+    ev.prepare_reference_overlay(self.env)
+    positions = self.cmd.motion.body_pos_w.clone()
+    joints = self.cmd.motion.joint_pos.clone()
+    positions[5, 0, :2] += torch.tensor([0.3, -0.2])
+    joints[5, 0] += 0.25
+    captured = []
+    visualizer = SimpleNamespace(get_env_indices=lambda _: [0],
+      add_ghost_mesh=lambda qpos, **kwargs: captured.append((qpos, kwargs["model"])))
+    with patch.object(self.cmd, "time_steps", torch.tensor([5, 6])), \
+         patch.object(self.cmd.motion, "body_pos_w", positions), \
+         patch.object(self.cmd.motion, "joint_pos", joints):
+      self.cmd._debug_vis_impl(visualizer)
+      qpos, ghost = captured[0]
+      root = self.cmd.robot.indexing.free_joint_q_adr.cpu().numpy()
+      np.testing.assert_allclose(qpos[root[:3]], self.cmd.body_pos_w[0, 0].numpy())
+      np.testing.assert_allclose(qpos[root[3:7]], self.cmd.body_quat_w[0, 0].numpy())
+      np.testing.assert_allclose(qpos[self.cmd.robot.indexing.joint_q_adr.cpu().numpy()], joints[5])
+    np.testing.assert_array_equal(model.geom_rgba, original_color)
+    np.testing.assert_array_equal(model.geom_matid, original_material)
+    torch.testing.assert_close(self.env.sim.data.qpos.clone(), before)
+    # Inspect the actual MuJoCo scene without an OpenGL context: appearance
+    # must survive material processing, not only a Python color assignment.
+    scene = mujoco.MjvScene(model, maxgeom=10000)
+    native = MujocoNativeDebugVisualizer(scene, model, env_idx=0)
+    native.add_ghost_mesh(qpos, model=ghost)
+    self.assertGreater(scene.ngeom, 0)
+    for i in range(scene.ngeom):
+      np.testing.assert_allclose(scene.geoms[i].rgba, ev.REFERENCE_RGBA, atol=1e-6)
 
 
 if __name__ == "__main__":

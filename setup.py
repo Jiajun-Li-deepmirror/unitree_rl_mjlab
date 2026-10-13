@@ -9,6 +9,7 @@ INSTALL_REQUIRES = [
     "mujoco-warp==3.5.0",
     "scipy>=1.15.0",  # for supporting Python >= 3.10
     "warp-lang==1.12.0",
+    "pillow>=10.1.0",  # readable comparison legend in policy videos
 ]
 
 # Installation operation
