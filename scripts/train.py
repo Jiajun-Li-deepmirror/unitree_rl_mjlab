@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
+from project_paths import training_dir
+
 import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -84,6 +86,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   # Enable NaN guard if requested.
   if cfg.enable_nan_guard:
     cfg.env.sim.nan_guard.enabled = True
+    cfg.env.sim.nan_guard.output_dir = str(log_dir / "nan_guard")
     print(f"[INFO] NaN guard enabled, output dir: {cfg.env.sim.nan_guard.output_dir}")
 
   if rank == 0:
@@ -146,10 +149,15 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
   args = args or TrainConfig.from_task(task_id)
 
   # Create log directory once before launching workers.
-  log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name
-  log_root_path.resolve()
-  log_dir_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+  log_root_path = training_dir(args.motion_file, args.agent.experiment_name)
+  if args.motion_file:
+    if not Path(args.motion_file).is_file():
+      raise FileNotFoundError(f"Motion file not found: {args.motion_file}")
+    args.agent.experiment_name = Path(args.motion_file).stem
+  log_dir_name = log_root_path.parent.name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
   if args.agent.run_name:
+    if Path(args.agent.run_name).name != args.agent.run_name:
+      raise ValueError("run name must not contain directory separators")
     log_dir_name += f"_{args.agent.run_name}"
   log_dir = log_root_path / log_dir_name
 

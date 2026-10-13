@@ -21,9 +21,9 @@ scene config: same armature, collision geoms, solver options), stepped with the
 plain MuJoCo C library rather than mujoco-warp.
 
 Usage:
-  python scripts/sim2sim.py \
-    --policy-dir deploy/robots/g1/config/policy/mimic/dance1_subject2 \
-    --motion deploy/robots/g1/config/policy/mimic/dance1_subject2/params/dance1_subject2.npz \
+  python src/unitree_rl_mjlab/scripts/sim2sim.py \
+    --policy-dir output/<video>/deploy/<video> \
+    --motion output/<video>/deploy/<video>/params/dance1_subject2.npz \
     --duration 30 --start default --video out.mp4 --report out.json
 """
 import argparse
@@ -335,6 +335,9 @@ def main():
   ap.add_argument("--report", default=None, help="JSON report path (a .png plot is written next to it)")
   ap.add_argument("--fall-height", type=float, default=0.35)
   args = ap.parse_args()
+  for output in (args.report, args.video):
+    if output:
+      pathlib.Path(output).parent.mkdir(parents=True, exist_ok=True)
 
   os.environ.setdefault("MUJOCO_GL", "egl")
   deploy = yaml.safe_load(open(pathlib.Path(args.policy_dir) / "params" / "deploy.yaml"))

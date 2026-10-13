@@ -1,8 +1,8 @@
-"""Build a deploy/robots/g1/config/policy/mimic/<name>/ folder from a training run.
+"""Build an output/<video>/deploy/<video>/ folder from a training run.
 
 The deploy.yaml parameters (default joint pose = action offset and joint_pos_rel
 reference, action scale, PD gains) must match the env the policy was trained
-in. Copying another motion's deploy.yaml is NOT safe: the bundled
+in. Copying another motion's deploy.yaml is NOT safe: the old upstream
 dance1_subject2 example was trained with a different default pose
 (knee 0.30, hip pitch -0.10, elbow 0.87) than this repo's tracking env, which
 uses mjlab's asset-zoo G1 (knee 0.669, hip pitch -0.312, elbow 0.60) -- up to
@@ -10,15 +10,16 @@ uses mjlab's asset-zoo G1 (knee 0.669, hip pitch -0.312, elbow 0.60) -- up to
 from the metadata the training runner attaches to the run's <run>.onnx.
 
 Usage:
-  python scripts/make_deploy_folder.py --run-dir logs/rsl_rl/<exp>/<run> \
-      --motion src/assets/motions/g1/<motion>.npz \
-      --out deploy/robots/g1/config/policy/mimic/<name>
+  python src/unitree_rl_mjlab/scripts/make_deploy_folder.py --run-dir output/<video>/training/<run> \
+      --motion output/<video>/<video>.npz \
+      --out output/<video>/deploy/<video>
 """
 import argparse
 import pathlib
 import shutil
 
 import onnx
+from project_paths import motion_output_dir
 
 SDK_JOINT_ORDER = [
   "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
@@ -49,7 +50,7 @@ def main():
   ap = argparse.ArgumentParser()
   ap.add_argument("--run-dir", required=True)
   ap.add_argument("--motion", required=True)
-  ap.add_argument("--out", required=True)
+  ap.add_argument("--out", help="default: output/<video>/deploy/<video>")
   ap.add_argument("--step-dt", type=float, default=0.02)
   args = ap.parse_args()
 
@@ -89,7 +90,7 @@ def main():
     lines += [f"  {term}:", f"    params: {params}", "    clip: null",
               f"    scale: {fmt([1.0] * dim)}", "    history_length: 1"]
 
-  out = pathlib.Path(args.out)
+  out = pathlib.Path(args.out) if args.out else motion_output_dir(args.motion) / "deploy" / pathlib.Path(args.motion).stem
   (out / "params").mkdir(parents=True, exist_ok=True)
   (out / "exported").mkdir(parents=True, exist_ok=True)
   (out / "params" / "deploy.yaml").write_text("\n".join(lines) + "\n")

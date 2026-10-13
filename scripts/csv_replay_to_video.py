@@ -15,6 +15,7 @@ import mjlab
 from mjlab.entity import Entity
 from mjlab.scene import Scene
 from mjlab.sim.sim import Simulation, SimulationCfg
+import project_paths  # noqa: F401; make local task imports independent of cwd
 from src.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
 from src.tasks.tracking.config.g1_23dof.env_cfgs import unitree_g1_23dof_flat_tracking_env_cfg
 from mjlab.utils.lab_api.math import (
