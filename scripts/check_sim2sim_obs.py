@@ -104,7 +104,7 @@ def main():
         f"alignment: {worst_identity_ori:.2e}")
   yaw = 2 * np.degrees(np.arctan2(init_quat_cpp[3], init_quat_cpp[0]))
   print(f"C++ init_quat yaw at entry = {yaw:.2f} deg "
-        f"(robot torso yaw vs reference *pelvis* yaw)")
+        f"(robot torso yaw vs reference torso yaw)")
 
 
 if __name__ == "__main__":

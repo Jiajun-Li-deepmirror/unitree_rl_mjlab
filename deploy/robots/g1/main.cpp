@@ -3,10 +3,14 @@
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
 #include "State_Mimic.h"
+#include <csignal>
+
+static volatile std::sig_atomic_t stop_requested = 0;
+static void request_stop(int) { stop_requested = 1; }
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
-std::shared_ptr<Keyboard> FSMState::keyboard = std::make_shared<Keyboard>();
+std::shared_ptr<Keyboard> FSMState::keyboard = nullptr;
 
 void init_fsm_state()
 {
@@ -15,11 +19,11 @@ void init_fsm_state()
     if(!lowcmd_sub->isTimeout())
     {
         spdlog::critical("The other process is using the lowcmd channel, please close it first.");
-        unitree::robot::go2::shutdown();
-        // exit(0);
+        std::exit(1);
     }
     FSMState::lowcmd = std::make_unique<LowCmd_t>();
     FSMState::lowstate = std::make_shared<LowState_t>();
+    FSMState::lowstate->set_timeout_ms(100);
     spdlog::info("Waiting for connection to robot...");
     FSMState::lowstate->wait_for_connection();
     spdlog::info("Connected to robot.");
@@ -34,7 +38,7 @@ int main(int argc, char** argv)
     std::cout << "     G1-29dof Controller \n";
 
     // Unitree DDS Config
-    unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
+    unitree::robot::ChannelFactory::Instance()->Init(vm["domain-id"].as<int>(), vm["network"].as<std::string>());
 
     init_fsm_state();
 
@@ -47,16 +51,20 @@ int main(int argc, char** argv)
     // Initialize FSM
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
+    std::signal(SIGINT, request_stop);
+    std::signal(SIGTERM, request_stop);
 
     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
     std::cout << "And then press [R2 + A] to start controlling the robot.\n";
-    std::cout << "And then press [R1 + A/B/Y/X] to control the robot dance.\n";
+    std::cout << "Dance bindings are listed in the selected FSM config. [L2 + B] -> damping.\n";
 
-    while (true)
+    while (!stop_requested)
     {
         sleep(1);
     }
+    fsm->request_passive();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    fsm.reset();
     
     return 0;
 }
-

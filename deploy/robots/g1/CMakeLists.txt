@@ -49,3 +49,7 @@ add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
 link_libraries(${PROJECT_NAME}_lib)
 
 add_executable(g1_ctrl main.cpp)
+
+enable_testing()
+add_executable(test_motion_window tests/test_motion_window.cpp)
+add_test(NAME motion_window COMMAND test_motion_window)

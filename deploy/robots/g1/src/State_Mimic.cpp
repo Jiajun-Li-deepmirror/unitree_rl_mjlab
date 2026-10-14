@@ -13,12 +13,12 @@ Eigen::Quaternionf robot_quat_w(isaaclab::ManagerBasedRLEnv* env)
     G1Type* robot = dynamic_cast<G1Type*>(env->robot.get());
 
     auto root_quat = env->robot->data.root_quat_w;
-    auto & motors = robot->lowstate->msg_.motor_state();
+    const auto& joints = env->robot->data.joint_pos;
 
     Eigen::Quaternionf torso_quat = root_quat \
-        * Eigen::AngleAxisf(motors[12].q(), Eigen::Vector3f::UnitZ()) \
-        * Eigen::AngleAxisf(motors[13].q(), Eigen::Vector3f::UnitX()) \
-        * Eigen::AngleAxisf(motors[14].q(), Eigen::Vector3f::UnitY());
+        * Eigen::AngleAxisf(joints[12], Eigen::Vector3f::UnitZ()) \
+        * Eigen::AngleAxisf(joints[13], Eigen::Vector3f::UnitX()) \
+        * Eigen::AngleAxisf(joints[14], Eigen::Vector3f::UnitY());
 
 //    return root_quat;
     return torso_quat;
@@ -69,7 +69,9 @@ REGISTER_OBSERVATION(motion_anchor_ori_b)
     auto ref_quat_w  = motion_anchor_quat_w(loader);
 
     auto rot_ = (init_quat * ref_quat_w).conjugate() * real_quat_w;
-    auto rot = rot_.toRotationMatrix().transpose();
+    // Materialize the transpose: `auto` would retain an Eigen expression
+    // referring to a destroyed temporary matrix and corrupt the observation.
+    const Eigen::Matrix3f rot = rot_.toRotationMatrix().transpose();
 
     Eigen::Matrix<float, 6, 1> data;
     data << rot(0, 0), rot(0, 1), rot(1, 0), rot(1, 1), rot(2, 0), rot(2, 1);
@@ -97,18 +99,8 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
     motion_ = std::make_shared<MotionLoader_>(motion_file.string());
     spdlog::info("Loaded motion file '{}' with duration {:.2f}s", motion_file.stem().string(), motion_->duration);
     motion = motion_;
-    if(cfg["time_start"]) {
-        float time_start = cfg["time_start"].as<float>();
-        time_range_[0] = std::clamp(time_start, 0.0f, motion_->duration);
-    } else {
-        time_range_[0] = 0.0f;
-    }
-    if(cfg["time_end"]) {
-        float time_end = cfg["time_end"].as<float>();
-        time_range_[1] = std::clamp(time_end, 0.0f, motion_->duration);
-    } else {
-        time_range_[1] = motion_->duration;
-    }
+    window = std::make_unique<MotionWindow>(
+        cfg["time_start"].as<float>(0.0f), cfg["time_end"].as<float>(motion_->duration), motion_->duration);
     std::string end_state = "Velocity";
     if (cfg["end_state"]) {
         end_state = cfg["end_state"].as<std::string>();
@@ -119,17 +111,21 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
         articulation
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+    if (std::abs(env->step_dt - MotionClip::dt) > 1e-6f)
+        throw std::runtime_error("Mimic policy and reference must both run at 50 Hz");
 
     const auto & joy = FSMState::lowstate->joystick;
+    this->registered_check_labels[this->registered_checks.size()] = "motion_complete";
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; }, // time out
+            [&]()->bool{ return window->finished(worker.steps.load(), env->step_dt); }, // time out
             FSMStringMap.right.at(end_state)
         )
     );
+    this->registered_check_labels[this->registered_checks.size()] = "policy_fault";
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); }, // bad orientation
+            [&]()->bool{ return worker.unhealthy(); }, // bad orientation
             FSMStringMap.right.at("Passive")
         )
     );
@@ -137,52 +133,58 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
 
 void State_Mimic::enter()
 {
-    // set gain
-    for (int i = 0; i < env->robot->data.joint_stiffness.size(); i++)
-    {
-        lowcmd->msg_.motor_cmd()[i].kp() = env->robot->data.joint_stiffness[i];
-        lowcmd->msg_.motor_cmd()[i].kd() = env->robot->data.joint_damping[i];
-        lowcmd->msg_.motor_cmd()[i].dq() = 0;
-        lowcmd->msg_.motor_cmd()[i].tau() = 0;
-    }
-
-    motion = motion_; // set for specific motion
+    motion = motion_;
+    motion->update_frame(window->first_frame);
     env->reset();
-    // Start policy thread
-    policy_thread_running = true;
-    policy_thread = std::thread([this]{
-        using clock = std::chrono::high_resolution_clock;
-        const std::chrono::duration<double> desiredDuration(env->step_dt);
-        const auto dt = std::chrono::duration_cast<clock::duration>(desiredDuration);
-
-        // Initialize timing
-        const auto start = clock::now();
-        auto sleepTill = start + dt;
-
-        motion->reset(env->robot->data, time_range_[0]);
-        auto ref_yaw = isaaclab::yawQuaternion(motion->root_quaternion()).toRotationMatrix();
-        auto robot_yaw = isaaclab::yawQuaternion(robot_quat_w(env.get())).toRotationMatrix();
-        init_quat = robot_yaw * ref_yaw.transpose();
-        env->reset();
-
-        while (policy_thread_running)
-        {
-            env->robot->update();
-            motion->update(env->episode_length * env->step_dt + time_range_[0]);
-            env->step();
-
-            // Sleep
-            std::this_thread::sleep_until(sleepTill);
-            sleepTill += dt;
+    // Align anchor yaw to anchor yaw (the reference pelvis may have waist yaw).
+    init_quat = isaaclab::yawQuaternion(robot_quat_w(env.get())) *
+                isaaclab::yawQuaternion(motion_anchor_quat_w(motion)).conjugate();
+    for (int i = 0; i < env->robot->data.joint_stiffness.size(); ++i) {
+        auto& motor = lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]];
+        motor.kp() = env->robot->data.joint_stiffness[i];
+        motor.kd() = env->robot->data.joint_damping[i];
+        motor.q() = env->robot->data.joint_pos[i];
+        motor.dq() = motor.tau() = 0;
+    }
+    auto trace_dir = param::config["trace_dir"];
+    if (trace_dir) {
+        auto directory = param::resolve_path(trace_dir.as<std::string>());
+        std::filesystem::create_directories(directory);
+        trace.open(directory / (getStateString() + ".csv"));
+        trace << "step,frame,reference_time,inference_s";
+        trace << ",root_w,root_x,root_y,root_z,gyro_x,gyro_y,gyro_z,init_w,init_x,init_y,init_z";
+        for (int i = 0; i < 29; ++i) trace << ",q" << i;
+        for (int i = 0; i < 29; ++i) trace << ",dq" << i;
+        for (int i = 0; i < 29; ++i) trace << ",target" << i;
+        for (int i = 0; i < 29; ++i) trace << ",action" << i;
+        for (int i = 0; i < 154; ++i) trace << ",obs" << i;
+        trace << "\n";
+        trace << std::setprecision(9);
+    }
+    spdlog::info("Motion window: [{:.3f}, {:.3f}), {:.3f} seconds",
+                 window->start, window->end, window->end - window->start);
+    worker.start(env.get(), [this] {
+        motion->update_frame(window->first_frame + env->episode_length);
+    }, [this](double latency) {
+        if (trace.is_open()) {
+            trace << env->episode_length << ',' << motion->frame << ',' << motion->frame * double(MotionClip::dt) << ',' << latency;
+            const auto& root = env->robot->data.root_quat_w;
+            trace << ',' << root.w() << ',' << root.x() << ',' << root.y() << ',' << root.z();
+            for (float v : env->robot->data.root_ang_vel_b) trace << ',' << v;
+            trace << ',' << init_quat.w() << ',' << init_quat.x() << ',' << init_quat.y() << ',' << init_quat.z();
+            for (float q : env->robot->data.joint_pos) trace << ',' << q;
+            for (float q : env->robot->data.joint_vel) trace << ',' << q;
+            for (float q : env->action_manager->processed_actions()) trace << ',' << q;
+            for (float a : env->action_manager->action()) trace << ',' << a;
+            for (float o : env->last_observation.at("obs")) trace << ',' << o;
+            trace << "\n";
         }
-    });
+    }, window->frame_count);
 }
-
 
 void State_Mimic::run()
 {
-    auto action = env->action_manager->processed_actions();
-    for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
+    auto action = worker.action();
+    for (int i = 0; i < env->robot->data.joint_ids_map.size(); ++i)
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
-    }
 }

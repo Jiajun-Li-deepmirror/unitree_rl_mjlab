@@ -9,12 +9,12 @@ Mirrors deploy/robots/g1/src/State_Mimic.cpp + deploy/include/isaaclab/*:
       joint_pos_rel       q - default_joint_pos
       joint_vel_rel       dq
       last_action         previous raw policy output
-  - init_quat = yaw(robot torso) * yaw(ref root)^-1, computed once at state entry
+  - init_quat = yaw(robot torso) * yaw(ref torso)^-1, computed once at state entry
   - motion frame = floor((k * step_dt + time_start) / (1/50)), k = policy steps so far
   - action: q_des = a * scale + offset (+ clip), PD with deploy.yaml stiffness/damping,
     dq_des = 0, held between 50 Hz policy updates; motor effort limits as in training
-  - the C++ bad_orientation check is a stub returning false, so the only
-    in-controller termination is the motion time running out.
+  - C++ deployment also checks tilt, stale state and policy deadlines; this
+    standalone diagnostic is not the C++/DDS deployment acceptance runner.
 
 The physics model is the exact model used for training (compiled from the mjlab
 scene config: same armature, collision geoms, solver options), stepped with the
@@ -205,7 +205,7 @@ class MimicController:
     self.k = 0
     self.last_action = np.zeros(29, dtype=np.float32)
     f = self.frame_at(self.time_start)
-    ref_yaw = yaw_quat(self.ref_root_quat[f])
+    ref_yaw = yaw_quat(waist_torso(self.ref_root_quat[f], self.ref_q[f]))
     robot_yaw = yaw_quat(waist_torso(robot.root_quat, robot.q))
     self.init_quat = qmul(robot_yaw, qconj(ref_yaw))
 
@@ -238,9 +238,9 @@ class MimicController:
   def step(self, robot):
     """One 50 Hz policy step. Returns (q_des, frame, done)."""
     t = self.k * self.step_dt + self.time_start
-    if self.k * self.step_dt > self.time_end - self.time_start:
+    if self.k >= round((self.time_end - self.time_start) / self.step_dt):
       return None, None, True
-    frame = self.frame_at(t)
+    frame = min(self.frame_at(self.time_start) + self.k, self.num_frames - 1)
     obs = self.observation(robot, frame)
     assert obs.shape[0] == self.in_dim, (obs.shape, self.in_dim)
     a = self.sess.run(None, {self.in_name: obs[None]})[0][0].astype(np.float32)

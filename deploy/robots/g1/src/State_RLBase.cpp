@@ -10,7 +10,7 @@ namespace isaaclab
 // change "velocity_commands" observation name in policy deploy.yaml to "keyboard_velocity_commands"
 REGISTER_OBSERVATION(keyboard_velocity_commands)
 {
-    std::string key = FSMState::keyboard->key();
+    std::string key = (FSMState::keyboard ? FSMState::keyboard->key() : "");
     static auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
 
     static std::unordered_map<std::string, std::vector<float>> key_commands = {
@@ -43,9 +43,10 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
+    this->registered_check_labels[this->registered_checks.size()] = "policy_fault";
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+            [&]()->bool{ return worker.unhealthy(); },
             FSMStringMap.right.at("Passive")
         )
     );
@@ -53,7 +54,7 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
 
 void State_RLBase::run()
 {
-    auto action = env->action_manager->processed_actions();
+    auto action = worker.action();
     for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
     }

@@ -38,6 +38,7 @@ public:
 
     void run()
     {
+        std::lock_guard<std::mutex> state_lock(lowstate->mutex_);
         for(int i(0); i < lowcmd->msg_.motor_cmd().size(); ++i)
         {
             lowcmd->msg_.motor_cmd()[i].q() = lowstate->msg_.motor_state()[i].q();

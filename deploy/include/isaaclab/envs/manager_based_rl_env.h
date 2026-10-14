@@ -60,8 +60,8 @@ public:
     {
         episode_length += 1;
         robot->update();
-        auto obs = observation_manager->compute();
-        auto action = alg->act(obs);
+        last_observation = observation_manager->compute();
+        auto action = alg->act(last_observation);
         action_manager->process_action(action);
     }
 
@@ -75,6 +75,7 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+    std::unordered_map<std::string, std::vector<float>> last_observation;
 };
 
 };

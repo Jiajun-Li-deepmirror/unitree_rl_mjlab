@@ -1,5 +1,5 @@
 FSM:
-  _: # enabled fsms; add a new Mimic state only after exporting its trained policy
+  _: # Use deploy.sh prepare to validate and select a dance before starting.
     Passive:
       id: 1
     FixStand:
@@ -7,6 +7,12 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    HandShake:
+      id: 4
+      type: Mimic
+    Jojo:
+      id: 5
+      type: Mimic
 
 
 
@@ -63,5 +69,25 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
+      HandShake: RB + A.on_pressed
+      Jojo: RB + Y.on_pressed
 
     policy_dir: config/policy/velocity
+
+  HandShake:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/hand_shake/deploy/hand_shake
+    motion_file: ../../../../../output/hand_shake/deploy/hand_shake/params/hand_shake.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Jojo:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/jojo/deploy/jojo
+    motion_file: ../../../../../output/jojo/deploy/jojo/params/jojo.npz
+    time_start: 0.0
+    end_state: Velocity

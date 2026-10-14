@@ -34,6 +34,8 @@ public:
         // Init Model
         env = Ort::Env(ORT_LOGGING_LEVEL_WARNING, "onnx_model");
         session_options.SetGraphOptimizationLevel(ORT_ENABLE_EXTENDED);
+        session_options.SetIntraOpNumThreads(1);
+        session_options.SetInterOpNumThreads(1);
 
         session = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options);
 
@@ -47,6 +49,7 @@ public:
         for (const auto& shape : input_shapes) {
             size_t size = 1;
             for (const auto& dim : shape) {
+                if (dim <= 0) throw std::runtime_error("Policy inputs must have fixed positive dimensions");
                 size *= dim;
             }
             input_sizes.push_back(size);
@@ -55,6 +58,8 @@ public:
         // Get output shape
         Ort::TypeInfo output_type = session->GetOutputTypeInfo(0);
         output_shape = output_type.GetTensorTypeAndShapeInfo().GetShape();
+        if (output_shape.size() != 2 || output_shape[0] != 1 || output_shape[1] <= 0)
+            throw std::runtime_error("Invalid policy action shape");
         auto output_name = session->GetOutputNameAllocated(0, allocator);
         output_names.push_back(output_name.release());
 
@@ -78,6 +83,10 @@ public:
         {
             const std::string name_str(input_names[i]);
             auto& input_data = obs.at(name_str);
+            if (input_data.size() != input_sizes[i])
+                throw std::runtime_error("Observation size does not match ONNX input: " + name_str);
+            if (!std::all_of(input_data.begin(), input_data.end(), [](float value) { return std::isfinite(value); }))
+                throw std::runtime_error("Non-finite policy observation");
             auto input_tensor = Ort::Value::CreateTensor<float>(memory_info, input_data.data(), input_sizes[i], input_shapes[i].data(), input_shapes[i].size());
             input_tensors.push_back(std::move(input_tensor));
         }
