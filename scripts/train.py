@@ -166,7 +166,8 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     if not Path(args.motion_file).is_file():
       raise FileNotFoundError(f"Motion file not found: {args.motion_file}")
     args.agent.experiment_name = Path(args.motion_file).stem
-  log_dir_name = log_root_path.parent.name + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+  log_prefix = Path(args.motion_file).stem if args.motion_file else log_root_path.parent.name
+  log_dir_name = log_prefix + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
   if args.agent.run_name:
     if Path(args.agent.run_name).name != args.agent.run_name:
       raise ValueError("run name must not contain directory separators")

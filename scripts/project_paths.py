@@ -10,6 +10,15 @@ sys.path.insert(0, str(RL_ROOT))
 
 
 def motion_output_dir(motion_file):
+    motion = Path(motion_file).resolve()
+    try:
+        relative = motion.relative_to((PROJECT_ROOT / "output").resolve())
+    except ValueError:
+        pass
+    else:
+        if len(relative.parts) >= 2:
+            # A reviewed candidate stays inside its source video's output tree.
+            return motion.parent
     return PROJECT_ROOT / "output" / Path(motion_file).stem
 
 
@@ -17,7 +26,7 @@ def training_dir(motion_file=None, experiment_name="training"):
     name = Path(motion_file).stem if motion_file else experiment_name
     if not name or name in {".", ".."} or Path(name).name != name:
         raise ValueError("experiment name must be a single folder name")
-    return PROJECT_ROOT / "output" / name / "training"
+    return (motion_output_dir(motion_file) if motion_file else PROJECT_ROOT / "output" / name) / "training"
 
 
 def project_relative(path):

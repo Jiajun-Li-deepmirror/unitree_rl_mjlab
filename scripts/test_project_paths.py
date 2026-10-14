@@ -31,6 +31,14 @@ class OutputPathsTests(unittest.TestCase):
     path = project_paths.training_dir(None, "walking")
     self.assertEqual(path, project_paths.PROJECT_ROOT / "output/walking/training")
 
+  def test_candidate_stays_under_its_source_video_output(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root=Path(tmp)
+      motion=root/'output/dance/contact_v1/dance_contact_v1.npz'
+      with patch.object(project_paths,'PROJECT_ROOT',root):
+        self.assertEqual(project_paths.training_dir(motion),motion.parent/'training')
+        self.assertEqual(project_paths.motion_output_dir(motion),motion.parent)
+
   def test_experiment_path_cannot_escape_output(self):
     with self.assertRaises(ValueError):
       project_paths.training_dir(None, "../../escape")
