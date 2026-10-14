@@ -8,6 +8,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
 from .commands import MotionCommand
+from .foot_contact import foot_contact_state
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -155,6 +156,17 @@ def motion_joint_position_error_exp(
   ids = [command.robot.joint_names.index(name) for name in joint_names]
   error = (command.joint_pos[:, ids] - command.robot_joint_pos[:, ids]).square()
   return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_measured_contact_slip(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """Penalize horizontal velocity at a loaded contact point, including dragged swings.
+
+  A rolling foot can have a moving ankle but a stationary contact point. This
+  cost only uses actual ground contacts (>1 N), regardless of reference phase.
+  """
+  state = foot_contact_state(env, env.command_manager.get_term(command_name))
+  velocity = state["foot_contact_point_velocity_world"][..., :2]
+  return velocity.square().sum(dim=-1).sum(dim=-1)
 
 
 def motion_swing_height_error_exp(

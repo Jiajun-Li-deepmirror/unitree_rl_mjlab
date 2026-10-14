@@ -9,11 +9,44 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import project_paths  # noqa: F401
-from tracking_diagnostics import summarize
+from tracking_diagnostics import summarize, summarize_contact
 from src.tasks.tracking.mdp.rewards import motion_joint_position_error_exp, motion_swing_height_error_exp
+from src.tasks.tracking.mdp.foot_contact import foot_contact_state, contact_point_velocity
 
 
 class LegTests(unittest.TestCase):
+  def test_rolling_contact_is_stationary_even_when_ankle_moves(self):
+    actual = contact_point_velocity(torch.tensor([[[1., 0., 0.]]]),
+        torch.tensor([[[0., 10., 0.]]]), torch.tensor([[[0., 0., .1]]]), torch.zeros(1, 1, 3))
+    torch.testing.assert_close(actual, torch.zeros_like(actual))
+
+  def test_airborne_foot_is_not_penalized_and_sensors_are_in_named_order(self):
+    from src.tasks.tracking.mdp.rewards import motion_measured_contact_slip
+    def sensor(force):
+      return SimpleNamespace(data=SimpleNamespace(found=torch.ones(1, 1),
+          force=torch.tensor([[[force, 0., 0.]]]), pos=torch.zeros(1, 1, 3)))
+    class Scene(dict):
+      env_origins = torch.zeros(1, 3)
+    scene = Scene(left_foot_ground=sensor(.5), right_foot_ground=sensor(10.))
+    # Robot command order is deliberately reversed.
+    cmd = SimpleNamespace(cfg=SimpleNamespace(body_names=['right_ankle_roll_link','left_ankle_roll_link']),
+        body_pos_w=torch.zeros(1,2,3), body_lin_vel_w=torch.zeros(1,2,3),
+        robot_body_pos_w=torch.zeros(1,2,3), robot_body_ang_vel_w=torch.zeros(1,2,3),
+        robot_body_lin_vel_w=torch.tensor([[[2.,0.,0.],[100.,0.,0.]]]))
+    env = SimpleNamespace(scene=scene, command_manager=SimpleNamespace(get_term=lambda _:cmd))
+    state = foot_contact_state(env,cmd)
+    self.assertEqual(state['foot_contact'].tolist(), [[False,True]])
+    self.assertEqual(motion_measured_contact_slip(env,'motion').item(),4.)
+
+  def test_contact_diagnostics_separate_slip_from_reference_phase_mismatch(self):
+    d={'foot_contact':np.array([[1,0],[1,1]]),'reference_foot_planted':np.array([[1,1],[0,1]]),
+       'foot_contact_point_velocity_world':np.array([[[.1,0,0],[0,0,0]],[[.3,0,0],[.2,0,0]]]),
+       'foot_ankle_velocity_world':np.ones((2,2,3))}
+    result=summarize_contact(d)
+    self.assertAlmostEqual(result['contact_point_speed']['mean_m_s'],.2)
+    self.assertEqual(result['reference_planted_without_contact_samples'],1)
+    self.assertEqual(result['contact_point_speed_reference_unplanted']['samples'],1)
+
   def test_attenuation_is_visible_even_when_average_error_is_small(self):
     x = np.sin(np.linspace(0, 2*np.pi, 100))[:, None]
     data = {"reference_joint_pos": x, "policy_joint_pos": .5*x,
@@ -54,6 +87,18 @@ class LegTests(unittest.TestCase):
     for key, value in baseline.rewards.items():
       self.assertEqual(candidate.rewards[key], value)
     self.assertNotIn("motion_leg_joint_pos", baseline.rewards)
+
+  def test_balanced_profile_adds_arms_and_contact_without_changing_control(self):
+    from src.tasks.tracking.config.g1.env_cfgs import unitree_g1_leg_tracking_env_cfg, unitree_g1_balanced_leg_tracking_env_cfg
+    original, balanced = unitree_g1_leg_tracking_env_cfg(), unitree_g1_balanced_leg_tracking_env_cfg()
+    for attr in ('observations','actions','terminations','events','sim','decimation'):
+      self.assertEqual(getattr(original,attr),getattr(balanced,attr))
+    for name,value in original.rewards.items():
+      if name != 'motion_swing_height':
+        self.assertEqual(balanced.rewards[name],value)
+    self.assertEqual(balanced.rewards['motion_swing_height'].params['std'],.10)
+    self.assertEqual(len(balanced.rewards['motion_arm_joint_pos'].params['joint_names']),14)
+    self.assertLess(balanced.rewards['measured_foot_contact_slip'].weight,0)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,30 @@ import numpy as np
 LEG_PARTS = ("hip", "knee", "ankle")
 
 
+def summarize_contact(data):
+  contact = data["foot_contact"].astype(bool)
+  planted = data["reference_foot_planted"].astype(bool)
+  point_speed = np.linalg.norm(data["foot_contact_point_velocity_world"][..., :2], axis=-1)
+  ankle_speed = np.linalg.norm(data["foot_ankle_velocity_world"][..., :2], axis=-1)
+  def stats(mask, speed):
+    values = speed[mask]
+    return {"samples": int(mask.sum()), "mean_m_s": float(values.mean()) if values.size else None,
+            "p95_m_s": float(np.quantile(values, .95)) if values.size else None,
+            "max_m_s": float(values.max()) if values.size else None}
+  report = {"definition": "50 Hz strongest foot-ground contact per foot, force >1 N; point velocity = body linear velocity + angular velocity cross contact offset. Ground is stationary. Other contact points and between-sample peaks are not measured.",
+            "contact_point_speed": stats(contact, point_speed),
+            "ankle_speed_in_contact": stats(contact, ankle_speed),
+            "contact_point_speed_reference_planted": stats(contact & planted, point_speed),
+            "contact_point_speed_reference_unplanted": stats(contact & ~planted, point_speed),
+            "reference_planted_without_contact_samples": int((planted & ~contact).sum()),
+            "reference_planted_samples": int(planted.sum()), "total_foot_samples": int(contact.size), "feet": {}}
+  for i, name in enumerate(("left", "right")):
+    report["feet"][name] = {"contact_point_speed": stats(contact[:, i], point_speed[:, i]),
+        "reference_planted_without_contact_samples": int((planted[:, i] & ~contact[:, i]).sum()),
+        "reference_unplanted_in_contact_samples": int((~planted[:, i] & contact[:, i]).sum())}
+  return report
+
+
 def summarize(data):
   """Errors use every valid sample; amplitude gains are computed per environment."""
   ref, actual = data["reference_joint_pos"], data["policy_joint_pos"]
@@ -70,6 +94,8 @@ def summarize(data):
     report["actuator_saturation"] = {
       str(name): float(np.mean(force[:, i] >= .95 * limits[i]))
       for i, name in enumerate(data["actuator_names"]) if limited[i]}
+  if "foot_contact" in data:
+    report["measured_contact"] = summarize_contact(data)
   report["definitions"] = {
     "angles": "per-joint radians, not the norm of a joint vector",
     "high_excursion": "top 20% reference joint RMS excursion from reference median",
@@ -109,6 +135,9 @@ class TrackingDiagnostics:
       "reference_body_pos_world": array(cmd.body_pos_w - env.scene.env_origins[:, None, :]),
       "actuator_force": array(cmd.robot.data.actuator_force),
     }
+    from src.tasks.tracking.mdp.foot_contact import FOOT_SENSORS, foot_contact_state
+    if all(name in env.scene.sensors for name in FOOT_SENSORS):
+      values.update({k: array(v) for k, v in foot_contact_state(env, cmd).items()})
     for e in np.flatnonzero(valid):
       self.rows.append({"t": t, "env_id": e, **{k: v[e].copy() for k, v in values.items()}})
 
