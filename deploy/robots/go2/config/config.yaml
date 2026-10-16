@@ -19,13 +19,15 @@ FSM:
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
+    # Last pose = policy default pose in SDK order (FR, FL, RR, RL); see
+    # default_joint_pos and joint_ids_map in the policy's deploy.yaml.
     qs: [
       [],
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
-      [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
+      [0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8],
     ]
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
-    policy_dir: config/policy/velocity
+    policy_dir: config/policy/velocity/blind_v0
     

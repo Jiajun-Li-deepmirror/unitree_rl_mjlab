@@ -113,11 +113,30 @@ REGISTER_OBSERVATION(velocity_commands)
     std::vector<float> obs(3);
     auto & joystick = env->robot->data.joystick;
 
-    const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
+    const auto cmd_cfg = env->cfg["commands"]["base_velocity"];
+    const auto cfg = cmd_cfg["ranges"];
 
-    obs[0] = std::clamp(joystick->ly(), cfg["lin_vel_x"][0].as<float>(), cfg["lin_vel_x"][1].as<float>());
-    obs[1] = std::clamp(-joystick->lx(), cfg["lin_vel_y"][0].as<float>(), cfg["lin_vel_y"][1].as<float>());
-    obs[2] = std::clamp(-joystick->rx(), cfg["ang_vel_z"][0].as<float>(), cfg["ang_vel_z"][1].as<float>());
+    // Optional: map full stick deflection to the range limits (positive side to
+    // max, negative side to |min|) and zero small commands, matching training.
+    const bool scale_to_range = cmd_cfg["scale_to_range"].as<bool>(false);
+
+    const float stick[3] = {joystick->ly(), -joystick->lx(), -joystick->rx()};
+    const char* keys[3] = {"lin_vel_x", "lin_vel_y", "ang_vel_z"};
+    for(int i = 0; i < 3; ++i)
+    {
+        const float lo = cfg[keys[i]][0].as<float>();
+        const float hi = cfg[keys[i]][1].as<float>();
+        float v = stick[i];
+        if(scale_to_range) v = v >= 0.0f ? v * hi : v * -lo;
+        obs[i] = std::clamp(v, lo, hi);
+    }
+
+    if(scale_to_range)
+    {
+        const float zero_threshold = cmd_cfg["zero_threshold"].as<float>(0.1f);
+        const float norm = std::sqrt(obs[0] * obs[0] + obs[1] * obs[1] + obs[2] * obs[2]);
+        if(norm <= zero_threshold) std::fill(obs.begin(), obs.end(), 0.0f);
+    }
 
     return obs;
 }

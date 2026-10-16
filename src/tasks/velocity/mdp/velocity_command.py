@@ -15,6 +15,8 @@ from mjlab.utils.lab_api.math import (
   wrap_to_pi,
 )
 
+from .terrain_utils import spawned_on_sub_terrain, sub_terrain_column_mask
+
 if TYPE_CHECKING:
   import viser
 
@@ -280,3 +282,106 @@ class UniformVelocityCommandCfg(CommandTermCfg):
         "The velocity command has heading commands active (heading_command=True) but "
         "the `ranges.heading` parameter is set to None."
       )
+
+
+class TerrainAwareVelocityCommand(UniformVelocityCommand):
+  """Joystick-style velocity command with a separate distribution on stairs.
+
+  On non-stair terrain, each resample picks one mode: stand, pure vx, pure vy,
+  pure wz, or a combination of all three. On stair terrain (decided by the
+  env's spawn column), commands are forward-biased with a higher chance of
+  standing, so the policy learns to stop mid-flight.
+  """
+
+  cfg: TerrainAwareVelocityCommandCfg
+
+  def __init__(self, cfg: TerrainAwareVelocityCommandCfg, env: ManagerBasedRlEnv):
+    if cfg.heading_command:
+      raise ValueError("TerrainAwareVelocityCommand does not support heading commands.")
+    super().__init__(cfg, env)
+    self._stair_columns = sub_terrain_column_mask(env, cfg.stair_terrain_names)
+    # Commanded planar distance accumulated over the episode (for curricula).
+    self.cmd_distance = torch.zeros(self.num_envs, device=self.device)
+
+  @property
+  def is_stair_env(self) -> torch.Tensor:
+    return spawned_on_sub_terrain(
+      self._env, self.cfg.stair_terrain_names, self._stair_columns
+    )
+
+  def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    extras = super().reset(env_ids)
+    self.cmd_distance[env_ids] = 0.0
+    return extras
+
+  def _update_metrics(self) -> None:
+    super()._update_metrics()
+    self.cmd_distance += torch.norm(self.vel_command_b[:, :2], dim=1) * self._env.step_dt
+
+  def _resample(self, env_ids: torch.Tensor) -> None:
+    super()._resample(env_ids)
+    stair_env_ids = env_ids[self.is_stair_env[env_ids]]
+    if len(stair_env_ids) > 0:
+      self.time_left[stair_env_ids] = self.time_left[stair_env_ids].uniform_(
+        *self.cfg.stair_resampling_time_range
+      )
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    n = len(env_ids)
+    if n == 0:
+      return
+
+    def uniform(bounds: tuple[float, float]) -> torch.Tensor:
+      return torch.empty(n, device=self.device).uniform_(*bounds)
+
+    # Flat terrain: 0=stand, 1=vx only, 2=vy only, 3=wz only, 4=combined.
+    ranges = self.cfg.ranges
+    mode_probs = torch.tensor(self.cfg.flat_mode_probs, device=self.device)
+    mode = torch.multinomial(mode_probs, n, replacement=True)
+    combined = mode == 4
+    flat_cmd = torch.stack(
+      [
+        torch.where((mode == 1) | combined, uniform(ranges.lin_vel_x), 0.0),
+        torch.where((mode == 2) | combined, uniform(ranges.lin_vel_y), 0.0),
+        torch.where((mode == 3) | combined, uniform(ranges.ang_vel_z), 0.0),
+      ],
+      dim=1,
+    )
+
+    # Stair terrain: forward-biased, with extra standing.
+    stair_ranges = self.cfg.stair_ranges
+    stair_cmd = torch.stack(
+      [
+        uniform(stair_ranges.lin_vel_x),
+        uniform(stair_ranges.lin_vel_y),
+        uniform(stair_ranges.ang_vel_z),
+      ],
+      dim=1,
+    )
+    stair_stand = uniform((0.0, 1.0)) < self.cfg.stair_standing_prob
+    stair_cmd[stair_stand] = 0.0
+
+    is_stair = self.is_stair_env[env_ids].unsqueeze(1)
+    cmd = torch.where(is_stair, stair_cmd, flat_cmd)
+    # Treat tiny commands as zero; matches the deploy-side stick deadzone.
+    cmd *= (torch.norm(cmd, dim=1) > self.cfg.zero_threshold).unsqueeze(1)
+    self.vel_command_b[env_ids] = cmd
+
+
+@dataclass(kw_only=True)
+class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
+  stair_terrain_names: tuple[str, ...] = ()
+  """Sub-terrain names (keys of the terrain generator) treated as stairs."""
+  stair_ranges: UniformVelocityCommandCfg.Ranges = field(
+    default_factory=lambda: UniformVelocityCommandCfg.Ranges(
+      lin_vel_x=(0.2, 0.8), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-0.3, 0.3)
+    )
+  )
+  flat_mode_probs: tuple[float, float, float, float, float] = (0.2, 0.15, 0.15, 0.15, 0.35)
+  """Probabilities of (stand, vx only, vy only, wz only, combined) on flat terrain."""
+  stair_standing_prob: float = 0.25
+  stair_resampling_time_range: tuple[float, float] = (1.5, 4.0)
+  zero_threshold: float = 0.1
+
+  def build(self, env: ManagerBasedRlEnv) -> TerrainAwareVelocityCommand:
+    return TerrainAwareVelocityCommand(self, env)

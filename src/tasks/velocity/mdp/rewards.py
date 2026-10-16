@@ -7,7 +7,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -25,10 +25,12 @@ def track_linear_velocity(
   std: float,
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  z_weight: float = 2.0,
 ) -> torch.Tensor:
   """Reward for tracking the commanded base linear velocity.
 
-  The commanded z velocity is assumed to be zero.
+  The commanded z velocity is assumed to be zero. Set `z_weight` to 0 on
+  terrain where vertical base motion is expected (e.g. stairs).
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -36,7 +38,7 @@ def track_linear_velocity(
   actual = asset.data.root_link_lin_vel_b
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
   z_error = torch.square(actual[:, 2])
-  lin_vel_error = xy_error + (2 * z_error)
+  lin_vel_error = xy_error + (z_weight * z_error)
   return torch.exp(-lin_vel_error / std**2)
 
 
@@ -426,3 +428,267 @@ def stand_still(
             reward *= scale
     return reward
 
+
+##
+# Terrain-aware terms for blind locomotion.
+##
+
+
+def uneven_terrain_mask(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  radius: float = 0.45,
+  threshold: float = 0.05,
+) -> torch.Tensor:
+  """Per-env bool: terrain height span within `radius` of the base exceeds `threshold`.
+
+  Uses the (privileged) height-scan raycast, so it reflects the terrain the robot
+  is currently on rather than the column it was spawned in.
+  """
+  sensor: RayCastSensor = env.scene[sensor_name]
+  data = sensor.data
+  hit_z = data.hit_pos_w[..., 2]
+  planar_dist = torch.norm(data.hit_pos_w[..., :2] - data.pos_w[:, None, :2], dim=-1)
+  near = (planar_dist <= radius) & (data.distances >= 0.0)
+  z_max = torch.where(near, hit_z, -torch.inf).amax(dim=1)
+  z_min = torch.where(near, hit_z, torch.inf).amin(dim=1)
+  span = torch.where(near.any(dim=1), z_max - z_min, 0.0)
+  return span > threshold
+
+
+def _zero_command_mask(
+  env: ManagerBasedRlEnv, command_name: str, command_threshold: float
+) -> torch.Tensor:
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  total_command = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+  return total_command <= command_threshold
+
+
+def _standing_scale(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float,
+  calm_std: float,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """1 while commanded to stand and the base is calm, fading out while the base moves.
+
+  The fade lets the robot take recovery steps after a push without being
+  penalized by the standing terms.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  lin_vel_xy = asset.data.root_link_lin_vel_b[:, :2]
+  ang_vel_z = asset.data.root_link_ang_vel_b[:, 2]
+  base_motion = torch.sum(torch.square(lin_vel_xy), dim=1) + torch.square(ang_vel_z)
+  calm = torch.exp(-base_motion / calm_std)
+  return _zero_command_mask(env, command_name, command_threshold).float() * calm
+
+
+def stand_still_even(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.1,
+  calm_std: float = 0.1,
+  uneven_radius: float = 0.45,
+  uneven_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation from the default pose while standing on even ground."""
+  asset: Entity = env.scene[asset_cfg.name]
+  diff = (
+    asset.data.joint_pos[:, asset_cfg.joint_ids]
+    - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  )
+  cost = torch.sum(torch.square(diff), dim=1)
+  scale = _standing_scale(env, command_name, command_threshold, calm_std, asset_cfg)
+  even = ~uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+  return cost * scale * even.float()
+
+
+def standing_joint_vel(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  calm_std: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize joint motion while commanded to stand."""
+  asset: Entity = env.scene[asset_cfg.name]
+  cost = torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+  return cost * _standing_scale(env, command_name, command_threshold, calm_std, asset_cfg)
+
+
+def standing_feet_contact(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.1,
+  calm_std: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward the fraction of feet on the ground while commanded to stand."""
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  assert contact_sensor.data.found is not None
+  contact_ratio = torch.mean((contact_sensor.data.found > 0).float(), dim=1)
+  return contact_ratio * _standing_scale(
+    env, command_name, command_threshold, calm_std, asset_cfg
+  )
+
+
+def body_orientation_terrain_aware(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  uneven_scale: float = 0.3,
+  uneven_radius: float = 0.45,
+  uneven_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """body_orientation_l2, scaled down on uneven terrain where pitching is expected."""
+  cost = body_orientation_l2(env, asset_cfg)
+  uneven = uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+  return cost * torch.where(uneven, uneven_scale, 1.0)
+
+
+def lin_vel_z_even(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  uneven_radius: float = 0.45,
+  uneven_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize vertical base velocity on even ground only."""
+  asset: Entity = env.scene[asset_cfg.name]
+  cost = torch.square(asset.data.root_link_lin_vel_b[:, 2])
+  even = ~uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+  return cost * even.float()
+
+
+def feet_stumble(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  ratio: float = 2.0,
+  min_force: float = 5.0,
+) -> torch.Tensor:
+  """Count feet pushing mostly horizontally (e.g. toes hitting a stair riser).
+
+  Requires a world-frame force (reduce="netforce" or global_frame=True).
+  """
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  force = contact_sensor.data.force
+  assert force is not None
+  force_xy = torch.norm(force[..., :2], dim=-1)
+  force_z = torch.abs(force[..., 2])
+  stumble = force_xy > torch.clamp(ratio * force_z, min=min_force)
+  return torch.sum(stumble.float(), dim=1)
+
+
+class feet_swing_clearance:
+  """Penalize swing clearance error, measured relative to the step's own footholds.
+
+  At touchdown, clearance = apex height - max(liftoff height, touchdown height),
+  so stepping up or down stairs is judged by how far the foot cleared the higher
+  of the two footholds rather than by its world-frame height.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    num_feet = len(cfg.params["asset_cfg"].site_names)
+    shape = (env.num_envs, num_feet)
+    self.peak_z = torch.zeros(shape, device=env.device)
+    self.liftoff_z = torch.zeros(shape, device=env.device)
+    self.prev_contact = torch.ones(shape, dtype=torch.bool, device=env.device)
+    # A landing only counts if its liftoff was observed in this episode.
+    self.has_liftoff = torch.zeros(shape, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.prev_contact[env_ids] = True
+    self.has_liftoff[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    target_height: float,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    assert contact_sensor.data.found is not None
+    foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+    in_contact = contact_sensor.data.found > 0
+
+    liftoff = self.prev_contact & ~in_contact
+    self.liftoff_z = torch.where(liftoff, foot_z, self.liftoff_z)
+    self.peak_z = torch.where(liftoff, foot_z, self.peak_z)
+    self.has_liftoff |= liftoff
+    self.peak_z = torch.where(~in_contact, torch.maximum(self.peak_z, foot_z), self.peak_z)
+
+    landed = ~self.prev_contact & in_contact & self.has_liftoff
+    clearance = self.peak_z - torch.maximum(self.liftoff_z, foot_z)
+    error = clearance / target_height - 1.0
+    active = ~_zero_command_mask(env, command_name, command_threshold)
+    cost = torch.sum(torch.square(error) * landed.float(), dim=1) * active.float()
+
+    num_landings = torch.sum(landed.float())
+    env.extras["log"]["Metrics/swing_clearance_mean"] = torch.sum(
+      clearance * landed.float()
+    ) / torch.clamp(num_landings, min=1)
+
+    self.has_liftoff &= ~landed
+    self.prev_contact = in_contact
+    return cost
+
+
+class variable_posture_terrain_aware(variable_posture):
+  """variable_posture that uses the walking tolerance when standing on uneven ground.
+
+  Standing on stairs needs different joint angles per leg, so the tight
+  standing tolerance only applies on even ground.
+  """
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    std_standing,
+    std_walking,
+    std_running,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    sensor_name: str,
+    walking_threshold: float = 0.5,
+    running_threshold: float = 1.5,
+    uneven_radius: float = 0.45,
+    uneven_threshold: float = 0.05,
+  ) -> torch.Tensor:
+    del std_standing, std_walking, std_running  # Unused.
+
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+
+    total_speed = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])
+    uneven = uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+
+    standing_mask = ((total_speed < walking_threshold) & ~uneven).float()
+    walking_mask = (
+      ((total_speed >= walking_threshold) & (total_speed < running_threshold))
+      | ((total_speed < walking_threshold) & uneven)
+    ).float()
+    running_mask = (total_speed >= running_threshold).float()
+
+    std = (
+      self.std_standing * standing_mask.unsqueeze(1)
+      + self.std_walking * walking_mask.unsqueeze(1)
+      + self.std_running * running_mask.unsqueeze(1)
+    )
+
+    current_joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    desired_joint_pos = self.default_joint_pos[:, asset_cfg.joint_ids]
+    error_squared = torch.square(current_joint_pos - desired_joint_pos)
+
+    return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
