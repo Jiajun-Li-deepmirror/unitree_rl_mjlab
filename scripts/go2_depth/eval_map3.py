@@ -227,6 +227,21 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     for name, (x0, x1) in (("rail_fill_well", (-9.86, -9.30)), ("rail_fill_slot", (-8.34, -8.12))):
       lo = np.array([x0, 0.40, -0.2]); hi = np.array([x1, 6.50, 19.0])
       boxes = boxes + [(name, (hi - lo) / 2, (hi + lo) / 2)]
+  if args.policy == "teacher":
+    # map3 rails/walls are up to 19 m tall, above the teacher's scan origins
+    # (8 m over the robot), so every ray at a wall would start inside it and
+    # pass through: no walls at all. Cut them to just above the scenario's
+    # height range, as in training where wall tops are below the origins.
+    clipped = []
+    for n, size, pos in boxes:
+      if n.startswith("rail"):
+        lo_z, hi_z = pos[2] - size[2], min(pos[2] + size[2], scenario.keep_below + 1.5)
+        if hi_z <= lo_z:
+          continue
+        size = np.array([size[0], size[1], 0.5 * (hi_z - lo_z)])
+        pos = np.array([pos[0], pos[1], 0.5 * (hi_z + lo_z)])
+      clipped.append((n, size, pos))
+    boxes = clipped
   env = ManagerBasedRlEnv(cfg=make_env_cfg(task, scenario, boxes, args.num_envs), device="cuda:0")
   obs, _ = env.reset()
   obs = TensorDict(obs, batch_size=[env.num_envs])
