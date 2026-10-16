@@ -53,3 +53,27 @@ def unitree_go2_blind_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunner
   cfg.logger = "tensorboard"
   cfg.max_iterations = max_iterations
   return cfg
+
+
+def unitree_go2_depth_teacher_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
+  """PPO for the depth task's privileged teacher (go2-blind + height scan)."""
+  cfg = unitree_go2_blind_ppo_runner_cfg(max_iterations)
+  cfg.experiment_name = "go2_depth_teacher"
+  return cfg
+
+
+def unitree_go2_depth_student_runner_cfg():
+  """DAgger distillation of the depth student from the teacher."""
+  from src.tasks.velocity.rl.distillation import DepthDistillationRunnerCfg
+
+  return DepthDistillationRunnerCfg(
+    experiment_name="go2_depth_student",
+    logger="tensorboard",
+    num_steps_per_env=24,
+    max_iterations=5000,
+    save_interval=100,
+    obs_groups={
+      "student": ("proprio", "proprio_history", "depth"),
+      "teacher": ("actor",),
+    },
+  )

@@ -24,12 +24,18 @@ def reset_root_state_terrain_aware(
   stair_terrain_names: tuple[str, ...],
   stair_yaw_noise: float = math.radians(15.0),
   velocity_range: dict[str, tuple[float, float]] | None = None,
+  fixed_yaw_terrain_names: tuple[str, ...] = (),
+  narrow_terrain_names: tuple[str, ...] = (),
+  narrow_xy_range: float = 0.1,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   """Like reset_root_state_uniform, but faces stair envs toward a staircase side.
 
   Pyramid stairs are axis-aligned, so stair envs get yaw = k * 90 deg plus
-  noise; other envs use `pose_range["yaw"]`.
+  noise; other envs use `pose_range["yaw"]`. Envs on `fixed_yaw_terrain_names`
+  get yaw 0 plus noise (single-direction stairwells). Envs on
+  `narrow_terrain_names` (walled corridors) get x/y noise of only
+  +-`narrow_xy_range`.
   """
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
@@ -50,7 +56,17 @@ def reset_root_state_terrain_aware(
   stair_yaw = side * (math.pi / 2) + sample_uniform(
     -stair_yaw_noise, stair_yaw_noise, (len(env_ids),), device=env.device
   )
+  if fixed_yaw_terrain_names:
+    fixed_yaw = spawned_on_sub_terrain(env, fixed_yaw_terrain_names)[env_ids.long()]
+    stair_yaw = torch.where(fixed_yaw, stair_yaw - side * (math.pi / 2), stair_yaw)
   pose_samples[:, 5] = torch.where(on_stairs, stair_yaw, pose_samples[:, 5])
+  if narrow_terrain_names:
+    narrow = spawned_on_sub_terrain(env, narrow_terrain_names)[env_ids.long()]
+    pose_samples[:, 0:2] = torch.where(
+      narrow.unsqueeze(1),
+      pose_samples[:, 0:2].clamp(-narrow_xy_range, narrow_xy_range),
+      pose_samples[:, 0:2],
+    )
 
   positions = root_states[:, 0:3] + pose_samples[:, 0:3] + env.scene.env_origins[env_ids]
   orientations_delta = quat_from_euler_xyz(

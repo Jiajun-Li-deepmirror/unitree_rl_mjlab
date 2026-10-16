@@ -439,17 +439,21 @@ def uneven_terrain_mask(
   sensor_name: str,
   radius: float = 0.45,
   threshold: float = 0.05,
+  max_height_above_base: float = 0.5,
 ) -> torch.Tensor:
   """Per-env bool: terrain height span within `radius` of the base exceeds `threshold`.
 
   Uses the (privileged) height-scan raycast, so it reflects the terrain the robot
-  is currently on rather than the column it was spawned in.
+  is currently on rather than the column it was spawned in. Hits more than
+  `max_height_above_base` above the base (wall tops seen by an elevated scan)
+  are ignored: a wall next to flat ground is not uneven ground.
   """
   sensor: RayCastSensor = env.scene[sensor_name]
   data = sensor.data
   hit_z = data.hit_pos_w[..., 2]
   planar_dist = torch.norm(data.hit_pos_w[..., :2] - data.pos_w[:, None, :2], dim=-1)
-  near = (planar_dist <= radius) & (data.distances >= 0.0)
+  below = hit_z <= data.pos_w[:, None, 2] + max_height_above_base
+  near = (planar_dist <= radius) & (data.distances >= 0.0) & below
   z_max = torch.where(near, hit_z, -torch.inf).amax(dim=1)
   z_min = torch.where(near, hit_z, torch.inf).amin(dim=1)
   span = torch.where(near.any(dim=1), z_max - z_min, 0.0)
@@ -615,7 +619,10 @@ class feet_swing_clearance:
     command_name: str,
     command_threshold: float,
     asset_cfg: SceneEntityCfg,
+    scan_sensor_name: str | None = None,
   ) -> torch.Tensor:
+    """With `scan_sensor_name`, only too-low swings are penalized on uneven
+    ground (lifting higher over stairs is fine)."""
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
     assert contact_sensor.data.found is not None
@@ -631,6 +638,9 @@ class feet_swing_clearance:
     landed = ~self.prev_contact & in_contact & self.has_liftoff
     clearance = self.peak_z - torch.maximum(self.liftoff_z, foot_z)
     error = clearance / target_height - 1.0
+    if scan_sensor_name is not None:
+      uneven = uneven_terrain_mask(env, scan_sensor_name).unsqueeze(1)
+      error = torch.where(uneven, torch.clamp(error, max=0.0), error)
     active = ~_zero_command_mask(env, command_name, command_threshold)
     cost = torch.sum(torch.square(error) * landed.float(), dim=1) * active.float()
 
@@ -692,3 +702,141 @@ class variable_posture_terrain_aware(variable_posture):
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+
+
+
+class feet_terrain_clearance:
+  """Swing feet must clear step edges just ahead of them.
+
+  For each swing foot, scan points within `lookahead` ahead along the foot's
+  horizontal motion (and `half_width` sideways, nothing behind) are checked. If their height
+  span exceeds `edge_threshold` (a step edge), the sole must be `margin` above
+  the highest of them; the squared shortfall is the cost. Hits more than 0.5 m
+  above the base (wall tops) are ignored.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg, env
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    del env_ids
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    scan_sensor_name: str,
+    asset_cfg: SceneEntityCfg,
+    lookahead: float = 0.12,
+    half_width: float = 0.05,
+    edge_threshold: float = 0.04,
+    margin: float = 0.05,
+    foot_radius: float = 0.022,
+    min_speed: float = 0.05,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact: ContactSensor = env.scene[sensor_name]
+    scan: RayCastSensor = env.scene[scan_sensor_name]
+    assert contact.data.found is not None
+    swing = contact.data.found == 0  # [B, F]
+    foot_pos = asset.data.site_pos_w[:, asset_cfg.site_ids]  # [B, F, 3]
+    foot_vel = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, F, 2]
+    # Direction of travel; slow feet use the base heading.
+    heading = asset.data.heading_w
+    fwd = torch.stack([torch.cos(heading), torch.sin(heading)], dim=-1).unsqueeze(1)
+    speed = torch.norm(foot_vel, dim=-1, keepdim=True)
+    direction = torch.where(speed > min_speed, foot_vel / speed.clamp(min=1e-6), fwd)
+
+    hits = scan.data.hit_pos_w  # [B, R, 3]
+    valid = (scan.data.distances >= 0.0) & (
+      hits[..., 2] <= scan.data.pos_w[:, None, 2] + 0.5
+    )
+    rel = hits[:, None, :, :2] - foot_pos[:, :, None, :2]  # [B, F, R, 2]
+    along = (rel * direction[:, :, None, :]).sum(-1)
+    side = torch.abs(rel[..., 0] * direction[:, :, None, 1] - rel[..., 1] * direction[:, :, None, 0])
+    window = valid[:, None, :] & (along >= 0.0) & (along <= lookahead) & (side <= half_width)
+    z = hits[:, None, :, 2].expand_as(along)
+    z_max = torch.where(window, z, -torch.inf).amax(dim=-1)
+    z_min = torch.where(window, z, torch.inf).amin(dim=-1)
+    edge = window.any(dim=-1) & ((z_max - z_min) > edge_threshold)
+    sole = foot_pos[..., 2] - foot_radius
+    short = torch.clamp(z_max + margin - sole, min=0.0)
+    cost = torch.where(edge & swing, torch.square(short), 0.0)
+    return cost.sum(dim=1)
+
+
+class feet_foothold_height_gain:
+  """Reward new height records of each foot's stable footholds this episode.
+
+  A foothold is stable when the contact force is mostly vertical. The first
+  stable foothold after reset sets the baseline without reward; afterwards a
+  foothold more than `min_gain` above the foot's record is rewarded by the
+  gain (as a rate, gain / step_dt, so the weight is reward per meter). Hopping
+  on flat ground or stepping down and back up earns nothing. Only active with
+  a non-zero command.
+
+  With `descend=True` the records are lows instead, rewarding progress down
+  stairs the same way (nothing on flat ground or when spawned at the bottom).
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    num_feet = len(cfg.params["asset_cfg"].site_names)
+    shape = (env.num_envs, num_feet)
+    self.best_z = torch.zeros(shape, device=env.device)
+    self.has_best = torch.zeros(shape, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.has_best[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+    vertical_ratio: float = 2.0,
+    min_force: float = 10.0,
+    min_gain: float = 0.02,
+    descend: bool = False,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact: ContactSensor = env.scene[sensor_name]
+    force = contact.data.force
+    assert contact.data.found is not None and force is not None
+    force_z = force[..., 2].abs()
+    stable = (
+      (contact.data.found > 0)
+      & (force_z > min_force)
+      & (force_z > vertical_ratio * torch.norm(force[..., :2], dim=-1))
+    )
+    foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+    if descend:
+      foot_z = -foot_z
+
+    first = stable & ~self.has_best
+    self.best_z = torch.where(first, foot_z, self.best_z)
+    self.has_best |= first
+    gain = torch.where(stable & ~first, foot_z - self.best_z, 0.0)
+    record = gain > min_gain
+    self.best_z = torch.where(record, foot_z, self.best_z)
+    active = ~_zero_command_mask(env, command_name, command_threshold)
+    reward = torch.where(record, gain, 0.0).sum(dim=1) * active.float()
+    return reward / env.step_dt
+
+
+def wall_proximity(
+  env: ManagerBasedRlEnv, sensor_name: str, safe_distance: float = 0.35
+) -> torch.Tensor:
+  """Squared intrusion into `safe_distance` of side walls, summed over rays.
+
+  Expects a level, horizontal ray fan to the sides of the base (see
+  HorizontalFanPatternCfg), so the policy keeps itself centered in a corridor
+  instead of relying on the operator to steer it back.
+  """
+  sensor: RayCastSensor = env.scene[sensor_name]
+  d = sensor.data.distances
+  intrusion = torch.where(d >= 0.0, torch.clamp(safe_distance - d, min=0.0), 0.0)
+  return torch.square(intrusion).sum(dim=1)
