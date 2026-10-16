@@ -64,7 +64,12 @@ class Scenario:
 
 SCENARIOS = [
   Scenario("L0_up", (-10.34, 5.75, 0.431), -90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:2.0", 3.3),
-  Scenario("L0_down", (-10.34, 1.05, 2.659), 90.0, [(1.0, 0, 0, 0), (9.0, 0.4, 0, 0)], "descend:2.0", 3.7),
+  # The 3.65 m flight takes ~9.1 s at 0.4 m/s; then stop on the landing like an
+  # operator would (the landing ends in a wall ~1.3 m further).
+  Scenario(
+    "L0_down", (-10.34, 1.05, 2.659), 90.0,
+    [(1.0, 0, 0, 0), (10.0, 0.4, 0, 0), (2.0, 0, 0, 0)], "descend:2.0", 3.7,
+  ),
   Scenario("R1_up", (-8.80, 1.05, 2.659), 90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:1.7", 4.8),
   Scenario("R2b_down", (-8.75, 5.70, 11.802), -90.0, [(1.0, 0, 0, 0), (7.0, 0.4, 0, 0)], "descend:1.0", 12.8),
   Scenario(
