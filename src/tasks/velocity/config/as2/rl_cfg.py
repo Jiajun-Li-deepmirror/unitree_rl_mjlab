@@ -6,6 +6,9 @@ from mjlab.rl import (
   RslRlPpoAlgorithmCfg,
 )
 
+from src.tasks.velocity.config.as2.depth_env_cfgs import AS2_SPEC
+from src.tasks.velocity.config.legged.rl_cfg import depth_student_runner_cfg
+
 
 def unitree_as2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree As2 velocity task."""
@@ -44,3 +47,17 @@ def unitree_as2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=10001,
   )
+
+
+def unitree_as2_depth_teacher_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
+  """PPO for the depth task's privileged teacher (As2 counterpart of Go2's)."""
+  cfg = unitree_as2_ppo_runner_cfg()
+  cfg.experiment_name = "as2_depth_teacher"
+  cfg.logger = "tensorboard"
+  cfg.max_iterations = max_iterations
+  return cfg
+
+
+def unitree_as2_depth_student_runner_cfg():
+  """DAgger distillation of the As2 depth student from its teacher."""
+  return depth_student_runner_cfg("as2", AS2_SPEC.onnx_contract)

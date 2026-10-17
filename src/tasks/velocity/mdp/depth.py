@@ -54,13 +54,19 @@ FRONT_DEPTH_CAMERA = "front_depth"
 """Camera name inside the robot entity (``robot/front_depth`` in the scene)."""
 
 
-def front_depth_camera_spec_cfg() -> CameraCfg:
-  """The camera itself, added to the robot entity so DR can address it."""
+def front_depth_camera_spec_cfg(
+  pos: tuple[float, float, float] = DEPTH_CAMERA_POS,
+  quat: tuple[float, float, float, float] = DEPTH_CAMERA_QUAT,
+  body: str = "base_link",
+) -> CameraCfg:
+  """The camera itself, added to the robot entity so DR can address it.
+
+  Defaults are the Go2 mount of the tinynav PIE contract."""
   return CameraCfg(
     name=FRONT_DEPTH_CAMERA,
-    body="base_link",
-    pos=DEPTH_CAMERA_POS,
-    quat=DEPTH_CAMERA_QUAT,
+    body=body,
+    pos=pos,
+    quat=quat,
     fovy=DEPTH_FOVY_DEG,
   )
 

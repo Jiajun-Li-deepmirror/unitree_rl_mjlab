@@ -25,6 +25,7 @@ from mjlab.rl import RslRlBaseRunnerCfg, RslRlModelCfg
 from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
 
 ONNX_CONTRACT = "go2_depth_v2"
+"""Default `contract` metadata (tinynav-sim's Go2 student interface)."""
 PROPRIO_GROUP = "proprio"
 PROPRIO_HISTORY_GROUP = "proprio_history"
 DEPTH_GROUP = "depth"
@@ -271,6 +272,8 @@ class DepthDistillationRunnerCfg(RslRlBaseRunnerCfg):
   learning_rate_final: float | None = None
   """If set, decay the learning rate log-linearly from algorithm.learning_rate
   to this over the run."""
+  onnx_contract: str = ONNX_CONTRACT
+  """`contract` metadata of the exported ONNX."""
   student: RslRlModelCfg = field(
     default_factory=lambda: RslRlModelCfg(
       hidden_dims=(512, 256, 128),
@@ -300,6 +303,7 @@ class DepthDistillationRunner(DistillationRunner):
   ) -> None:
     teacher_checkpoint = train_cfg.pop("teacher_checkpoint", "")
     student_checkpoint = train_cfg.pop("student_checkpoint", "")
+    self.onnx_contract = train_cfg.pop("onnx_contract", ONNX_CONTRACT)
     self.learning_rate_final = train_cfg.pop("learning_rate_final", None)
     for key in ("student", "teacher"):
       for opt in ("cnn_cfg", "distribution_cfg"):
@@ -366,5 +370,5 @@ class DepthDistillationRunner(DistillationRunner):
     env = self.env.unwrapped
     metadata = get_base_metadata(env, "local")
     metadata["observation_names"] = env.observation_manager.active_terms[PROPRIO_GROUP]
-    metadata["contract"] = ONNX_CONTRACT
+    metadata["contract"] = self.onnx_contract
     attach_metadata_to_onnx(onnx_path, metadata)

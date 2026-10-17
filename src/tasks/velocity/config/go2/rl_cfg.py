@@ -6,6 +6,8 @@ from mjlab.rl import (
   RslRlPpoAlgorithmCfg,
 )
 
+from src.tasks.velocity.config.legged.rl_cfg import depth_student_runner_cfg
+
 
 def unitree_go2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree Go2 velocity task."""
@@ -64,16 +66,4 @@ def unitree_go2_depth_teacher_ppo_runner_cfg(max_iterations: int) -> RslRlOnPoli
 
 def unitree_go2_depth_student_runner_cfg():
   """DAgger distillation of the depth student from the teacher."""
-  from src.tasks.velocity.rl.distillation import DepthDistillationRunnerCfg
-
-  return DepthDistillationRunnerCfg(
-    experiment_name="go2_depth_student",
-    logger="tensorboard",
-    num_steps_per_env=24,
-    max_iterations=5000,
-    save_interval=100,
-    obs_groups={
-      "student": ("proprio", "proprio_history", "depth"),
-      "teacher": ("actor",),
-    },
-  )
+  return depth_student_runner_cfg("go2", "go2_depth_v2")
