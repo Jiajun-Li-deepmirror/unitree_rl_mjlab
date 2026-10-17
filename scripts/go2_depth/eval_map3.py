@@ -213,7 +213,11 @@ def load_policy(kind: str, checkpoint: str, obs: TensorDict, device: str):
     model = DepthStudentModel(
       obs, {"student": ["proprio", "proprio_history", "depth"]}, "student", 12
     )
-  model.load_state_dict(state)
+  # The student's terrain reconstruction head is training-only; checkpoints
+  # from before it existed load without it.
+  missing, unexpected = model.load_state_dict(state, strict=False)
+  if unexpected or any(not k.startswith("aux_head.") for k in missing):
+    raise RuntimeError(f"Checkpoint mismatch: {missing=} {unexpected=}")
   return model.to(device).eval()
 
 

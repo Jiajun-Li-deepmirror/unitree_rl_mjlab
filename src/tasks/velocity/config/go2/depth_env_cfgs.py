@@ -77,6 +77,8 @@ STEP_HEIGHT_RANGE = (0.05, 0.20)
 FOOTHOLD_OVERSPEED_RANGE = (0.05, 0.25)
 
 DEPTH_SENSOR_NAME = "front_depth"
+TERRAIN_TARGET_GROUP = "terrain_target"
+TERRAIN_TARGET_CLIP = (-0.5, 1.5)
 
 SCAN_Z_OFFSET = 8.0
 FOOT_SCAN_NAME = "foot_scan"
@@ -358,6 +360,19 @@ def unitree_go2_depth_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
     terms={
       "depth": ObservationTermCfg(func=mdp.depth_history, params=depth_params),
     },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+  # Training target for the student's terrain reconstruction head (not a
+  # policy input): the teacher's height scan without noise, in meters, with
+  # walls clipped closer so they don't dominate the loss over the steps.
+  terrain_target = deepcopy(cfg.observations["critic"].terms["height_scan"])
+  terrain_target.noise = None
+  terrain_target.history_length = 0
+  terrain_target.clip = TERRAIN_TARGET_CLIP
+  terrain_target.scale = None
+  cfg.observations[TERRAIN_TARGET_GROUP] = ObservationGroupCfg(
+    terms={"height_scan": terrain_target},
     concatenate_terms=True,
     enable_corruption=False,
   )

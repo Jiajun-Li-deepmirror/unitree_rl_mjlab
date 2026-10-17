@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
+from rsl_rl.algorithms import Distillation
 from rsl_rl.models import MLPModel
 from rsl_rl.modules import RNN, HiddenState
 from rsl_rl.runners import DistillationRunner
@@ -27,6 +28,7 @@ ONNX_CONTRACT = "go2_depth_v2"
 PROPRIO_GROUP = "proprio"
 PROPRIO_HISTORY_GROUP = "proprio_history"
 DEPTH_GROUP = "depth"
+TERRAIN_TARGET_GROUP = "terrain_target"
 
 
 def _depth_encoder(channels: int, height: int, width: int, latent_dim: int) -> nn.Module:
@@ -49,6 +51,11 @@ class DepthStudentModel(MLPModel):
 
   1D observation groups are concatenated in the order listed in the
   observation set; the single 4D group (B, C, H, W) is the depth history.
+
+  When the observations carry a `terrain_target` group (training only), an
+  auxiliary head reconstructs it from the GRU state. The camera cannot see
+  under the body, so this makes the memory keep the steps the feet are on.
+  The head is not part of the exported policy.
   """
 
   is_recurrent: bool = True
@@ -81,6 +88,12 @@ class DepthStudentModel(MLPModel):
     self.depth_shape = (channels, height, width)
     self.depth_encoder = _depth_encoder(channels, height, width, depth_latent_dim)
     self.rnn = RNN(self.obs_dim + depth_latent_dim, rnn_hidden_dim, 1, "gru")
+    self.aux_head = None
+    if TERRAIN_TARGET_GROUP in obs.keys():
+      self.aux_head = nn.Sequential(
+        nn.Linear(rnn_hidden_dim, 256), nn.ELU(), nn.Linear(256, obs[TERRAIN_TARGET_GROUP].shape[-1])
+      )
+    self.last_latent: torch.Tensor | None = None
 
   def _get_obs_dim(
     self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str
@@ -115,7 +128,8 @@ class DepthStudentModel(MLPModel):
     depth_latent = self.depth_encoder(depth.reshape(-1, *self.depth_shape))
     depth_latent = depth_latent.reshape(*lead, -1)
     latent = torch.cat([latent_1d, depth_latent], dim=-1)
-    return self.rnn(latent, masks, hidden_state).squeeze(0)
+    self.last_latent = self.rnn(latent, masks, hidden_state).squeeze(0)
+    return self.last_latent
 
   def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
     self.rnn.reset(dones, hidden_state)
@@ -185,6 +199,53 @@ class _OnnxDepthStudent(nn.Module):
     )
 
 
+class DepthDistillation(Distillation):
+  """rsl_rl Distillation plus the student's terrain reconstruction loss."""
+
+  def __init__(self, *args, aux_loss_coef: float = 0.0, **kwargs) -> None:
+    super().__init__(*args, **kwargs)
+    self.aux_loss_coef = aux_loss_coef
+
+  def update(self) -> dict[str, float]:
+    if not self.aux_loss_coef or getattr(self.student, "aux_head", None) is None:
+      return super().update()
+    # Same as Distillation.update, plus the auxiliary loss on the GRU state.
+    self.num_updates += 1
+    mean_behavior_loss = mean_aux_loss = 0.0
+    loss = 0
+    cnt = 0
+    for _ in range(self.num_learning_epochs):
+      self.student.reset(hidden_state=self.last_hidden_states[0])
+      self.teacher.reset(hidden_state=self.last_hidden_states[1])
+      self.student.detach_hidden_state()
+      for batch in self.storage.generator():
+        actions = self.student(batch.observations)
+        behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+        aux_pred = self.student.aux_head(self.student.last_latent)
+        aux_loss = nn.functional.mse_loss(aux_pred, batch.observations[TERRAIN_TARGET_GROUP])
+        loss = loss + behavior_loss + self.aux_loss_coef * aux_loss
+        mean_behavior_loss += behavior_loss.item()
+        mean_aux_loss += aux_loss.item()
+        cnt += 1
+        if cnt % self.gradient_length == 0:
+          self.optimizer.zero_grad()
+          loss.backward()
+          if self.is_multi_gpu:
+            self.reduce_parameters()
+          if self.max_grad_norm:
+            nn.utils.clip_grad_norm_(self.student.parameters(), self.max_grad_norm)
+          self.optimizer.step()
+          self.student.detach_hidden_state()
+          loss = 0
+        self.student.reset(batch.dones.view(-1))
+        self.teacher.reset(batch.dones.view(-1))
+        self.student.detach_hidden_state(batch.dones.view(-1))
+    self.storage.clear()
+    self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
+    self.student.detach_hidden_state()
+    return {"behavior": mean_behavior_loss / cnt, "terrain_aux": mean_aux_loss / cnt}
+
+
 @dataclass
 class DistillationAlgorithmCfg:
   num_learning_epochs: int = 1
@@ -193,7 +254,9 @@ class DistillationAlgorithmCfg:
   max_grad_norm: float | None = 1.0
   loss_type: str = "mse"
   optimizer: str = "adam"
-  class_name: str = "Distillation"
+  aux_loss_coef: float = 0.0
+  """Weight of the student's terrain reconstruction loss (0 disables it)."""
+  class_name: str = "src.tasks.velocity.rl.distillation:DepthDistillation"
 
 
 @dataclass
@@ -249,8 +312,14 @@ class DepthDistillationRunner(DistillationRunner):
       print(f"[INFO] Loaded teacher from {teacher_checkpoint}")
     if student_checkpoint:
       loaded = torch.load(student_checkpoint, map_location=device, weights_only=False)
-      self.alg.load(loaded, {"student": True, "optimizer": True}, strict=True)
-      print(f"[INFO] Loaded student from {student_checkpoint}")
+      missing, unexpected = self.alg.student.load_state_dict(
+        loaded["student_state_dict"], strict=False
+      )
+      if unexpected or any(not k.startswith("aux_head.") for k in missing):
+        raise RuntimeError(f"Student checkpoint mismatch: {missing=} {unexpected=}")
+      if not missing:  # Same parameters: keep the optimizer state too.
+        self.alg.optimizer.load_state_dict(loaded["optimizer_state_dict"])
+      print(f"[INFO] Loaded student from {student_checkpoint} (new: {sorted({k.split('.')[0] for k in missing})})")
 
   def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
     if self.learning_rate_final is not None:
