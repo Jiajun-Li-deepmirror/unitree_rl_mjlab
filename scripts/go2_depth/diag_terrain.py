@@ -1,4 +1,4 @@
-"""Per-sub-terrain breakdown of a teacher checkpoint on the training env.
+"""Per-sub-terrain breakdown of a teacher or student checkpoint on the training env.
 
 Runs one episode with the training command distribution and reports, per
 sub-terrain type: falls, velocity tracking error, how often the robot stalls
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -19,11 +21,13 @@ import numpy as np
 import torch
 from tensordict import TensorDict
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--checkpoint", required=True)
-  parser.add_argument("--task", default="Unitree-Go2-Depth-Teacher")
+  parser.add_argument("--task", default=None, help="Default: picked from the checkpoint.")
   parser.add_argument("--num-envs", type=int, default=2000)
   parser.add_argument("--seconds", type=float, default=20.0)
   parser.add_argument(
@@ -34,11 +38,14 @@ def main() -> None:
 
   import mjlab.tasks  # noqa: F401
   import src.tasks  # noqa: F401
+  from eval_map3 import load_policy
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.registry import load_env_cfg
-  from rsl_rl.models import MLPModel
 
-  cfg = load_env_cfg(args.task)
+  ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+  kind = "student" if "student_state_dict" in ck else "teacher"
+  task = args.task or f"Unitree-Go2-Depth-{kind.capitalize()}"
+  cfg = load_env_cfg(task)
   cfg.scene.num_envs = args.num_envs
   cfg.curriculum.pop("terrain_levels", None)
   cfg.episode_length_s = args.seconds + 5.0
@@ -50,18 +57,10 @@ def main() -> None:
     terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
   raw, _ = env.reset()
   obs = TensorDict(raw, batch_size=[env.num_envs])
-  model = MLPModel(
-    obs,
-    {"actor": ["actor"]},
-    "actor",
-    12,
-    hidden_dims=(512, 256, 128),
-    obs_normalization=True,
-    distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
-  )
-  ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-  model.load_state_dict(ck["actor_state_dict"])
-  model = model.to(env.device).eval()
+  model = load_policy(kind, args.checkpoint, obs, env.device)
+  recurrent = getattr(model, "is_recurrent", False)
+  if recurrent:
+    model.reset()
 
   gen = cfg.scene.terrain.terrain_generator
   names = list(gen.sub_terrains)
@@ -86,7 +85,9 @@ def main() -> None:
   steps = int(args.seconds / env.step_dt)
   for _ in range(steps):
     with torch.inference_mode():
-      raw, _, terminated, _, _ = env.step(model(obs))
+      raw, _, terminated, time_outs, _ = env.step(model(obs))
+      if recurrent:
+        model.reset((terminated | time_outs).float())
     obs = TensorDict(raw, batch_size=[n])
     for t in term_names:
       term_first[t] |= env.termination_manager.get_term(t) & ~fell

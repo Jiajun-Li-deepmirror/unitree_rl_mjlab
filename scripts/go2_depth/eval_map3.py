@@ -221,7 +221,7 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   from mjlab.envs import ManagerBasedRlEnv
 
   task = "Unitree-Go2-Depth-Student" if args.policy == "student" else "Unitree-Go2-Depth-Teacher"
-  if args.policy == "teacher":
+  if args.policy == "teacher" or args.drop_overhead:
     boxes = [
       (n, size, pos) for n, size, pos in boxes
       if n.startswith("rail") or pos[2] + size[2] <= scenario.keep_below
@@ -298,6 +298,10 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       z = robot.data.root_link_pos_w[:, 2]
       zmin = torch.where(alive, torch.minimum(zmin, z), zmin)
       zmax = torch.where(alive, torch.maximum(zmax, z), zmax)
+      if args.trace and alive.any() and (step + 1) % int(round(1.0 / env.step_dt)) == 0:
+        along = ((robot.data.root_link_pos_w[alive, :2] - env.scene.env_origins[alive, :2]) * axis).sum(-1)
+        q = torch.quantile(along, torch.tensor((0.1, 0.5, 0.9), device=env.device)).tolist()
+        print(f"  [trace] cmd_vx={vx:+.1f} along p10/p50/p90 = {q[0]:5.2f} {q[1]:5.2f} {q[2]:5.2f}", flush=True)
       if scenario.success == "track" and alive.any():
         v = robot.data.root_link_lin_vel_b[alive]
         w = robot.data.root_link_ang_vel_b[alive, 2]
@@ -339,6 +343,11 @@ def main() -> None:
   parser.add_argument("--num-envs", type=int, default=16)
   parser.add_argument("--scenarios", nargs="*", default=[s.name for s in SCENARIOS])
   parser.add_argument("--solid-gaps", action="store_true")
+  parser.add_argument("--trace", action="store_true", help="Print progress along the flight every second.")
+  parser.add_argument(
+    "--drop-overhead", action="store_true",
+    help="Diagnostic: drop the stories above the scenario for the student too.",
+  )
   parser.add_argument(
     "--operator", action=argparse.BooleanOptionalAction, default=True,
     help="On stair scenarios, hold the flight heading and centerline like an operator.",

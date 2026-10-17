@@ -201,6 +201,13 @@ class DepthDistillationRunnerCfg(RslRlBaseRunnerCfg):
   class_name: str = "DistillationRunner"
   teacher_checkpoint: str = ""
   """Path to the teacher PPO checkpoint (model_N.pt). Required unless resuming."""
+  student_checkpoint: str = ""
+  """Optional distillation checkpoint to start the student (and its optimizer)
+  from, keeping the teacher from `teacher_checkpoint`. Unlike resume, which
+  would also restore the old teacher."""
+  learning_rate_final: float | None = None
+  """If set, decay the learning rate log-linearly from algorithm.learning_rate
+  to this over the run."""
   student: RslRlModelCfg = field(
     default_factory=lambda: RslRlModelCfg(
       hidden_dims=(512, 256, 128),
@@ -229,6 +236,8 @@ class DepthDistillationRunner(DistillationRunner):
     self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu"
   ) -> None:
     teacher_checkpoint = train_cfg.pop("teacher_checkpoint", "")
+    student_checkpoint = train_cfg.pop("student_checkpoint", "")
+    self.learning_rate_final = train_cfg.pop("learning_rate_final", None)
     for key in ("student", "teacher"):
       for opt in ("cnn_cfg", "distribution_cfg"):
         if train_cfg[key].get(opt) is None:
@@ -238,6 +247,24 @@ class DepthDistillationRunner(DistillationRunner):
       loaded = torch.load(teacher_checkpoint, map_location=device, weights_only=False)
       self.alg.load(loaded, {"teacher": True}, strict=True)
       print(f"[INFO] Loaded teacher from {teacher_checkpoint}")
+    if student_checkpoint:
+      loaded = torch.load(student_checkpoint, map_location=device, weights_only=False)
+      self.alg.load(loaded, {"student": True, "optimizer": True}, strict=True)
+      print(f"[INFO] Loaded student from {student_checkpoint}")
+
+  def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
+    if self.learning_rate_final is not None:
+      start, lr0, update = self.current_learning_iteration, self.alg.learning_rate, self.alg.update
+
+      def update_with_schedule() -> dict[str, float]:
+        frac = min(1.0, (self.current_learning_iteration - start) / max(1, num_learning_iterations - 1))
+        self.alg.learning_rate = lr0 * (self.learning_rate_final / lr0) ** frac
+        for group in self.alg.optimizer.param_groups:
+          group["lr"] = self.alg.learning_rate
+        return update()
+
+      self.alg.update = update_with_schedule
+    super().learn(num_learning_iterations, init_at_random_ep_len)
 
   def save(self, path: str, infos=None) -> None:
     env_state = {"common_step_counter": self.env.unwrapped.common_step_counter}

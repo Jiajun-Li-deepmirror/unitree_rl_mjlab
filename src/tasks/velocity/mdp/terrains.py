@@ -95,9 +95,11 @@ class _WalledStairsBaseCfg(SubTerrainCfg):
   """Mean rise, interpolated by difficulty."""
   step_height_noise: float = 0.025
   """Per-step uniform rise perturbation (map3 rises vary by a few cm)."""
-  step_width_range: tuple[float, float] = (0.22, 0.32)
-  """Mean tread, sampled per sub-terrain."""
+  step_width_range: tuple[float, float] = (0.17, 0.32)
+  """Mean tread, sampled per sub-terrain. map3 has a few short treads (L0 step 7
+  is 0.188 m between 0.25 m ones), so ~15% of treads here are below 0.19 m."""
   step_width_noise: float = 0.04
+  min_tread: float = 0.16
   corridor_width_range: tuple[float, float] = (0.85, 1.5)
   """(narrowest, widest). Easy rows get the widest corridors and hard rows the
   narrowest (map3 is ~0.9 m), so the policy first learns to climb with the
@@ -126,7 +128,7 @@ class _WalledStairsBaseCfg(SubTerrainCfg):
     num_steps = int(min(max_steps, max(1, length // (tread + self.step_width_noise))))
     rises = rise + rng.uniform(-self.step_height_noise, self.step_height_noise, num_steps)
     treads = tread + rng.uniform(-self.step_width_noise, self.step_width_noise, num_steps)
-    return np.clip(rises, 0.03, None), treads
+    return np.clip(rises, 0.03, None), np.clip(treads, self.min_tread, None)
 
 
 @dataclass(kw_only=True)
