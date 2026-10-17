@@ -22,6 +22,7 @@ from rsl_rl.runners import DistillationRunner
 from tensordict import TensorDict
 
 from mjlab.rl import RslRlBaseRunnerCfg, RslRlModelCfg
+from src.tasks.velocity.rl.obs_guard import guard_nan_observations
 from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
 
 ONNX_CONTRACT = "go2_depth_v2"
@@ -310,6 +311,7 @@ class DepthDistillationRunner(DistillationRunner):
         if train_cfg[key].get(opt) is None:
           train_cfg[key].pop(opt, None)
     super().__init__(env, train_cfg, log_dir, device)
+    guard_nan_observations(self.env)
     if teacher_checkpoint:
       loaded = torch.load(teacher_checkpoint, map_location=device, weights_only=False)
       self.alg.load(loaded, {"teacher": True}, strict=True)

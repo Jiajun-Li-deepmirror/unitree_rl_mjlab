@@ -40,7 +40,9 @@ def foot_contact_forces(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tenso
   sensor: ContactSensor = env.scene[sensor_name]
   sensor_data = sensor.data
   assert sensor_data.force is not None
-  forces_flat = sensor_data.force.flatten(start_dim=1)  # [B, N*3]
+  # Degenerate wheel-cylinder contacts (Go2-W) occasionally report a NaN force
+  # with a finite physics state, which aborted training on a NaN critic obs.
+  forces_flat = torch.nan_to_num(sensor_data.force.flatten(start_dim=1))  # [B, N*3]
   return torch.sign(forces_flat) * torch.log1p(torch.abs(forces_flat))
 
 

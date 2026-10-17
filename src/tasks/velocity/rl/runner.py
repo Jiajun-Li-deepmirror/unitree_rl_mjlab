@@ -9,9 +9,15 @@ from mjlab.rl.exporter_utils import (
 )
 from mjlab.rl.runner import MjlabOnPolicyRunner
 
+from src.tasks.velocity.rl.obs_guard import guard_nan_observations
+
 
 class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
   env: RslRlVecEnvWrapper
+
+  def __init__(self, env, *args, **kwargs) -> None:
+    super().__init__(env, *args, **kwargs)
+    guard_nan_observations(self.env)
 
   def save(self, path: str, infos=None):
     super().save(path, infos)
