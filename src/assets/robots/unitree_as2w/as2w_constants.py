@@ -76,6 +76,11 @@ As2W_ACTUATOR_WHEEL = WheelVelocityActuatorCfg(
   effort_limit=15.0,
   armature=0.01,
 )
+# The wheels collide as spheres of this radius (*_foot_collision), not as
+# cylinders: on box seams and step edges the GJK/EPA cylinder contact could
+# give only sideways normals and let a wheel sink in (rare NaN observations
+# on the first Go2-W runs), while the analytic sphere-box contact always
+# supports the wheel from below. Spheres are wider than the real wheels.
 As2W_WHEEL_RADIUS = 0.086
 
 ##

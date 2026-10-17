@@ -74,7 +74,7 @@
               <inertial pos="0 0.04 0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
               <joint name="FL_wheel_joint" axis="0 1 0" />
               <geom mesh="wheel" class="visual" material="black" quat="0 1 0 0" />
-              <geom name="FL_foot_collision" pos="0 0.0504 0" quat="0.707107 0.707107 0 0" type="cylinder" size="0.086 0.026" class="collision" />
+              <geom name="FL_foot_collision" pos="0 0.0504 0" type="sphere" size="0.086" class="collision" />
               <site name="FL" pos="0 0.0504 0" type="sphere" size="0.022" />
             </body>
           </body>
@@ -103,7 +103,7 @@
               <inertial pos="0 -0.04 0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
               <joint name="FR_wheel_joint" axis="0 1 0" />
               <geom mesh="wheel" class="visual" material="black" />
-              <geom name="FR_foot_collision" pos="0 -0.0504 0" quat="0.707107 0.707107 0 0" type="cylinder" size="0.086 0.026" class="collision" />
+              <geom name="FR_foot_collision" pos="0 -0.0504 0" type="sphere" size="0.086" class="collision" />
               <site name="FR" pos="0 -0.0504 0" type="sphere" size="0.022" />
             </body>
           </body>
@@ -132,7 +132,7 @@
               <inertial pos="0 0.04 0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
               <joint name="RL_wheel_joint" axis="0 1 0" />
               <geom mesh="wheel" class="visual" material="black" quat="0 1 0 0" />
-              <geom name="RL_foot_collision" pos="0 0.0504 0" quat="0.707107 0.707107 0 0" type="cylinder" size="0.086 0.026" class="collision" />
+              <geom name="RL_foot_collision" pos="0 0.0504 0" type="sphere" size="0.086" class="collision" />
               <site name="RL" pos="0 0.0504 0" type="sphere" size="0.022" />
             </body>
           </body>
@@ -161,7 +161,7 @@
               <inertial pos="0 -0.04 0" quat="0.661419 0.248219 0.250051 0.662108" mass="0.98" diaginertia="0.003 0.0016 0.0016" />
               <joint name="RR_wheel_joint" axis="0 1 0" />
               <geom mesh="wheel" class="visual" material="black" />
-              <geom name="RR_foot_collision" pos="0 -0.0504 0" quat="0.707107 0.707107 0 0" type="cylinder" size="0.086 0.026" class="collision" />
+              <geom name="RR_foot_collision" pos="0 -0.0504 0" type="sphere" size="0.086" class="collision" />
               <site name="RR" pos="0 -0.0504 0" type="sphere" size="0.022" />
             </body>
           </body>

@@ -28,7 +28,7 @@ B2W_SPEC = replace(
   foot_radius=B2W_WHEEL_RADIUS,
   # Wheel centre 0.201 m up = the B2 foot's 0.088 m sole clearance.
   swing_target_height=B2W_WHEEL_RADIUS + 0.088,
-  # Wheels stick out to 0.31 m each side (B2 feet: 0.23 m).
+  # Wheel spheres reach 0.35 m each side (B2 feet: 0.23 m).
   wall_safe_distance=0.45,
   onnx_contract="b2w_depth_v1",
 )

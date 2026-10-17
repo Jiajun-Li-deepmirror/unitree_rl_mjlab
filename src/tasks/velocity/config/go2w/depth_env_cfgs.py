@@ -26,7 +26,7 @@ GO2W_SPEC = LeggedTaskSpec(
   foot_radius=GO2W_WHEEL_RADIUS,
   # Wheel centre 0.164 m up = the Go2 foot's 0.078 m sole clearance.
   swing_target_height=GO2W_WHEEL_RADIUS + 0.078,
-  # Wheels stick out to 0.22 m each side (Go2 feet: 0.16 m).
+  # Wheel spheres reach 0.28 m each side (Go2 feet: 0.16 m).
   wall_safe_distance=0.40,
   onnx_contract="go2w_depth_v1",
 )

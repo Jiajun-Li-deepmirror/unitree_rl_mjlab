@@ -28,7 +28,7 @@ AS2W_SPEC = replace(
   foot_radius=As2W_WHEEL_RADIUS,
   # Wheel centre 0.164 m up = the Go2 foot's 0.078 m sole clearance.
   swing_target_height=As2W_WHEEL_RADIUS + 0.078,
-  # Wheels stick out to 0.25 m each side.
+  # Wheel spheres reach 0.31 m each side.
   wall_safe_distance=0.42,
   onnx_contract="as2w_depth_v1",
 )

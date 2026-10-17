@@ -3,7 +3,7 @@
 The Go2-W runs died twice on a NaN observation (once in `actor`, once in a
 critic-only term) with a finite physics state, ~1 env in 30M steps and not
 reproducible with random actions: most likely a degenerate wheel-cylinder
-contact. rsl_rl raises on any NaN, so sanitize the env outputs and report
+contact (the wheels now collide as spheres; this stays as a safety net). rsl_rl raises on any NaN, so sanitize the env outputs and report
 which terms were hit.
 """
 

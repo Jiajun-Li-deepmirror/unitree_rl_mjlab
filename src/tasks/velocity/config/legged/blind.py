@@ -445,7 +445,8 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
   )
 
   # A rare NaN physics state (1 env in ~10M steps on the first Go2-W run,
-  # likely a wheel cylinder contact) crashed training; reset such envs.
+  # likely a wheel cylinder contact, since replaced by spheres) crashed
+  # training; reset such envs.
   cfg.terminations["nan_state"] = TerminationTermCfg(func=mdp.nan_detection)
 
   rewards = cfg.rewards
