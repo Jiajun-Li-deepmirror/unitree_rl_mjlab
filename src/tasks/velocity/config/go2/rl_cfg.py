@@ -46,10 +46,17 @@ def unitree_go2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   )
 
 
-def unitree_go2_blind_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
-  """Create RL runner configuration for the Unitree Go2 blind velocity tasks."""
+def unitree_go2_blind_ppo_runner_cfg(
+  max_iterations: int, entropy_coef: float = 0.01
+) -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for the Unitree Go2 blind velocity tasks.
+
+  The map3 fine-tune halves `entropy_coef`: the end of the stage 2 run (from
+  ~19100 iterations) diverged with the action std growing 0.50 -> 0.62.
+  """
   cfg = unitree_go2_ppo_runner_cfg()
   cfg.experiment_name = "go2_blind"
   cfg.logger = "tensorboard"
   cfg.max_iterations = max_iterations
+  cfg.algorithm.entropy_coef = entropy_coef
   return cfg

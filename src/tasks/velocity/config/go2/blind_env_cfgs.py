@@ -147,7 +147,10 @@ def _robot_contact_sensor(name: str, patterns: tuple[str, ...]) -> ContactSensor
 
 
 def unitree_go2_blind_env_cfg(
-  play: bool = False, stairs: bool = True
+  play: bool = False,
+  stairs: bool = True,
+  terrain_clearance: bool = True,
+  foothold_gain: bool = True,
 ) -> ManagerBasedRlEnvCfg:
   """Create the Unitree Go2 blind velocity configuration.
 
@@ -155,6 +158,11 @@ def unitree_go2_blind_env_cfg(
     play: Evaluation settings (no noise or pushes, random terrain per reset).
     stairs: Include stairs and rough patches; otherwise flat ground only. Both
       variants share observation shapes, sensors and rewards.
+    terrain_clearance: Add foot_terrain_clearance and make the swing clearance
+      one-sided on uneven ground.
+    foothold_gain: Add foothold_height_gain.
+    The released policy was trained with both off up to iteration 6000, with
+    terrain_clearance from there and with both from 9000 (doc/go2_blind.md).
   """
   cfg = unitree_go2_rough_env_cfg(play=play)
 
@@ -323,16 +331,38 @@ def unitree_go2_blind_env_cfg(
     func=mdp.lin_vel_z_even, weight=-2.0, params=dict(scan)
   )
   # At -0.5 this term was ~3% of the tracking reward and feet lifted only 3-6 cm.
+  swing_params = {
+    "sensor_name": "feet_ground_contact",
+    "target_height": 0.10,
+    **standing,
+    "asset_cfg": feet(),
+  }
+  if terrain_clearance:
+    swing_params["scan_sensor_name"] = "terrain_scan"
   rewards["foot_swing_clearance"] = RewardTermCfg(
-    func=mdp.feet_swing_clearance,
-    weight=-3.0,
-    params={
-      "sensor_name": "feet_ground_contact",
-      "target_height": 0.10,
-      **standing,
-      "asset_cfg": feet(),
-    },
+    func=mdp.feet_swing_clearance, weight=-3.0, params=swing_params
   )
+  if terrain_clearance:
+    # Without this, robots stalled at up-risers >= 12 cm while trotting in place
+    # with the flat-ground 9 cm swing: nothing rewarded lifting a blocked foot.
+    rewards["foot_terrain_clearance"] = RewardTermCfg(
+      func=mdp.feet_terrain_clearance,
+      weight=-40.0,
+      params={
+        "sensor_name": "feet_ground_contact",
+        "scan_sensor_name": "terrain_scan",
+        "asset_cfg": feet(),
+      },
+    )
+  if foothold_gain:
+    # With only foot_terrain_clearance, robots stalled at >= 12 cm risers backed
+    # away instead of retrying: at tracking std 0.35, stalling and retreating
+    # score almost the same. This pays for each foot reaching a higher foothold.
+    rewards["foothold_height_gain"] = RewardTermCfg(
+      func=mdp.feet_foothold_height_gain,
+      weight=2.0,
+      params={"sensor_name": "feet_ground_contact", **standing, "asset_cfg": feet()},
+    )
   rewards["foot_stumble"] = RewardTermCfg(
     func=mdp.feet_stumble,
     weight=-0.5,
@@ -398,4 +428,89 @@ def unitree_go2_blind_env_cfg(
         params={"command_name": "twist"},
       )
 
+  return cfg
+
+
+##
+# map3 fine-tune: walled flights like the tinynav-sim map3 stairwell.
+##
+
+WALLED_TERRAIN_NAMES = ("walled_down", "walled_up")
+MAP3_STAIR_TERRAIN_NAMES = STAIR_TERRAIN_NAMES + WALLED_TERRAIN_NAMES
+
+
+def make_go2_blind_map3_terrains_cfg() -> TerrainGeneratorCfg:
+  """The blind mix with less pyramid area plus walled map3-like flights.
+
+  Walled flights are 0.85-1.5 m wide (narrower with difficulty), with treads
+  of 0.18-0.32 m and per-step rise noise; map3 has 0.19 m treads and
+  16-19 cm rises where the blind policy got stuck. Proportions are multiples
+  of 1/20 so each type gets whole columns. Column order puts flat ground next
+  to the walled tiles: robots leaving a pyramid tile walk straight on and hit
+  the (to them invisible) walls of the next column.
+  """
+  cfg = make_go2_blind_terrains_cfg(stairs=True)
+  subs = cfg.sub_terrains
+  proportions = {
+    "stairs_down_narrow": 0.05,
+    "stairs_down_wide": 0.05,
+    "stairs_up_narrow": 0.10,
+    "stairs_up_wide": 0.05,
+    "random_rough": 0.10,
+    "flat": 0.25,
+  }
+  cfg.sub_terrains = {name: replace(subs[name], proportion=p) for name, p in proportions.items()}
+  cfg.sub_terrains["walled_down"] = mdp.WalledCrossStairsTerrainCfg(proportion=0.20)
+  cfg.sub_terrains["walled_up"] = mdp.WalledCrossStairsTerrainCfg(
+    proportion=0.20, inverted=True
+  )
+  return cfg
+
+
+def unitree_go2_blind_map3_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Unitree-Go2-Blind fine-tuned for map3: same observations and actions.
+
+  Changes vs Unitree-Go2-Blind: walled flights in the terrain (with an
+  operator-style corridor command and little spawn x/y noise there), a tighter
+  linear tracking std on even ground plus more slow flat commands (flat
+  low-speed under-tracking), and a progress reward for going down stairs.
+  """
+  cfg = unitree_go2_blind_env_cfg(play=play, stairs=True)
+
+  assert cfg.scene.terrain is not None
+  terrain_generator = make_go2_blind_map3_terrains_cfg()
+  if play:
+    terrain_generator.num_rows = 5
+    terrain_generator.num_cols = 20
+    terrain_generator.border_width = 10.0
+  cfg.scene.terrain.terrain_generator = terrain_generator
+
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, TerrainAwareVelocityCommandCfg)
+  twist.stair_terrain_names = MAP3_STAIR_TERRAIN_NAMES
+  twist.corridor_terrain_names = WALLED_TERRAIN_NAMES
+  twist.flat_slow_prob = 0.3
+
+  reset_base = cfg.events["reset_base"]
+  reset_base.params["stair_terrain_names"] = MAP3_STAIR_TERRAIN_NAMES
+  reset_base.params["narrow_terrain_names"] = WALLED_TERRAIN_NAMES
+
+  rewards = cfg.rewards
+  # At std 0.35 a 30% shortfall at 0.3 m/s cost only 6% of the tracking reward.
+  rewards["track_linear_velocity"].params |= {
+    "even_std": 0.25,
+    "scan_sensor_name": "terrain_scan",
+  }
+  # Descents tracked ~75% of the command, too slow for map3 flights.
+  rewards["foothold_height_drop"] = RewardTermCfg(
+    func=mdp.feet_foothold_height_gain,
+    weight=2.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
+      "descend": True,
+    },
+  )
   return cfg

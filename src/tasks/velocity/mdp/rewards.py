@@ -26,11 +26,15 @@ def track_linear_velocity(
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   z_weight: float = 2.0,
+  even_std: float | None = None,
+  scan_sensor_name: str | None = None,
 ) -> torch.Tensor:
   """Reward for tracking the commanded base linear velocity.
 
   The commanded z velocity is assumed to be zero. Set `z_weight` to 0 on
-  terrain where vertical base motion is expected (e.g. stairs).
+  terrain where vertical base motion is expected (e.g. stairs). With
+  `even_std` and `scan_sensor_name`, ground that is not uneven (see
+  uneven_terrain_mask) uses the tighter `even_std`.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -39,7 +43,11 @@ def track_linear_velocity(
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (z_weight * z_error)
-  return torch.exp(-lin_vel_error / std**2)
+  if even_std is None or scan_sensor_name is None:
+    return torch.exp(-lin_vel_error / std**2)
+  uneven = uneven_terrain_mask(env, scan_sensor_name)
+  std_t = torch.where(uneven, std, even_std)
+  return torch.exp(-lin_vel_error / std_t**2)
 
 
 def track_angular_velocity(
@@ -615,7 +623,14 @@ class feet_swing_clearance:
     command_name: str,
     command_threshold: float,
     asset_cfg: SceneEntityCfg,
+    scan_sensor_name: str | None = None,
   ) -> torch.Tensor:
+    """If `scan_sensor_name` is given, overshoot is not penalized on uneven terrain.
+
+    A blind robot finds a riser by bumping into it and must then try higher
+    swings; a symmetric error would penalize those attempts whenever the foot
+    falls back to its liftoff height.
+    """
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
     assert contact_sensor.data.found is not None
@@ -631,6 +646,9 @@ class feet_swing_clearance:
     landed = ~self.prev_contact & in_contact & self.has_liftoff
     clearance = self.peak_z - torch.maximum(self.liftoff_z, foot_z)
     error = clearance / target_height - 1.0
+    if scan_sensor_name is not None:
+      uneven = uneven_terrain_mask(env, scan_sensor_name)
+      error = torch.where(uneven[:, None], torch.clamp(error, max=0.0), error)
     active = ~_zero_command_mask(env, command_name, command_threshold)
     cost = torch.sum(torch.square(error) * landed.float(), dim=1) * active.float()
 
@@ -642,6 +660,111 @@ class feet_swing_clearance:
     self.has_liftoff &= ~landed
     self.prev_contact = in_contact
     return cost
+
+
+def feet_terrain_clearance(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  scan_sensor_name: str,
+  target_height: float = 0.05,
+  radius: float = 0.12,
+  edge_threshold: float = 0.04,
+  foot_radius: float = 0.022,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize swing feet passing below a terrain edge they are moving towards.
+
+  For each swing foot, take the privileged terrain-scan hits within `radius`
+  (horizontally) that are not behind the foot's direction of travel. If they
+  contain an edge (height span above `edge_threshold`), the sole must be
+  `target_height` above the highest of them; the squared shortfall (m^2) is
+  summed over feet. Flat ground has no edges, so the flat gait is unaffected,
+  and a foot stepping down off an edge is free to drop once past it.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  scan: RayCastSensor = env.scene[scan_sensor_name]
+  assert contact_sensor.data.found is not None
+
+  foot_pos = asset.data.site_pos_w[:, asset_cfg.site_ids]  # [B, F, 3]
+  foot_vel = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, F, 2]
+  hit_pos = scan.data.hit_pos_w  # [B, N, 3]
+  valid = (scan.data.distances >= 0.0)[:, None, :]  # [B, 1, N]
+
+  offset = hit_pos[:, None, :, :2] - foot_pos[:, :, None, :2]  # [B, F, N, 2]
+  near = (torch.norm(offset, dim=-1) < radius) & valid
+  heading = foot_vel / torch.clamp(torch.norm(foot_vel, dim=-1, keepdim=True), min=1e-3)
+  ahead = near & (torch.sum(offset * heading[:, :, None, :], dim=-1) > -0.02)
+
+  hit_z = hit_pos[:, None, :, 2]
+  z_max = torch.where(ahead, hit_z, -torch.inf).amax(dim=-1)  # [B, F]
+  z_min = torch.where(near, hit_z, torch.inf).amin(dim=-1)
+  edge = ahead.any(dim=-1) & (z_max - z_min > edge_threshold)
+
+  swing = contact_sensor.data.found <= 0
+  sole_z = foot_pos[..., 2] - foot_radius
+  shortfall = torch.clamp(z_max + target_height - sole_z, min=0.0)
+  return torch.sum(torch.where(edge & swing, torch.square(shortfall), 0.0), dim=1)
+
+
+class feet_foothold_height_gain:
+  """Reward each foot for standing higher than it has stood before this episode.
+
+  Every foot keeps a record of its highest stable foothold; the term is the rise
+  of that record per second, so with dt scaling the episode sum is weight times
+  metres climbed per foot. Records never go down: bouncing on flat ground or
+  stepping down and back up earns nothing, while getting a front foot onto the
+  first step of a riser pays out at once, before the body makes it over.
+
+  With `descend=True` the records are lows instead, paying for progress down
+  stairs the same way.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    num_feet = len(cfg.params["asset_cfg"].site_names)
+    self.record_z = torch.full((env.num_envs, num_feet), -torch.inf, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.record_z[env_ids] = -torch.inf
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+    ratio: float = 2.0,
+    min_force: float = 10.0,
+    max_gain: float = 0.2,
+    descend: bool = False,
+  ) -> torch.Tensor:
+    """A foothold counts when the contact force is mostly vertical.
+
+    That excludes a foot pushed against a riser face. The first foothold after
+    reset only initializes the record. Requires a world-frame force.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    force = contact_sensor.data.force
+    assert contact_sensor.data.found is not None and force is not None
+    foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
+    if descend:
+      foot_z = -foot_z
+    force_xy = torch.norm(force[..., :2], dim=-1)
+    stance = (contact_sensor.data.found > 0) & (
+      torch.abs(force[..., 2]) > torch.clamp(ratio * force_xy, min=min_force)
+    )
+    gain = torch.where(
+      stance & torch.isfinite(self.record_z),
+      torch.clamp(foot_z - self.record_z, min=0.0, max=max_gain),
+      0.0,
+    )
+    self.record_z = torch.where(stance, torch.maximum(self.record_z, foot_z), self.record_z)
+    active = ~_zero_command_mask(env, command_name, command_threshold)
+    return torch.sum(gain, dim=1) * active.float() / env.step_dt
 
 
 class variable_posture_terrain_aware(variable_posture):

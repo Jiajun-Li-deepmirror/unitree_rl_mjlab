@@ -291,6 +291,12 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
   pure wz, or a combination of all three. On stair terrain (decided by the
   env's spawn column), commands are forward-biased with a higher chance of
   standing, so the policy learns to stop mid-flight.
+
+  On `corridor_terrain_names` (walled flights, ~1 m wide) a random yaw rate
+  would soon steer a blind robot into a wall, so moving commands act like an
+  operator keeping it in the corridor: wz holds the nearest axis-aligned
+  heading and vy steers back to the corridor centerline (the line through the
+  spawn origin along that heading), each plus a small random offset.
   """
 
   cfg: TerrainAwareVelocityCommandCfg
@@ -300,6 +306,11 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       raise ValueError("TerrainAwareVelocityCommand does not support heading commands.")
     super().__init__(cfg, env)
     self._stair_columns = sub_terrain_column_mask(env, cfg.stair_terrain_names)
+    self._corridor_columns = sub_terrain_column_mask(env, cfg.corridor_terrain_names)
+    self.corridor_hold = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+    self.corridor_heading = torch.zeros(self.num_envs, device=self.device)
+    self._corridor_needs_heading = torch.zeros_like(self.corridor_hold)
+    self.corridor_offset = torch.zeros(self.num_envs, 2, device=self.device)
     # Commanded planar distance accumulated over the episode (for curricula).
     self.cmd_distance = torch.zeros(self.num_envs, device=self.device)
 
@@ -307,6 +318,12 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
   def is_stair_env(self) -> torch.Tensor:
     return spawned_on_sub_terrain(
       self._env, self.cfg.stair_terrain_names, self._stair_columns
+    )
+
+  @property
+  def is_corridor_env(self) -> torch.Tensor:
+    return spawned_on_sub_terrain(
+      self._env, self.cfg.corridor_terrain_names, self._corridor_columns
     )
 
   def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
@@ -339,10 +356,21 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     mode_probs = torch.tensor(self.cfg.flat_mode_probs, device=self.device)
     mode = torch.multinomial(mode_probs, n, replacement=True)
     combined = mode == 4
+    # Optional features draw random numbers only when enabled, so tasks without
+    # them keep the random stream their policies were trained with.
+    if self.cfg.flat_slow_prob > 0.0:
+      # Some linear commands come from a narrower range, so slow walking is not
+      # mostly seen on stairs (where the policy learned short strides).
+      slow = uniform((0.0, 1.0)) < self.cfg.flat_slow_prob
+      slow_ranges = self.cfg.flat_slow_ranges
+      vx = torch.where(slow, uniform(slow_ranges.lin_vel_x), uniform(ranges.lin_vel_x))
+      vy = torch.where(slow, uniform(slow_ranges.lin_vel_y), uniform(ranges.lin_vel_y))
+    else:
+      vx, vy = uniform(ranges.lin_vel_x), uniform(ranges.lin_vel_y)
     flat_cmd = torch.stack(
       [
-        torch.where((mode == 1) | combined, uniform(ranges.lin_vel_x), 0.0),
-        torch.where((mode == 2) | combined, uniform(ranges.lin_vel_y), 0.0),
+        torch.where((mode == 1) | combined, vx, 0.0),
+        torch.where((mode == 2) | combined, vy, 0.0),
         torch.where((mode == 3) | combined, uniform(ranges.ang_vel_z), 0.0),
       ],
       dim=1,
@@ -367,6 +395,42 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     cmd *= (torch.norm(cmd, dim=1) > self.cfg.zero_threshold).unsqueeze(1)
     self.vel_command_b[env_ids] = cmd
 
+    if not self.cfg.corridor_terrain_names:
+      return
+    # Corridor hold for moving commands; wz and vy are set in _update_command.
+    self.corridor_hold[env_ids] = self.is_corridor_env[env_ids] & (cmd[:, 0].abs() > 0.0)
+    # Picked at the next update: right after a reset the derived root pose
+    # (heading_w) may still be the previous episode's.
+    self._corridor_needs_heading[env_ids] = True
+    self.corridor_offset[env_ids, 0] = uniform(
+      (-self.cfg.corridor_vy_noise, self.cfg.corridor_vy_noise)
+    )
+    self.corridor_offset[env_ids, 1] = uniform(
+      (-self.cfg.corridor_wz_noise, self.cfg.corridor_wz_noise)
+    )
+
+  def _update_command(self) -> None:
+    super()._update_command()
+    ids = self.corridor_hold.nonzero(as_tuple=False).flatten()
+    if len(ids) == 0:
+      return
+    heading = self.robot.data.heading_w[ids]
+    pick = self._corridor_needs_heading[ids]
+    quarter = torch.pi / 2
+    self.corridor_heading[ids] = torch.where(
+      pick, torch.round(heading / quarter) * quarter, self.corridor_heading[ids]
+    )
+    self._corridor_needs_heading[ids] = False
+    target = self.corridor_heading[ids]
+    wz = self.cfg.corridor_heading_gain * wrap_to_pi(target - heading)
+    wz = wz + self.corridor_offset[ids, 1]
+    # Signed distance from the centerline through the spawn origin.
+    rel = self.robot.data.root_link_pos_w[ids, :2] - self._env.scene.env_origins[ids, :2]
+    lateral = -torch.sin(target) * rel[:, 0] + torch.cos(target) * rel[:, 1]
+    vy = -self.cfg.corridor_lateral_gain * lateral + self.corridor_offset[ids, 0]
+    self.vel_command_b[ids, 1] = vy.clamp(-self.cfg.corridor_vy_max, self.cfg.corridor_vy_max)
+    self.vel_command_b[ids, 2] = wz.clamp(-self.cfg.corridor_wz_max, self.cfg.corridor_wz_max)
+
 
 @dataclass(kw_only=True)
 class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
@@ -380,6 +444,21 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   flat_mode_probs: tuple[float, float, float, float, float] = (0.2, 0.15, 0.15, 0.15, 0.35)
   """Probabilities of (stand, vx only, vy only, wz only, combined) on flat terrain."""
   stair_standing_prob: float = 0.25
+  flat_slow_prob: float = 0.0
+  """Probability that the linear part of a flat command uses `flat_slow_ranges`."""
+  flat_slow_ranges: UniformVelocityCommandCfg.Ranges = field(
+    default_factory=lambda: UniformVelocityCommandCfg.Ranges(
+      lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.4, 0.4), ang_vel_z=(0.0, 0.0)
+    )
+  )
+  corridor_terrain_names: tuple[str, ...] = ()
+  """Sub-terrain names whose moving commands hold the corridor (see the term)."""
+  corridor_heading_gain: float = 1.0
+  corridor_lateral_gain: float = 1.0
+  corridor_wz_noise: float = 0.1
+  corridor_vy_noise: float = 0.05
+  corridor_wz_max: float = 0.5
+  corridor_vy_max: float = 0.2
   stair_resampling_time_range: tuple[float, float] = (1.5, 4.0)
   zero_threshold: float = 0.1
 
