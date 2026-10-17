@@ -46,6 +46,10 @@ class LeggedTaskSpec:
   """kg added to the base."""
   swing_target_height: float = 0.10
   hip_walking_std: float = 0.3
+  swing_weight_stages: tuple[tuple[int, float], ...] | None = None
+  """(iteration, weight) stages of the swing clearance penalty (default -3
+  throughout). At -3 the heavy B2 never lifted a foot: each low landing cost
+  more than a step of tracking earned, so it stood still."""
   """Hip tolerance of the posture reward while moving (side steps swing the
   hips out; Go2 default 0.15 capped vy at ~70-80%)."""
   foot_radius: float = 0.022

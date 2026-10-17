@@ -333,6 +333,8 @@ def make_blind_env_cfg(
       "asset_cfg": feet(),
     },
   )
+  if spec.swing_weight_stages:
+    rewards["foot_swing_clearance"].weight = spec.swing_weight_stages[0][1]
   rewards["foot_stumble"] = RewardTermCfg(
     func=mdp.feet_stumble,
     weight=-0.5,
@@ -395,6 +397,16 @@ def make_blind_env_cfg(
         },
       ),
     }
+    if spec.swing_weight_stages:
+      cfg.curriculum["swing_weight"] = CurriculumTermCfg(
+        func=mdp.reward_weight,
+        params={
+          "reward_name": "foot_swing_clearance",
+          "weight_stages": [
+            {"step": it * NUM_STEPS_PER_ENV, "weight": w} for it, w in spec.swing_weight_stages
+          ],
+        },
+      )
     if stairs:
       cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
         func=mdp.terrain_levels_cmd_distance,

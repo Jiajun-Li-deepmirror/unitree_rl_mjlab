@@ -24,6 +24,9 @@ B2_SPEC = LeggedTaskSpec(
   nconmax=128,  # 61 contacts in the initial state.
   base_payload_range=(-5.0, 10.0),
   swing_target_height=0.12,
+  # Go2's -3 swing penalty froze it (stood still for any command); -1 from the
+  # start broke free slowly. Start at -0.5 and tighten once it walks.
+  swing_weight_stages=((0, -0.5), (3000, -1.5)),
   foot_radius=0.032,
   wall_safe_distance=0.40,
   # Go2 camera orientation, 1.5 cm ahead of the B2's front panel (x 0.43 m at
