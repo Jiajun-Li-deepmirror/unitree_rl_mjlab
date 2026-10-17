@@ -10,10 +10,11 @@ import math
 from dataclasses import replace
 
 import mjlab.terrains as terrain_gen
-from mjlab.actuator import DelayedActuatorCfg
+from mjlab.actuator import BuiltinVelocityActuatorCfg, DelayedActuatorCfg
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
+from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -118,7 +119,9 @@ def blind_robot_cfg(spec: LeggedTaskSpec) -> EntityCfg:
   delayed_actuators = tuple(
     DelayedActuatorCfg(
       base_cfg=actuator,
-      delay_target="position",
+      delay_target=(
+        "velocity" if isinstance(actuator, BuiltinVelocityActuatorCfg) else "position"
+      ),
       delay_min_lag=0,
       delay_max_lag=4,
       delay_hold_prob=1.0,
@@ -355,6 +358,9 @@ def make_blind_env_cfg(
     params={**standing, "sensor_name": "feet_ground_contact"},
   )
 
+  if spec.wheel_joints is not None:
+    _add_wheels(cfg, spec)
+
   ##
   # Curriculum.
   ##
@@ -395,3 +401,81 @@ def make_blind_env_cfg(
       )
 
   return cfg
+
+
+def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
+  """Wheel-legged robots: velocity-controlled wheels as feet (mdp/wheels.py).
+
+  Legs keep the legged actions, posture terms and gait; wheel angles are left
+  out of the observations and posture terms (they are unbounded). The trot
+  gait is only rewarded in step mode, and foot slip is measured at the wheel
+  contact point, so rolling is free; in roll mode the legs should stay still
+  with all wheels down.
+  """
+  assert spec.wheel_joints is not None
+
+  def legs() -> SceneEntityCfg:
+    return SceneEntityCfg("robot", joint_names=(spec.leg_joints,))
+
+  leg_action = cfg.actions["joint_pos"]
+  assert isinstance(leg_action, JointPositionActionCfg)
+  leg_action.actuator_names = (spec.leg_joints,)
+  cfg.actions["wheel_vel"] = JointVelocityActionCfg(
+    entity_name="robot",
+    actuator_names=(spec.wheel_joints,),
+    scale=spec.wheel_action_scale,
+    use_default_offset=False,
+  )
+
+  for group in ("actor", "critic"):
+    cfg.observations[group].terms["joint_pos"].params["asset_cfg"] = legs()
+
+  # dr.pd_gains handles position actuators only. It indexes the entity's
+  # actuator groups (one per articulation actuator cfg) by actuator_ids.
+  articulation = cfg.scene.entities["robot"].articulation
+  assert articulation is not None
+  position_groups = [
+    i
+    for i, a in enumerate(articulation.actuators)
+    if not isinstance(getattr(a, "base_cfg", a), BuiltinVelocityActuatorCfg)
+  ]
+  cfg.events["pd_gains"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", actuator_ids=position_groups
+  )
+
+  rewards = cfg.rewards
+  for name in ("pose", "stand_still_even", "joint_acc_l2", "joint_pos_limits"):
+    rewards[name].params["asset_cfg"] = legs()
+
+  scan = {"scan_sensor_name": "terrain_scan"}
+  standing = {"command_name": "twist", "command_threshold": 0.1}
+  gait = rewards["foot_gait"]
+  gait.func = mdp.feet_gait_stepping
+  gait.params |= scan
+
+  rewards.pop("foot_slip")
+  rewards["wheel_slip"] = RewardTermCfg(
+    func=mdp.wheel_slip,
+    weight=-0.5,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "wheel_radius": spec.wheel_radius,
+      "command_name": "twist",
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        site_names=spec.foot_site_names,
+        body_names=tuple(f"{s}_wheel" for s in spec.foot_site_names),
+        preserve_order=True,
+      ),
+    },
+  )
+  rewards["roll_leg_motion"] = RewardTermCfg(
+    func=mdp.roll_leg_motion,
+    weight=-0.002,
+    params={**standing, **scan, "asset_cfg": legs()},
+  )
+  rewards["roll_wheel_contact"] = RewardTermCfg(
+    func=mdp.roll_wheel_contact,
+    weight=0.5,
+    params={**standing, **scan, "sensor_name": "feet_ground_contact"},
+  )

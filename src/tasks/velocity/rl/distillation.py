@@ -371,4 +371,14 @@ class DepthDistillationRunner(DistillationRunner):
     metadata = get_base_metadata(env, "local")
     metadata["observation_names"] = env.observation_manager.active_terms[PROPRIO_GROUP]
     metadata["contract"] = self.onnx_contract
+    # The `actions` output is the action terms concatenated in this order,
+    # e.g. "joint_pos[position]*0.25:FL_hip_joint,...;wheel_vel[velocity]*10:..."
+    # (wheel speed targets have no offset; joint targets add the default pose).
+    layout = []
+    for name in env.action_manager.active_terms:
+      term = env.action_manager.get_term(name)
+      kind = "velocity" if "vel" in type(term).__name__.lower() else "position"
+      scale = term.cfg.scale
+      layout.append(f"{name}[{kind}]*{scale:g}:" + ",".join(term.target_names))
+    metadata["action_layout"] = ";".join(layout)
     attach_metadata_to_onnx(onnx_path, metadata)

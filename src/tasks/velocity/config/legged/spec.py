@@ -53,6 +53,15 @@ class LeggedTaskSpec:
   wall_safe_distance: float = 0.35
   """Side clearance the policy keeps from corridor walls (base frame, m)."""
 
+  # Wheel-legged robots: wheels are the feet (foot geoms/sites), velocity-
+  # controlled; legs stay position-controlled. See mdp/wheels.py.
+  wheel_joints: str | None = None
+  """Regex of the wheel joints; None for legged robots."""
+  leg_joints: str = r"^[FR][LR]_(hip|thigh|calf)_joint$"
+  wheel_radius: float = 0.0
+  wheel_action_scale: float = 10.0
+  """rad/s per unit action (default offset 0: zero action brakes)."""
+
   # Front depth camera on `base_body` (tinynav PIE intrinsics for all robots).
   camera_pos: tuple[float, float, float] = depth_mdp.DEPTH_CAMERA_POS
   camera_quat: tuple[float, float, float, float] = depth_mdp.DEPTH_CAMERA_QUAT

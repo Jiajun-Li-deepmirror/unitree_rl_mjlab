@@ -71,17 +71,28 @@ GATES = [
   ("abs_wz", "stand", None, 0.1),
   ("max_air_time_s", "stand", None, 0.5),
 ]
+# Wheel-legged robots roll forward and turn on their wheels and step only to
+# move sideways: replace the turning gates with rolling and stepping ones.
+WHEELED_GATES = [g for g in GATES if g[0] != "min_foot_touchdown_hz"] + [
+  ("max_foot_touchdown_hz", "vx_+0.5", None, 0.5),
+  ("max_foot_touchdown_hz", "vx_+1.0", None, 0.5),
+  ("max_foot_touchdown_hz", "wz_+1.0", None, 0.5),
+  ("min_foot_touchdown_hz", "vy_+0.4", 0.8, None),
+  ("min_foot_touchdown_hz", "vy_-0.4", 0.8, None),
+]
 
 
 def load_teacher(checkpoint: str, obs: TensorDict, device: str):
   from rsl_rl.models import MLPModel
 
   ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
+  weights = [k for k in ck["actor_state_dict"] if k.startswith("mlp.") and k.endswith(".weight")]
+  num_actions = ck["actor_state_dict"][max(weights, key=lambda k: int(k.split(".")[1]))].shape[0]
   model = MLPModel(
     obs,
     {"actor": ["actor"]},
     "actor",
-    12,
+    num_actions,
     hidden_dims=(512, 256, 128),
     obs_normalization=True,
     distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
@@ -129,7 +140,9 @@ def evaluate(args) -> dict:
 
   robot = env.scene["robot"]
   contact = env.scene["feet_ground_contact"]
-  default_q = robot.data.default_joint_pos
+  # Posture deviation over the legs only (wheel angles are unbounded).
+  legs = [i for i, name in enumerate(robot.joint_names) if "wheel" not in name]
+  default_q = robot.data.default_joint_pos[:, legs]
   n = env.num_envs
   steps = int(DURATION_S / env.step_dt)
   warm = int(WARMUP_S / env.step_dt)
@@ -155,7 +168,7 @@ def evaluate(args) -> dict:
       acc["speed_xy"] += torch.norm(v[:, :2], dim=1)
       acc["abs_wz"] += w.abs()
       acc["all4"] += found.all(dim=1).float()
-      acc["qdev"] += (robot.data.joint_pos - default_q).abs().max(dim=1).values
+      acc["qdev"] += (robot.data.joint_pos[:, legs] - default_q).abs().max(dim=1).values
       # Feet order FR, FL, RR, RL: diagonals are (FR, RL) and (FL, RR).
       diag_agree += 0.5 * ((found[:, 0] == found[:, 3]).float() + (found[:, 1] == found[:, 2]).float())
       if prev is not None:
@@ -184,19 +197,21 @@ def evaluate(args) -> dict:
       "max_joint_dev_rad": mean(acc["qdev"] / m),
       "diag_contact_agree": mean(diag_agree / m),
       "min_foot_touchdown_hz": mean(touchdowns.min(dim=1).values / span),
+      "max_foot_touchdown_hz": mean(touchdowns.max(dim=1).values / span),
       "max_air_time_s": float(max_air[sl][ok].max()) if ok.any() else float("nan"),
     }
     for key, target in (("vx", vx), ("vy", vy), ("wz", wz)):
       if target != 0.0:
         r[f"ratio_{key}"] = r[key] / target
     results[name] = r
+  results["_action_terms"] = tuple(env.action_manager.active_terms)
   env.close()
   return results
 
 
-def check_gates(results: dict) -> list[str]:
+def check_gates(results: dict, gates: list = GATES) -> list[str]:
   failures = []
-  for metric, scope, low, high in GATES:
+  for metric, scope, low, high in gates:
     for name, r in results.items():
       if scope not in ("*", name) or metric not in r:
         continue
@@ -241,10 +256,11 @@ def main() -> None:
   import src.tasks  # noqa: F401
 
   results = evaluate(args)
-  failures = check_gates(results)
+  wheeled = "wheel_vel" in results.pop("_action_terms", ())
+  failures = check_gates(results, WHEELED_GATES if wheeled else GATES)
   print(f"\n[eval_flat] {args.checkpoint}")
   keys = ["fall_rate", "ratio_vx", "ratio_vy", "ratio_wz", "speed_xy", "abs_wz",
-          "min_foot_touchdown_hz", "all_feet_contact_frac", "max_air_time_s",
+          "min_foot_touchdown_hz", "max_foot_touchdown_hz", "all_feet_contact_frac", "max_air_time_s",
           "diag_contact_agree", "max_joint_dev_rad"]
   for name, r in results.items():
     print(f"  {name:8s} " + " ".join(f"{k}={r[k]:.2f}" for k in keys if k in r))

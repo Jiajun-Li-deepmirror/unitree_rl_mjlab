@@ -62,6 +62,8 @@ class Scenario:
   would read as walls everywhere. The depth student sees them normally."""
 
 
+ROBOT_TASK_NAMES = {"go2": "Go2", "go2w": "Go2W", "as2": "As2", "b2": "B2"}
+
 SCENARIOS = [
   Scenario("L0_up", (-10.34, 5.75, 0.431), -90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:2.0", 3.3),
   # The 3.65 m flight takes ~9.1 s at 0.4 m/s; then stop on the landing like an
@@ -199,19 +201,24 @@ def load_policy(kind: str, checkpoint: str, obs: TensorDict, device: str):
   ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
   if kind == "teacher":
     state = ck.get("actor_state_dict") or ck["teacher_state_dict"]
+  else:
+    state = ck["student_state_dict"]
+  # Action count from the last MLP layer (12 legs, + 4 wheels on wheeled robots).
+  weights = [k for k in state if k.startswith("mlp.") and k.endswith(".weight")]
+  num_actions = state[max(weights, key=lambda k: int(k.split(".")[1]))].shape[0]
+  if kind == "teacher":
     model = MLPModel(
       obs,
       {"actor": ["actor"]},
       "actor",
-      12,
+      num_actions,
       hidden_dims=(512, 256, 128),
       obs_normalization=True,
       distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
     )
   else:
-    state = ck["student_state_dict"]
     model = DepthStudentModel(
-      obs, {"student": ["proprio", "proprio_history", "depth"]}, "student", 12
+      obs, {"student": ["proprio", "proprio_history", "depth"]}, "student", num_actions
     )
   # The student's terrain reconstruction head is training-only; checkpoints
   # from before it existed load without it.
@@ -224,7 +231,7 @@ def load_policy(kind: str, checkpoint: str, obs: TensorDict, device: str):
 def run_scenario(args, scenario: Scenario, boxes) -> dict:
   from mjlab.envs import ManagerBasedRlEnv
 
-  task = "Unitree-Go2-Depth-Student" if args.policy == "student" else "Unitree-Go2-Depth-Teacher"
+  task = f"Unitree-{ROBOT_TASK_NAMES[args.robot]}-Depth-{args.policy.capitalize()}"
   if args.policy == "teacher" or args.drop_overhead:
     boxes = [
       (n, size, pos) for n, size, pos in boxes
@@ -340,6 +347,7 @@ def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--policy", choices=("teacher", "student"), required=True)
   parser.add_argument("--checkpoint", required=True)
+  parser.add_argument("--robot", choices=tuple(ROBOT_TASK_NAMES), default="go2")
   parser.add_argument(
     "--map3-dir", type=Path, default=MAP3_DIR,
     help="Folder with map3_collision.xml and scene.xml (default: the copy in this repo).",
