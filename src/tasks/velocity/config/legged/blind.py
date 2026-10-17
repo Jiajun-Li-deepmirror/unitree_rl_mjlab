@@ -19,6 +19,7 @@ from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
@@ -442,6 +443,10 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
   cfg.events["pd_gains"].params["asset_cfg"] = SceneEntityCfg(
     "robot", actuator_ids=position_groups
   )
+
+  # A rare NaN physics state (1 env in ~10M steps on the first Go2-W run,
+  # likely a wheel cylinder contact) crashed training; reset such envs.
+  cfg.terminations["nan_state"] = TerminationTermCfg(func=mdp.nan_detection)
 
   rewards = cfg.rewards
   for name in ("pose", "stand_still_even", "joint_acc_l2", "joint_pos_limits"):
