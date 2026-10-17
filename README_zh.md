@@ -60,6 +60,8 @@ python scripts/train.py Unitree-G1-Flat \
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
+  - Unitree-Go2-Blind：只用本体感知的 Go2，遥控全向移动、上下 18 cm 以内的楼梯；
+    训练流程、评估和部署见 [doc/go2_blind.md](doc/go2_blind.md)。
 
 > [!NOTE]
 > 更多有关详细说明，请参阅 mjlab 文档

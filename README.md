@@ -62,6 +62,8 @@ Available velocity tracking tasks:
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
+  - Unitree-Go2-Blind: proprioception-only Go2 for joystick control and stairs up to 18 cm;
+    see [doc/go2_blind.md](doc/go2_blind.md) for its training recipe, evaluation and deployment.
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:
