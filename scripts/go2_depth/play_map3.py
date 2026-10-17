@@ -104,6 +104,8 @@ class Map3PlayTerrainCfg(SubTerrainCfg):
   size: tuple[float, float] = eval_map3.MAP3_TILE_SIZE
   boxes: list = field(default_factory=list)
   scan_proxies: bool = False
+  rail_alpha: float = 1.0
+  """Rail transparency, for rendering only (cameras can see into the flights)."""
 
   def function(self, difficulty, spec, rng) -> TerrainOutput:
     del difficulty, rng
@@ -116,7 +118,7 @@ class Map3PlayTerrainCfg(SubTerrainCfg):
       rail = name.startswith("rail")
       if rail and self.scan_proxies:
         geom.group = 1  # Collides and renders, but the scan (group 0) ignores it.
-      rgba = (0.85, 0.3, 0.3, 1.0) if rail else (0.78, 0.72, 0.6, 1.0)
+      rgba = (0.85, 0.3, 0.3, self.rail_alpha) if rail else (0.78, 0.72, 0.6, 1.0)
       geometries.append(TerrainGeometry(geom=geom, color=rgba))
     if self.scan_proxies:
       for name, size, pos in rail_proxies(self.boxes):
