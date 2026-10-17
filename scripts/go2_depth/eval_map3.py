@@ -62,7 +62,7 @@ class Scenario:
   would read as walls everywhere. The depth student sees them normally."""
 
 
-ROBOT_TASK_NAMES = {"go2": "Go2", "go2w": "Go2W", "as2": "As2", "b2": "B2"}
+ROBOT_TASK_NAMES = {"go2": "Go2", "go2w": "Go2W", "as2": "As2", "b2": "B2", "b2w": "B2W"}
 
 SCENARIOS = [
   Scenario("L0_up", (-10.34, 5.75, 0.431), -90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:2.0", 3.3),
