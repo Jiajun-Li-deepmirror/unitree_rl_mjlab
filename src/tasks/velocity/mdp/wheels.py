@@ -1,9 +1,9 @@
 """Rewards for wheel-legged robots (Go2-W, B2-W, As2-W).
 
-The wheels are the feet: on even ground with no sideways command the robot
-should roll with its legs still ("roll mode"); on stairs or uneven ground,
-or to move sideways, it steps like the legged robots ("step mode", where the
-legged gait rewards apply). The mode comes from the privileged height scan
+The wheels are the feet: on even ground, going forward or back (also in
+arcs), the robot should roll with its legs still ("roll mode"); on stairs
+or uneven ground, to move sideways or to turn in place, it steps like the
+legged robots ("step mode", where the legged gait rewards apply). The mode comes from the privileged height scan
 and the command, so only rewards use it; the policy has to infer it.
 """
 
@@ -31,11 +31,19 @@ def step_mode_mask(
   uneven_radius: float = 0.45,
   uneven_threshold: float = 0.05,
 ) -> torch.Tensor:
-  """Per-env bool: the robot should step (uneven ground or a sideways command)."""
+  """Per-env bool: the robot should step (uneven ground, a sideways command or
+  turning in place).
+
+  Skid-steering in place reaches only ~30% of the commanded yaw rate on the
+  Go2-W (the wheels scrub sideways), and go2-blind turns in place by stepping.
+  Arcs (forward speed plus yaw) stay on the wheels.
+  """
   command = env.command_manager.get_command(command_name)
   assert command is not None
   lateral = command[:, 1].abs() > lateral_threshold
-  return lateral | uneven_terrain_mask(env, scan_sensor_name, uneven_radius, uneven_threshold)
+  turn_in_place = (command[:, 0].abs() < lateral_threshold) & (command[:, 2].abs() > 0.2)
+  uneven = uneven_terrain_mask(env, scan_sensor_name, uneven_radius, uneven_threshold)
+  return lateral | turn_in_place | uneven
 
 
 def _moving(env: ManagerBasedRlEnv, command_name: str, threshold: float) -> torch.Tensor:
@@ -118,3 +126,54 @@ def roll_wheel_contact(
   moving = _moving(env, command_name, command_threshold)
   env.extras["log"]["Metrics/roll_mode_frac"] = (roll & moving).float().mean()
   return ratio * (roll & moving).float()
+
+
+def roll_leg_deviation(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  scan_sensor_name: str,
+  command_threshold: float = 0.1,
+  lateral_threshold: float = 0.15,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+  """Squared leg deviation from the default pose while moving in roll mode."""
+  asset: Entity = env.scene[asset_cfg.name]
+  diff = (
+    asset.data.joint_pos[:, asset_cfg.joint_ids]
+    - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  )
+  cost = torch.sum(torch.square(diff), dim=1)
+  roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
+  return cost * (roll & _moving(env, command_name, command_threshold)).float()
+
+
+def wheel_roll_tracking(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  scan_sensor_name: str,
+  wheel_radius: float,
+  std: float,
+  command_threshold: float = 0.1,
+  lateral_threshold: float = 0.15,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+  """exp(-mean wheel speed error^2 / std^2) against the commanded vx and yaw
+  rate (differential drive), in roll mode while moving.
+
+  `asset_cfg` holds the wheel joints and the wheel centre sites (same order);
+  a wheel `y` (base frame) to the left must turn at (vx - wz y) / r.
+  """
+  from mjlab.utils.lab_api.math import quat_apply_inverse
+
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  rel = asset.data.site_pos_w[:, asset_cfg.site_ids] - asset.data.root_link_pos_w[:, None]
+  quat = asset.data.root_link_quat_w[:, None].expand(-1, rel.shape[1], -1)
+  y = quat_apply_inverse(quat, rel)[..., 1]
+  target = (command[:, :1] - command[:, 2:3] * y) / wheel_radius
+  speed = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  err = torch.mean(torch.square(speed - target), dim=1)
+  roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
+  active = roll & _moving(env, command_name, command_threshold)
+  return torch.exp(-err / std**2) * active.float()

@@ -474,13 +474,39 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       ),
     },
   )
+  # Roll mode. At -0.002 / +0.5 (legs moving / wheels down) alone the first
+  # Go2-W trotted on flat ground anyway (feet touching down at ~1.8 Hz):
+  # also hold the default leg pose and reward wheel speeds that drive the
+  # command like a differential drive.
   rewards["roll_leg_motion"] = RewardTermCfg(
     func=mdp.roll_leg_motion,
-    weight=-0.002,
+    weight=-0.01,
+    params={**standing, **scan, "asset_cfg": legs()},
+  )
+  rewards["roll_leg_deviation"] = RewardTermCfg(
+    func=mdp.roll_leg_deviation,
+    weight=-2.0,
     params={**standing, **scan, "asset_cfg": legs()},
   )
   rewards["roll_wheel_contact"] = RewardTermCfg(
     func=mdp.roll_wheel_contact,
-    weight=0.5,
+    weight=2.0,
     params={**standing, **scan, "sensor_name": "feet_ground_contact"},
+  )
+  rewards["wheel_roll_tracking"] = RewardTermCfg(
+    func=mdp.wheel_roll_tracking,
+    weight=1.0,
+    params={
+      **standing,
+      **scan,
+      "wheel_radius": spec.wheel_radius,
+      "std": 3.0,
+      # Wheel joints listed in the foot site order (FR, FL, RR, RL).
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=tuple(f"{s}_wheel_joint" for s in spec.foot_site_names),
+        site_names=spec.foot_site_names,
+        preserve_order=True,
+      ),
+    },
   )

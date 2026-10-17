@@ -71,12 +71,12 @@ GATES = [
   ("abs_wz", "stand", None, 0.1),
   ("max_air_time_s", "stand", None, 0.5),
 ]
-# Wheel-legged robots roll forward and turn on their wheels and step only to
-# move sideways: replace the turning gates with rolling and stepping ones.
-WHEELED_GATES = [g for g in GATES if g[0] != "min_foot_touchdown_hz"] + [
+# Wheel-legged robots roll forward and back, and step to move sideways or to
+# turn in place (mdp/wheels.py step_mode_mask): add rolling/stepping gates.
+WHEELED_GATES = GATES + [
   ("max_foot_touchdown_hz", "vx_+0.5", None, 0.5),
   ("max_foot_touchdown_hz", "vx_+1.0", None, 0.5),
-  ("max_foot_touchdown_hz", "wz_+1.0", None, 0.5),
+  ("max_foot_touchdown_hz", "vx_-0.4", None, 0.5),
   ("min_foot_touchdown_hz", "vy_+0.4", 0.8, None),
   ("min_foot_touchdown_hz", "vy_-0.4", 0.8, None),
 ]
