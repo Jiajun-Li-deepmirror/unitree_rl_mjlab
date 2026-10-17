@@ -307,7 +307,7 @@ def make_blind_env_cfg(
   for key in ("std_walking", "std_running"):
     rewards["pose"].params[key] = {
       **rewards["pose"].params[key],
-      r".*(FR|FL|RR|RL)_hip_joint.*": 0.3,
+      r".*(FR|FL|RR|RL)_hip_joint.*": spec.hip_walking_std,
     }
   rewards["foot_slip"].weight = -0.5
 

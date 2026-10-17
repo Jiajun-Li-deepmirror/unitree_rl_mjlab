@@ -29,10 +29,14 @@ def step_mode_mask(
   scan_sensor_name: str,
   lateral_threshold: float = 0.15,
   uneven_radius: float = 0.45,
-  uneven_threshold: float = 0.05,
+  uneven_threshold: float = 0.03,
 ) -> torch.Tensor:
   """Per-env bool: the robot should step (uneven ground, a sideways command or
   turning in place).
+
+  Ground counts as uneven from a 3 cm span (legged robots: 5 cm): the wheels
+  roll over less, and with 5 cm the lowest stair rows (5-6 cm rises) were
+  half roll mode, where the first full Go2-W teacher froze.
 
   Skid-steering in place reaches only ~30% of the commanded yaw rate on the
   Go2-W (the wheels scrub sideways), and go2-blind turns in place by stepping.
@@ -117,15 +121,26 @@ def roll_wheel_contact(
   scan_sensor_name: str,
   command_threshold: float = 0.1,
   lateral_threshold: float = 0.15,
+  tracking_std: float = 0.5,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-  """Fraction of wheels on the ground while moving in roll mode."""
+  """Fraction of wheels on the ground while moving in roll mode, times how well
+  the base follows the commanded planar velocity (exp(-err^2/std^2)).
+
+  Without the tracking factor, standing still with all wheels down earned it
+  in full, and the first full Go2-W teacher froze.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
   contact: ContactSensor = env.scene[sensor_name]
   assert contact.data.found is not None
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
   ratio = torch.mean((contact.data.found > 0).float(), dim=1)
+  err = torch.sum(torch.square(asset.data.root_link_lin_vel_b[:, :2] - command[:, :2]), dim=1)
   roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
   moving = _moving(env, command_name, command_threshold)
   env.extras["log"]["Metrics/roll_mode_frac"] = (roll & moving).float().mean()
-  return ratio * (roll & moving).float()
+  return ratio * torch.exp(-err / tracking_std**2) * (roll & moving).float()
 
 
 def roll_leg_deviation(

@@ -45,6 +45,9 @@ class LeggedTaskSpec:
   base_payload_range: tuple[float, float] = (-1.0, 2.0)
   """kg added to the base."""
   swing_target_height: float = 0.10
+  hip_walking_std: float = 0.3
+  """Hip tolerance of the posture reward while moving (side steps swing the
+  hips out; Go2 default 0.15 capped vy at ~70-80%)."""
   foot_radius: float = 0.022
 
   # Stairs.

@@ -28,6 +28,8 @@ GO2W_SPEC = LeggedTaskSpec(
   swing_target_height=GO2W_WHEEL_RADIUS + 0.078,
   # Wheel spheres reach 0.28 m each side (Go2 feet: 0.16 m).
   wall_safe_distance=0.40,
+  # Side steps reached only ~45% of vy at the Go2's 0.3.
+  hip_walking_std=0.45,
   onnx_contract="go2w_depth_v1",
 )
 
