@@ -201,6 +201,7 @@ def make_depth_teacher_env_cfg(
     params={
       "sensor_name": "feet_ground_contact",
       "scan_sensor_name": FOOT_SCAN_NAME,
+      "foot_radius": spec.foot_radius,
       "asset_cfg": feet,
     },
   )

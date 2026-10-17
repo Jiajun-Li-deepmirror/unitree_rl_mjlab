@@ -45,6 +45,7 @@ class LeggedTaskSpec:
   base_payload_range: tuple[float, float] = (-1.0, 2.0)
   """kg added to the base."""
   swing_target_height: float = 0.10
+  foot_radius: float = 0.022
 
   # Stairs.
   step_height_range: tuple[float, float] = (0.05, 0.20)
