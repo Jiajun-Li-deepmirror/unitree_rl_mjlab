@@ -72,6 +72,9 @@ STAIR_VEL_RANGES = {
 
 # map3 rises reach ~19 cm; the walled tiles add +-1.5 cm per step on top.
 STEP_HEIGHT_RANGE = (0.05, 0.20)
+# Foothold progress is paid in full up to 0.05 m/s over the commanded speed and
+# not at all from 0.25 m/s over (v9 ran down map3 at 0.6 m/s for 0.4).
+FOOTHOLD_OVERSPEED_RANGE = (0.05, 0.25)
 
 DEPTH_SENSOR_NAME = "front_depth"
 
@@ -209,6 +212,7 @@ def unitree_go2_depth_teacher_env_cfg(
       "sensor_name": "feet_ground_contact",
       **standing,
       "asset_cfg": deepcopy(feet),
+      "overspeed_range": FOOTHOLD_OVERSPEED_RANGE,
     },
   )
   # The policy keeps itself off the walls; corridor commands only hold heading.
@@ -227,6 +231,7 @@ def unitree_go2_depth_teacher_env_cfg(
       **standing,
       "asset_cfg": deepcopy(feet),
       "descend": True,
+      "overspeed_range": FOOTHOLD_OVERSPEED_RANGE,
     },
   )
 

@@ -777,6 +777,11 @@ class feet_foothold_height_gain:
 
   With `descend=True` the records are lows instead, rewarding progress down
   stairs the same way (nothing on flat ground or when spawned at the bottom).
+
+  Being progress rewards, discounting pays more for collecting them sooner,
+  which made the policy run down stairs well above the commanded speed. With
+  `overspeed_range=(lo, hi)`, a record is paid in full while the base moves at
+  most `lo` m/s faster than commanded, fading to nothing at `hi`.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -801,6 +806,7 @@ class feet_foothold_height_gain:
     min_force: float = 10.0,
     min_gain: float = 0.02,
     descend: bool = False,
+    overspeed_range: tuple[float, float] | None = None,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
     contact: ContactSensor = env.scene[sensor_name]
@@ -824,6 +830,14 @@ class feet_foothold_height_gain:
     self.best_z = torch.where(record, foot_z, self.best_z)
     active = ~_zero_command_mask(env, command_name, command_threshold)
     reward = torch.where(record, gain, 0.0).sum(dim=1) * active.float()
+    if overspeed_range is not None:
+      lo, hi = overspeed_range
+      command = env.command_manager.get_command(command_name)
+      assert command is not None
+      overspeed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1) - torch.norm(
+        command[:, :2], dim=1
+      )
+      reward = reward * torch.clamp((hi - overspeed) / (hi - lo), 0.0, 1.0)
     return reward / env.step_dt
 
 
