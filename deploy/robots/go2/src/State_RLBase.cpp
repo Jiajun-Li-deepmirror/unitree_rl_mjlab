@@ -15,9 +15,14 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
+    // Base tilt > 1.0 rad -> Passive. Checked here because the shared
+    // isaaclab::mdp::bad_orientation is stubbed to always return false.
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+            [&]()->bool{
+                float cos_tilt = std::clamp(-env->robot->data.projected_gravity_b[2], -1.0f, 1.0f);
+                return std::acos(cos_tilt) > 1.0f;
+            },
             FSMStringMap.right.at("Passive")
         )
     );

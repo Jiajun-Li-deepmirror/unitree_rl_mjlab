@@ -17,7 +17,14 @@ commands:
       heading: null
 actions:
   JointPositionAction:
-    clip: null
+    # Safety clamp on the joint target (after scale and offset), policy joint order
+    # FL, FR, RL, RR x (hip, thigh, calf): default_joint_pos +- 2.0 rad (raw action +-8).
+    # Training had no clip; under training conditions model_20000 exceeds this on
+    # ~0.005% of steps. last_action stays the unclipped policy output.
+    clip: [[-2.1, 1.9], [-1.1, 2.9], [-3.8, 0.2],
+           [-1.9, 2.1], [-1.1, 2.9], [-3.8, 0.2],
+           [-2.1, 1.9], [-1.1, 2.9], [-3.8, 0.2],
+           [-1.9, 2.1], [-1.1, 2.9], [-3.8, 0.2]]
     joint_names: [.*]
     scale: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
     offset: [-0.1,0.9,-1.8, 0.1,0.9,-1.8, -0.1,0.9,-1.8, 0.1,0.9,-1.8]
