@@ -1,4 +1,4 @@
-"""Record a scripted tour of the map3 stairwell with a teacher or student.
+"""Record a scripted tour of the map3 stairwell with a teacher or student (any --robot).
 
 An "operator" autopilot drives the twist command along a route (L0 up, across
 the landing, R1 up, turn around, R1 down, L0 down, then an omnidirectional
@@ -121,6 +121,7 @@ def overlay(frame, lines):
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--checkpoint", required=True)
+  parser.add_argument("--robot", choices=tuple(eval_map3.ROBOT_TASK_NAMES), default="go2")
   parser.add_argument("--out", default="map3_tour.mp4")
   parser.add_argument("--width", type=int, default=960)
   parser.add_argument("--height", type=int, default=540)
@@ -134,7 +135,8 @@ def main() -> None:
 
   ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
   teacher = "student_state_dict" not in ck
-  task = "Unitree-Go2-Depth-Teacher" if teacher else "Unitree-Go2-Depth-Student"
+  robot_name = eval_map3.ROBOT_TASK_NAMES[args.robot]
+  task = f"Unitree-{robot_name}-Depth-{'Teacher' if teacher else 'Student'}"
   spawn, yaw = play_map3.SPAWNS[SPAWN]
   cfg = play_map3.make_env_cfg(task, spawn, yaw, teacher)
   cfg.scene.terrain.terrain_generator.sub_terrains["map3"].rail_alpha = 0.18
@@ -183,7 +185,7 @@ def main() -> None:
         frame = env.unwrapped.render()
         z = float(env.unwrapped.scene["robot"].data.root_link_pos_w[0, 2]) - float(env.unwrapped.scene.env_origins[0, 2]) + spawn[2]
         writer.append_data(overlay(frame, [
-          f"{kind} on map3: {label}",
+          f"{robot_name} {kind} on map3: {label}",
           f"cmd vx {cmd[0]:+.2f}  vy {cmd[1]:+.2f}  wz {cmd[2]:+.2f}",
           f"t {sim_t:5.1f} s   height {z:4.2f} m   falls {falls}",
         ]))
