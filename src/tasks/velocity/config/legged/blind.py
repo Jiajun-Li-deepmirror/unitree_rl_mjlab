@@ -470,6 +470,9 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
   gait = rewards["foot_gait"]
   gait.func = mdp.feet_gait_stepping
   gait.params |= scan
+  if spec.step_gait_weight != gait.weight:
+    gait.weight = spec.step_gait_weight
+    gait.params["tracking_std"] = 0.5
 
   rewards.pop("foot_slip")
   rewards["wheel_slip"] = RewardTermCfg(

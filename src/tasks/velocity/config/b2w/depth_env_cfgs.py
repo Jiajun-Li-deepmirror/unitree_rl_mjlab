@@ -30,6 +30,11 @@ B2W_SPEC = replace(
   swing_target_height=B2W_WHEEL_RADIUS + 0.088,
   # Wheel spheres reach 0.35 m each side (B2 feet: 0.23 m).
   wall_safe_distance=0.45,
+  # The first B2-W flat teacher only rolled: it never lifted a wheel (no side
+  # steps, vy 0; turning in place 20-36%). Reward the trot harder where it
+  # has to step, and let it find stepping before the swing penalty applies.
+  step_gait_weight=2.0,
+  swing_weight_stages=((0, 0.0), (1000, -0.5), (3000, -1.5)),
   onnx_contract="b2w_depth_v1",
 )
 

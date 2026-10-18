@@ -60,11 +60,27 @@ def feet_gait_stepping(
   env: ManagerBasedRlEnv,
   scan_sensor_name: str,
   lateral_threshold: float = 0.15,
+  tracking_std: float | None = None,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
   **gait_params,
 ) -> torch.Tensor:
-  """`feet_gait` (trot phase), only in step mode."""
-  step = step_mode_mask(env, gait_params["command_name"], scan_sensor_name, lateral_threshold)
-  return feet_gait(env, **gait_params) * step.float()
+  """`feet_gait` (trot phase), only in step mode.
+
+  With `tracking_std`, scaled by how well the base follows the planar command
+  and yaw rate (exp(-err^2/std^2)), so a heavier weight can't be farmed by
+  trotting in place.
+  """
+  command_name = gait_params["command_name"]
+  step = step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
+  reward = feet_gait(env, **gait_params) * step.float()
+  if tracking_std is not None:
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    err = torch.sum(torch.square(asset.data.root_link_lin_vel_b[:, :2] - command[:, :2]), dim=1)
+    err = err + torch.square(asset.data.root_link_ang_vel_b[:, 2] - command[:, 2])
+    reward = reward * torch.exp(-err / tracking_std**2)
+  return reward
 
 
 def wheel_slip(
