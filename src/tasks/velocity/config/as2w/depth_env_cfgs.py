@@ -30,6 +30,14 @@ AS2W_SPEC = replace(
   swing_target_height=As2W_WHEEL_RADIUS + 0.078,
   # Wheel spheres reach 0.31 m each side.
   wall_safe_distance=0.42,
+  # What the Go2-W (same size and wheel) and the B2-W needed: the wheel-sized
+  # edge rule, looser hips for side steps, a strong tracking-gated step-mode
+  # trot reward and a swing penalty that only applies once it steps.
+  terrain_clearance_weight=-10.0,
+  terrain_clearance_margin=0.02,
+  hip_walking_std=0.45,
+  step_gait_weight=2.0,
+  swing_weight_stages=((0, 0.0), (1000, -1.0), (3000, -2.0)),
   onnx_contract="as2w_depth_v1",
 )
 
