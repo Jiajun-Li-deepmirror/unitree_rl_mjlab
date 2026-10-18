@@ -114,33 +114,29 @@ def roll_leg_motion(
   return cost * (roll & _moving(env, command_name, command_threshold)).float()
 
 
-def roll_wheel_contact(
+def roll_wheels_lifted(
   env: ManagerBasedRlEnv,
   sensor_name: str,
   command_name: str,
   scan_sensor_name: str,
   command_threshold: float = 0.1,
   lateral_threshold: float = 0.15,
-  tracking_std: float = 0.5,
-  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-  """Fraction of wheels on the ground while moving in roll mode, times how well
-  the base follows the commanded planar velocity (exp(-err^2/std^2)).
+  """Fraction of wheels off the ground while moving in roll mode (a penalty).
 
-  Without the tracking factor, standing still with all wheels down earned it
-  in full, and the first full Go2-W teacher froze.
+  Roll mode only carries penalties, so rolling properly costs nothing and
+  neither mode pays more than the other. With positive roll-mode rewards
+  (wheels down, wheel speeds) the full Go2-W teacher learned to farm them:
+  it rolled up to the first riser, where step mode took them away, backed
+  off onto flat ground and rolled up again, never stepping up.
   """
-  asset: Entity = env.scene[asset_cfg.name]
   contact: ContactSensor = env.scene[sensor_name]
   assert contact.data.found is not None
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  ratio = torch.mean((contact.data.found > 0).float(), dim=1)
-  err = torch.sum(torch.square(asset.data.root_link_lin_vel_b[:, :2] - command[:, :2]), dim=1)
+  lifted = 1.0 - torch.mean((contact.data.found > 0).float(), dim=1)
   roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
   moving = _moving(env, command_name, command_threshold)
   env.extras["log"]["Metrics/roll_mode_frac"] = (roll & moving).float().mean()
-  return ratio * torch.exp(-err / tracking_std**2) * (roll & moving).float()
+  return lifted * (roll & moving).float()
 
 
 def roll_leg_deviation(
@@ -160,35 +156,3 @@ def roll_leg_deviation(
   cost = torch.sum(torch.square(diff), dim=1)
   roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
   return cost * (roll & _moving(env, command_name, command_threshold)).float()
-
-
-def wheel_roll_tracking(
-  env: ManagerBasedRlEnv,
-  command_name: str,
-  scan_sensor_name: str,
-  wheel_radius: float,
-  std: float,
-  command_threshold: float = 0.1,
-  lateral_threshold: float = 0.15,
-  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-  """exp(-mean wheel speed error^2 / std^2) against the commanded vx and yaw
-  rate (differential drive), in roll mode while moving.
-
-  `asset_cfg` holds the wheel joints and the wheel centre sites (same order);
-  a wheel `y` (base frame) to the left must turn at (vx - wz y) / r.
-  """
-  from mjlab.utils.lab_api.math import quat_apply_inverse
-
-  asset: Entity = env.scene[asset_cfg.name]
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  rel = asset.data.site_pos_w[:, asset_cfg.site_ids] - asset.data.root_link_pos_w[:, None]
-  quat = asset.data.root_link_quat_w[:, None].expand(-1, rel.shape[1], -1)
-  y = quat_apply_inverse(quat, rel)[..., 1]
-  target = (command[:, :1] - command[:, 2:3] * y) / wheel_radius
-  speed = asset.data.joint_vel[:, asset_cfg.joint_ids]
-  err = torch.mean(torch.square(speed - target), dim=1)
-  roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
-  active = roll & _moving(env, command_name, command_threshold)
-  return torch.exp(-err / std**2) * active.float()

@@ -487,10 +487,12 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       ),
     },
   )
-  # Roll mode. At -0.002 / +0.5 (legs moving / wheels down) alone the first
-  # Go2-W trotted on flat ground anyway (feet touching down at ~1.8 Hz):
-  # also hold the default leg pose and reward wheel speeds that drive the
-  # command like a differential drive.
+  # Roll mode carries penalties only (legs moving, legs off the default pose,
+  # wheels off the ground): rolling properly costs nothing, so neither mode
+  # pays more than the other. Positive roll-mode rewards (wheels down +2,
+  # wheel speeds +1) got the first full Go2-W teacher farming them: it backed
+  # off every riser to roll up again and never stepped up. The weak first
+  # version (-0.002 leg speed only) let it trot on flat ground.
   rewards["roll_leg_motion"] = RewardTermCfg(
     func=mdp.roll_leg_motion,
     weight=-0.01,
@@ -501,25 +503,8 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
     weight=-2.0,
     params={**standing, **scan, "asset_cfg": legs()},
   )
-  rewards["roll_wheel_contact"] = RewardTermCfg(
-    func=mdp.roll_wheel_contact,
-    weight=2.0,
+  rewards["roll_wheels_lifted"] = RewardTermCfg(
+    func=mdp.roll_wheels_lifted,
+    weight=-1.0,
     params={**standing, **scan, "sensor_name": "feet_ground_contact"},
-  )
-  rewards["wheel_roll_tracking"] = RewardTermCfg(
-    func=mdp.wheel_roll_tracking,
-    weight=1.0,
-    params={
-      **standing,
-      **scan,
-      "wheel_radius": spec.wheel_radius,
-      "std": 3.0,
-      # Wheel joints listed in the foot site order (FR, FL, RR, RL).
-      "asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=tuple(f"{s}_wheel_joint" for s in spec.foot_site_names),
-        site_names=spec.foot_site_names,
-        preserve_order=True,
-      ),
-    },
   )
