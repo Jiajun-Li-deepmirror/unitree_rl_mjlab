@@ -70,10 +70,10 @@ class LeggedTaskSpec:
   leg_joints: str = r"^[FR][LR]_(hip|thigh|calf)_joint$"
   wheel_radius: float = 0.0
   wheel_action_scale: float = 10.0
+  """rad/s per unit action (default offset 0: zero action brakes)."""
   step_gait_weight: float = 0.5
   """Weight of the trot reward in step mode; above the legged 0.5 it is also
   scaled by command tracking (mdp.feet_gait_stepping)."""
-  """rad/s per unit action (default offset 0: zero action brakes)."""
 
   # Front depth camera on `base_body` (tinynav PIE intrinsics for all robots).
   camera_pos: tuple[float, float, float] = depth_mdp.DEPTH_CAMERA_POS

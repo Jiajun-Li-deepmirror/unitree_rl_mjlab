@@ -38,6 +38,12 @@ GO2W_SPEC = LeggedTaskSpec(
   # Heavy wheels at the leg ends, as on the B2: ease the swing penalty.
   # (Stages count total iterations; the fine-tune resumes v2 at 6300.)
   swing_weight_stages=((0, -1.0), (8300, -2.0)),
+  # With the ungated 0.5 trot reward, full_v4ft learned after ~14k iters to
+  # trot in place short of a flight (step mode, no climbing penalties): on
+  # map3 it backed off the first step into the wall behind. Gating the trot
+  # by tracking (as on the B2-W) removes that, and the heavier weight is what
+  # got the B2-W stepping sideways at 0.6-0.7 of vy (Go2-W: 0.4).
+  step_gait_weight=2.0,
   onnx_contract="go2w_depth_v1",
 )
 
