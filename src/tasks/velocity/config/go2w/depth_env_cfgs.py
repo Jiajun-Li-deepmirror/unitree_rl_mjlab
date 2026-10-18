@@ -30,6 +30,14 @@ GO2W_SPEC = LeggedTaskSpec(
   wall_safe_distance=0.40,
   # Side steps reached only ~45% of vy at the Go2's 0.3.
   hip_walking_std=0.45,
+  # The Go2's edge rule (sole 5 cm over any edge within 12 cm ahead, -40)
+  # asks a 0.086 m wheel to lift its centre ~22 cm before an 8 cm step:
+  # the first teacher never stepped up even 5 cm rises (descents were fine).
+  terrain_clearance_weight=-10.0,
+  terrain_clearance_margin=0.02,
+  # Heavy wheels at the leg ends, as on the B2: ease the swing penalty.
+  # (Stages count total iterations; the fine-tune resumes v2 at 6300.)
+  swing_weight_stages=((0, -1.0), (8300, -2.0)),
   onnx_contract="go2w_depth_v1",
 )
 

@@ -197,11 +197,12 @@ def make_depth_teacher_env_cfg(
   cfg.rewards["foot_swing_clearance"].params["scan_sensor_name"] = "terrain_scan"
   cfg.rewards["foot_terrain_clearance"] = RewardTermCfg(
     func=mdp.feet_terrain_clearance,
-    weight=-40.0,
+    weight=spec.terrain_clearance_weight,
     params={
       "sensor_name": "feet_ground_contact",
       "scan_sensor_name": FOOT_SCAN_NAME,
       "foot_radius": spec.foot_radius,
+      "margin": spec.terrain_clearance_margin,
       "asset_cfg": feet,
     },
   )

@@ -46,6 +46,9 @@ class LeggedTaskSpec:
   """kg added to the base."""
   swing_target_height: float = 0.10
   hip_walking_std: float = 0.3
+  terrain_clearance_weight: float = -40.0
+  terrain_clearance_margin: float = 0.05
+  """Swing soles must clear step edges ahead by this much (m)."""
   swing_weight_stages: tuple[tuple[int, float], ...] | None = None
   """(iteration, weight) stages of the swing clearance penalty (default -3
   throughout). At -3 the heavy B2 never lifted a foot: each low landing cost
