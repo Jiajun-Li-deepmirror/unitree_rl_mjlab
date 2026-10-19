@@ -1,4 +1,4 @@
-"""Flat-ground acceptance check for a Go2 depth teacher (or blind) checkpoint.
+"""Flat-ground acceptance check for a depth teacher, student (or blind) checkpoint.
 
 Runs fixed joystick commands on flat ground (each scenario on its own group of
 envs), reports tracking, gait and standing metrics against go2-blind's
@@ -6,6 +6,9 @@ stage-1 goals, and optionally records a scripted video of one robot.
 
   PYTHONPATH=. python scripts/go2_depth/eval_flat.py \
     --checkpoint logs/rsl_rl/go2_depth_teacher/<run>/model_N.pt --video
+
+Students run on their own task (e.g. --task Unitree-Go2W-Depth-Student),
+restricted to its flat tiles.
 
 Exit code 0 = all gates pass, 1 = some gate failed (details printed and in
 eval_flat.json next to the checkpoint).
@@ -16,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -23,6 +27,8 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import numpy as np
 import torch
 from tensordict import TensorDict
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # name: (vx, vy, wz)
 SCENARIOS = {
@@ -82,23 +88,24 @@ WHEELED_GATES = GATES + [
 ]
 
 
-def load_teacher(checkpoint: str, obs: TensorDict, device: str):
-  from rsl_rl.models import MLPModel
+def load_checkpoint_policy(checkpoint: str, obs: TensorDict, device: str):
+  """Teacher (MLP) or depth student (recurrent), told apart by the checkpoint keys."""
+  from eval_map3 import load_policy
 
   ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
-  weights = [k for k in ck["actor_state_dict"] if k.startswith("mlp.") and k.endswith(".weight")]
-  num_actions = ck["actor_state_dict"][max(weights, key=lambda k: int(k.split(".")[1]))].shape[0]
-  model = MLPModel(
-    obs,
-    {"actor": ["actor"]},
-    "actor",
-    num_actions,
-    hidden_dims=(512, 256, 128),
-    obs_normalization=True,
-    distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0},
-  )
-  model.load_state_dict(ck["actor_state_dict"])
-  return model.to(device).eval()
+  kind = "student" if "student_state_dict" in ck else "teacher"
+  policy = load_policy(kind, checkpoint, obs, device)
+  if getattr(policy, "is_recurrent", False):
+    policy.reset()
+  return policy
+
+
+def step_policy(env, policy, obs: TensorDict):
+  with torch.inference_mode():
+    raw, _, terminated, time_outs, _ = env.step(policy(obs))
+    if getattr(policy, "is_recurrent", False):
+      policy.reset((terminated | time_outs).float())
+  return raw, terminated
 
 
 def make_env(task: str, num_envs: int, render: bool):
@@ -107,6 +114,12 @@ def make_env(task: str, num_envs: int, render: bool):
 
   cfg = load_env_cfg(task, play=True)
   cfg.scene.num_envs = num_envs
+  # Student tasks share the teacher's stairs terrain: keep only its flat tiles.
+  generator = cfg.scene.terrain.terrain_generator
+  if len(generator.sub_terrains) > 1 and "flat" in generator.sub_terrains:
+    flat = generator.sub_terrains["flat"]
+    flat.proportion = 1.0
+    generator.sub_terrains = {"flat": flat}
   cfg.events.pop("push_robot", None)
   cfg.episode_length_s = 1.0e4
   twist = cfg.commands["twist"]
@@ -136,7 +149,7 @@ def evaluate(args) -> dict:
   obs, _ = env.reset()
   set_commands(env, cmd)
   obs = TensorDict(env.observation_manager.compute(update_history=False), batch_size=[env.num_envs])
-  policy = load_teacher(args.checkpoint, obs, env.device)
+  policy = load_checkpoint_policy(args.checkpoint, obs, env.device)
 
   robot = env.scene["robot"]
   contact = env.scene["feet_ground_contact"]
@@ -153,8 +166,7 @@ def evaluate(args) -> dict:
   fell = torch.zeros(n, dtype=torch.bool, device=env.device)
   prev = None
   for t in range(steps):
-    with torch.inference_mode():
-      raw, _, terminated, _, _ = env.step(policy(obs))
+    raw, terminated = step_policy(env, policy, obs)
     set_commands(env, cmd)
     obs = TensorDict(raw, batch_size=[n])
     fell |= terminated
@@ -227,15 +239,14 @@ def record_video(args, out: Path) -> None:
   env = make_env(args.task, 1, render=True)
   obs, _ = env.reset()
   obs = TensorDict(obs, batch_size=[1])
-  policy = load_teacher(args.checkpoint, obs, env.device)
+  policy = load_checkpoint_policy(args.checkpoint, obs, env.device)
   frames = []
   fps = int(round(1.0 / env.step_dt / 2))
   for seconds, vx, vy, wz in VIDEO_SCRIPT:
     cmd = torch.tensor([[vx, vy, wz]], device=env.device)
     for t in range(int(seconds / env.step_dt)):
       set_commands(env, cmd)
-      with torch.inference_mode():
-        raw = env.step(policy(obs))[0]
+      raw, _ = step_policy(env, policy, obs)
       obs = TensorDict(raw, batch_size=[1])
       if t % 2 == 0:
         frames.append(env.render())
