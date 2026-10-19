@@ -35,6 +35,7 @@ from mjlab.terrains.terrain_generator import (
   TerrainGeometry,
   TerrainOutput,
 )
+from mjlab.utils.lab_api.math import quat_apply
 
 # Shift map3 world coordinates into a positive tile.
 MAP3_OFFSET = np.array([13.0, 1.0, 0.0])
@@ -299,6 +300,23 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   marks = {k: torch.full((env.num_envs,), float("nan"), device=env.device)
            for k in ("t_a", "x_a", "t_b", "x_b")}
   elapsed = 0.0
+  # Stance-leg splay (go2-blind): how far the leg plane of a leg on the ground
+  # tilts outward beyond the default hip angle (the stance_leg_tilt reward's
+  # quantity, signed outward), in degrees, on the flight (between the two
+  # marks); front and rear legs apart.
+  splay = None
+  if sign is not None and "stance_leg_tilt" in env.reward_manager.active_terms:
+    params = env.reward_manager.get_term_cfg("stance_leg_tilt").params
+    legs = params["asset_cfg"]
+    names = [robot.body_names[i] for i in legs.body_ids]
+    splay = {
+      "cfg": legs,
+      "contact": env.scene[params["sensor_name"]],
+      "out": torch.tensor([1.0 if n.startswith(("FL", "RL")) else -1.0 for n in names], device=env.device),
+      "front": torch.tensor([n.startswith("F") for n in names], device=env.device),
+      "sum": torch.zeros(len(names), device=env.device),
+      "n": torch.zeros(len(names), device=env.device),
+    }
   reasons = {
     t: torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     for t in env.termination_manager.active_terms
@@ -342,6 +360,16 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
           hit = alive & marks[f"t_{tag}"].isnan() & (dz >= level)
           marks[f"t_{tag}"] = torch.where(hit, elapsed, marks[f"t_{tag}"])
           marks[f"x_{tag}"] = torch.where(hit, along, marks[f"x_{tag}"])
+        if splay is not None:
+          on_flight = alive & ~marks["t_a"].isnan() & marks["t_b"].isnan()
+          quat = robot.data.body_link_quat_w[:, splay["cfg"].body_ids]
+          lateral = torch.zeros(*quat.shape[:-1], 3, device=env.device)
+          lateral[..., 1] = 1.0
+          tilt = torch.asin(quat_apply(quat, lateral)[..., 2].clamp(-1.0, 1.0))
+          out = (tilt - robot.data.default_joint_pos[:, splay["cfg"].joint_ids]) * splay["out"]
+          w = (splay["contact"].data.found > 0).float() * on_flight.float().unsqueeze(1)
+          splay["sum"] += (out * w).sum(0)
+          splay["n"] += w.sum(0)
       if args.trace and alive.any() and (step + 1) % int(round(1.0 / env.step_dt)) == 0:
         along = ((robot.data.root_link_pos_w[alive, :2] - env.scene.env_origins[alive, :2]) * axis).sum(-1)
         q = torch.quantile(along, torch.tensor((0.1, 0.5, 0.9), device=env.device)).tolist()
@@ -378,6 +406,9 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     r = speed[timed] / moving[0]
     q = torch.quantile(r, torch.tensor((0.1, 0.5, 0.9), device=r.device)).tolist()
     result |= {"speed_ratio": q[1], "speed_ratio_p10": q[0], "speed_ratio_p90": q[2]}
+  if splay is not None and splay["n"].sum() > 0:
+    for tag, legs in (("front", splay["front"]), ("rear", ~splay["front"])):
+      result[f"splay_{tag}_deg"] = math.degrees(float(splay["sum"][legs].sum() / splay["n"][legs].sum().clamp(min=1)))
   if n:
     result |= {"err_vxy": err_xy / n, "err_wz": err_yaw / n}
   env.close()
