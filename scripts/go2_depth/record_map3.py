@@ -125,6 +125,10 @@ def main() -> None:
   parser.add_argument("--out", default="map3_tour.mp4")
   parser.add_argument("--width", type=int, default=960)
   parser.add_argument("--height", type=int, default=540)
+  parser.add_argument(
+    "--solid-gaps", action="store_true",
+    help="Fill the open well and slot beside the flights, landings kept open.",
+  )
   args = parser.parse_args()
 
   import mjlab.tasks  # noqa: F401
@@ -139,7 +143,10 @@ def main() -> None:
   task = f"Unitree-{robot_name}-Depth-{'Teacher' if teacher else 'Student'}"
   spawn, yaw = play_map3.SPAWNS[SPAWN]
   cfg = play_map3.make_env_cfg(task, spawn, yaw, teacher)
-  cfg.scene.terrain.terrain_generator.sub_terrains["map3"].rail_alpha = 0.18
+  map3 = cfg.scene.terrain.terrain_generator.sub_terrains["map3"]
+  map3.rail_alpha = 0.18
+  if args.solid_gaps:
+    map3.boxes = map3.boxes + eval_map3.solid_gap_boxes(keep_landings=True)
   for sensor in cfg.scene.sensors or ():
     if hasattr(sensor, "debug_vis"):
       sensor.debug_vis = False
@@ -185,7 +192,7 @@ def main() -> None:
         frame = env.unwrapped.render()
         z = float(env.unwrapped.scene["robot"].data.root_link_pos_w[0, 2]) - float(env.unwrapped.scene.env_origins[0, 2]) + spawn[2]
         writer.append_data(overlay(frame, [
-          f"{robot_name} {kind} on map3: {label}",
+          f"{robot_name} {kind} on map3{' (gaps filled)' if args.solid_gaps else ''}: {label}",
           f"cmd vx {cmd[0]:+.2f}  vy {cmd[1]:+.2f}  wz {cmd[2]:+.2f}",
           f"t {sim_t:5.1f} s   height {z:4.2f} m   falls {falls}",
         ]))

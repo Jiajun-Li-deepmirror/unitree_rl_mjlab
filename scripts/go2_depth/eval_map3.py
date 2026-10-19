@@ -139,6 +139,23 @@ class Map3TerrainCfg(SubTerrainCfg):
     return TerrainOutput(origin=origin, geometries=geometries)
 
 
+def solid_gap_boxes(keep_landings: bool = False) -> list[tuple[str, np.ndarray, np.ndarray]]:
+  """Diagnostic: fill the open stairwell well and the east slot so the side of
+  every flight is a solid wall, as in the training terrain (the teacher's
+  height scan reads the open well as a cliff).
+
+  The full fill (y 0.40-6.50) also cuts the F2 landing between L0 and R1,
+  which no eval scenario crosses; `keep_landings` fills only between the
+  landings (y 1.73-5.08) so a tour can still walk from one flight to the other.
+  """
+  y0, y1 = (1.73, 5.08) if keep_landings else (0.40, 6.50)
+  boxes = []
+  for name, (x0, x1) in (("rail_fill_well", (-9.86, -9.30)), ("rail_fill_slot", (-8.34, -8.12))):
+    lo = np.array([x0, y0, -0.2]); hi = np.array([x1, y1, 19.0])
+    boxes.append((name, (hi - lo) / 2, (hi + lo) / 2))
+  return boxes
+
+
 def make_env_cfg(task: str, scenario: Scenario, boxes, num_envs: int):
   from mjlab.tasks.registry import load_env_cfg
 
@@ -238,11 +255,7 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       if n.startswith("rail") or pos[2] + size[2] <= scenario.keep_below
     ]
   if args.solid_gaps:
-    # Diagnostic: fill the open stairwell well and the east slot so the side
-    # of every flight is a solid wall, as in the training terrain.
-    for name, (x0, x1) in (("rail_fill_well", (-9.86, -9.30)), ("rail_fill_slot", (-8.34, -8.12))):
-      lo = np.array([x0, 0.40, -0.2]); hi = np.array([x1, 6.50, 19.0])
-      boxes = boxes + [(name, (hi - lo) / 2, (hi + lo) / 2)]
+    boxes = boxes + solid_gap_boxes()
   if args.policy == "teacher":
     # map3 rails/walls are up to 19 m tall, above the teacher's scan origins
     # (8 m over the robot), so every ray at a wall would start inside it and
