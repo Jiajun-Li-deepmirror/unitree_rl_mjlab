@@ -74,6 +74,13 @@ class LeggedTaskSpec:
   step_gait_weight: float = 0.5
   """Weight of the trot reward in step mode; above the legged 0.5 it is also
   scaled by command tracking (mdp.feet_gait_stepping)."""
+  wheel_blind_recipe: bool = False
+  """go2-blind's wheeled rewards instead of the roll/step modes: no roll-mode
+  terms and nothing paying for steps; wheels off the ground cost while the
+  command can be rolled (wheel_air_drivable, -1), swing clearance -3 from the
+  start (judged on even ground only) and a yaw tracking std that shrinks with
+  the command (min 0.2). Its wheeled robots step sideways 6-8 cm high (vy
+  83-93%) and roll straight, back included, with all four wheels down."""
 
   # Tracking (go2-blind's map3 stage): at the 0.35 tracking std a 30% shortfall
   # at 0.3 m/s cost only 6% of the reward, and slow walking was mostly seen on

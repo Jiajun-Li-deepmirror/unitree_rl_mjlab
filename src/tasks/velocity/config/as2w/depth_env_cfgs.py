@@ -26,18 +26,19 @@ AS2W_SPEC = replace(
   wheel_joints=r"^[FR][LR]_wheel_joint$",
   wheel_radius=As2W_WHEEL_RADIUS,
   foot_radius=As2W_WHEEL_RADIUS,
-  # Wheel centre 0.164 m up = the Go2 foot's 0.078 m sole clearance.
-  swing_target_height=As2W_WHEEL_RADIUS + 0.078,
+  # Swing clearance is the wheel centre's rise between footholds (see Go2-W).
+  swing_target_height=0.10,
   # Wheel spheres reach 0.31 m each side.
   wall_safe_distance=0.42,
-  # What the Go2-W (same size and wheel) and the B2-W needed: the wheel-sized
-  # edge rule, looser hips for side steps, a strong tracking-gated step-mode
-  # trot reward and a swing penalty that only applies once it steps.
+  # The wheel-sized edge rule and looser hips of the Go2-W (same size and
+  # wheel), and go2-blind's wheeled recipe and tracking terms (see GO2W_SPEC).
   terrain_clearance_weight=-10.0,
   terrain_clearance_margin=0.02,
   hip_walking_std=0.45,
-  step_gait_weight=2.0,
-  swing_weight_stages=((0, 0.0), (1000, -1.0), (3000, -2.0)),
+  wheel_blind_recipe=True,
+  even_track_std=0.25,
+  flat_slow_prob=0.3,
+  foothold_overspeed_range=None,
   onnx_contract="as2w_depth_v1",
 )
 

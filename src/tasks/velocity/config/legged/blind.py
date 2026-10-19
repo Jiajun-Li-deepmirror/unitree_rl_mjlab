@@ -496,6 +496,17 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       ),
     },
   )
+  if spec.wheel_blind_recipe:
+    gait.weight = 0.0
+    rewards["foot_swing_clearance"].weight = -3.0
+    rewards["foot_swing_clearance"].params["even_only"] = True
+    rewards["track_angular_velocity"].params["min_std"] = 0.2
+    rewards["wheel_air_drivable"] = RewardTermCfg(
+      func=mdp.wheel_air_drivable,
+      weight=-1.0,
+      params={**standing, **scan, "sensor_name": "feet_ground_contact"},
+    )
+    return
   # Roll mode carries penalties only (legs moving, legs off the default pose,
   # wheels off the ground): rolling properly costs nothing, so neither mode
   # pays more than the other. Positive roll-mode rewards (wheels down +2,

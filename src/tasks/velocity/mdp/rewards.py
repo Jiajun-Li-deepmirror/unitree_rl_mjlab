@@ -55,6 +55,7 @@ def track_angular_velocity(
   std: float,
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  min_std: float | None = None,
 ) -> torch.Tensor:
   """Reward heading error for heading-controlled envs, angular velocity for others.
 
@@ -66,6 +67,11 @@ def track_angular_velocity(
   actual = asset.data.root_link_ang_vel_b
   z_error = torch.square(command[:, 2] - actual[:, 2])
   xy_error = torch.sum(torch.square(actual[:, :2]), dim=1)
+  if min_std is not None:
+    # The yaw std shrinks with the command (go2-blind wheeled): at std 0.45 not
+    # turning at all for 0.15 rad/s cost 0.1 per second, at 0.2 it costs 0.43.
+    z_std = torch.clamp(command[:, 2].abs(), min=min_std, max=std)
+    return torch.exp(-z_error / z_std**2 - 0.05 * xy_error / std**2)
   ang_vel_error = z_error + (0.05 * xy_error)
   return torch.exp(-ang_vel_error / std**2)
 
@@ -628,9 +634,12 @@ class feet_swing_clearance:
     command_threshold: float,
     asset_cfg: SceneEntityCfg,
     scan_sensor_name: str | None = None,
+    even_only: bool = False,
   ) -> torch.Tensor:
     """With `scan_sensor_name`, only too-low swings are penalized on uneven
-    ground (lifting higher over stairs is fine)."""
+    ground (lifting higher over stairs is fine); with `even_only` too, swings
+    on uneven ground are not judged at all (a wheel rolling off a step edge
+    lands like a step with no clearance)."""
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
     assert contact_sensor.data.found is not None
@@ -648,7 +657,8 @@ class feet_swing_clearance:
     error = clearance / target_height - 1.0
     if scan_sensor_name is not None:
       uneven = uneven_terrain_mask(env, scan_sensor_name).unsqueeze(1)
-      error = torch.where(uneven, torch.clamp(error, max=0.0), error)
+      on_uneven = torch.zeros_like(error) if even_only else torch.clamp(error, max=0.0)
+      error = torch.where(uneven, on_uneven, error)
     active = ~_zero_command_mask(env, command_name, command_threshold)
     cost = torch.sum(torch.square(error) * landed.float(), dim=1) * active.float()
 

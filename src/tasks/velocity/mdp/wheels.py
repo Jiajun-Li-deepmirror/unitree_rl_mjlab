@@ -155,6 +155,36 @@ def roll_wheels_lifted(
   return lifted * (roll & moving).float()
 
 
+def wheel_air_drivable(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float = 0.1,
+  max_lin_vel_y: float = 0.1,
+  max_ang_vel_z: float = 0.1,
+  scan_sensor_name: str | None = None,
+) -> torch.Tensor:
+  """Fraction of wheels off the ground while the command can be rolled (a
+  penalty; go2-blind's wheeled recipe): moving nearly straight, forward or
+  back, and with `scan_sensor_name` on even ground only, so stairs can still
+  be stepped. With |wz| <= 0.5 instead of 0.1 the B2-W hardly turned below
+  0.3 rad/s.
+  """
+  contact: ContactSensor = env.scene[sensor_name]
+  assert contact.data.found is not None
+  in_air = (contact.data.found <= 0).float()
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  drivable = (
+    _moving(env, command_name, command_threshold)
+    & (command[:, 1].abs() <= max_lin_vel_y)
+    & (command[:, 2].abs() <= max_ang_vel_z)
+  )
+  if scan_sensor_name is not None:
+    drivable &= ~uneven_terrain_mask(env, scan_sensor_name)
+  return in_air.mean(dim=1) * drivable.float()
+
+
 def roll_leg_deviation(
   env: ManagerBasedRlEnv,
   command_name: str,

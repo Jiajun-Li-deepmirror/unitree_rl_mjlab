@@ -24,8 +24,10 @@ GO2W_SPEC = LeggedTaskSpec(
   wheel_joints=r"^[FR][LR]_wheel_joint$",
   wheel_radius=GO2W_WHEEL_RADIUS,
   foot_radius=GO2W_WHEEL_RADIUS,
-  # Wheel centre 0.164 m up = the Go2 foot's 0.078 m sole clearance.
-  swing_target_height=GO2W_WHEEL_RADIUS + 0.078,
+  # Swing clearance is the wheel centre's rise between footholds, which is
+  # the sole's: 0.10 as on go2-blind's wheeled robots (radius + 0.078 = 0.164
+  # asked for 16 cm steps and made dragging the wheels nearly as cheap).
+  swing_target_height=0.10,
   # Wheel spheres reach 0.28 m each side (Go2 feet: 0.16 m).
   wall_safe_distance=0.40,
   # Side steps reached only ~45% of vy at the Go2's 0.3.
@@ -35,13 +37,16 @@ GO2W_SPEC = LeggedTaskSpec(
   # the first teacher never stepped up even 5 cm rises (descents were fine).
   terrain_clearance_weight=-10.0,
   terrain_clearance_margin=0.02,
-  # Heavy wheels at the leg ends, as on the B2: ease the swing penalty.
-  # (Stages count total iterations; the fine-tune resumes v2 at 6300.)
-  swing_weight_stages=((0, -1.0), (8300, -2.0)),
-  # The teacher is full_v4ft model_12500 (ungated 0.5 trot reward; vy ~0.4):
-  # later checkpoints lost map3's 14-19 cm risers. Fine-tuning it with the
-  # B2-W's tracking-gated 2.0 (full_v5ft) raised vy to 0.65 but within 2k
-  # iters it trotted at every forward speed and climbed no map3 flight.
+  # full_v4ft model_12500 (roll/step modes, ungated 0.5 trot reward, swing
+  # -1/-2 at 0.164) steps backward and reaches vy ~0.4; fine-tuning it with
+  # the B2-W's tracking-gated 2.0 (full_v5ft) raised vy to 0.65 but it trotted
+  # at every forward speed and climbed no map3 flight. Now go2-blind's wheeled
+  # recipe (swing -3 at 0.10, nothing paying for steps, wheels down while the
+  # command can be rolled) and its tracking terms; no foothold overspeed gate.
+  wheel_blind_recipe=True,
+  even_track_std=0.25,
+  flat_slow_prob=0.3,
+  foothold_overspeed_range=None,
   onnx_contract="go2w_depth_v1",
 )
 
