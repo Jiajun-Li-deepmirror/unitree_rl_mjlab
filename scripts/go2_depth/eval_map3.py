@@ -291,6 +291,14 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   yaw_target = math.radians(scenario.yaw_deg)
   axis = torch.tensor((math.cos(yaw_target), math.sin(yaw_target)), device=env.device)
   term = env.command_manager.get_term("twist")
+  # Flight speed (go2-blind): time and position along the flight when the
+  # height change passes 0.15 m and the target minus 0.15 m, to tell a slow
+  # robot from a short scripted time.
+  kind, _, thr = scenario.success.partition(":")
+  sign = {"climb": 1.0, "descend": -1.0}.get(kind)
+  marks = {k: torch.full((env.num_envs,), float("nan"), device=env.device)
+           for k in ("t_a", "x_a", "t_b", "x_b")}
+  elapsed = 0.0
   reasons = {
     t: torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     for t in env.termination_manager.active_terms
@@ -326,6 +334,14 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       z = robot.data.root_link_pos_w[:, 2]
       zmin = torch.where(alive, torch.minimum(zmin, z), zmin)
       zmax = torch.where(alive, torch.maximum(zmax, z), zmax)
+      elapsed += env.step_dt
+      if sign is not None:
+        dz = sign * (z - z0)
+        along = ((robot.data.root_link_pos_w[:, :2] - env.scene.env_origins[:, :2]) * axis).sum(-1)
+        for tag, level in (("a", 0.15), ("b", float(thr) - 0.15)):
+          hit = alive & marks[f"t_{tag}"].isnan() & (dz >= level)
+          marks[f"t_{tag}"] = torch.where(hit, elapsed, marks[f"t_{tag}"])
+          marks[f"x_{tag}"] = torch.where(hit, along, marks[f"x_{tag}"])
       if args.trace and alive.any() and (step + 1) % int(round(1.0 / env.step_dt)) == 0:
         along = ((robot.data.root_link_pos_w[alive, :2] - env.scene.env_origins[alive, :2]) * axis).sum(-1)
         q = torch.quantile(along, torch.tensor((0.1, 0.5, 0.9), device=env.device)).tolist()
@@ -337,7 +353,6 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
         err_xy += float(torch.norm(v[:, :2] - target, dim=1).mean())
         err_yaw += float((w - wz).abs().mean())
         n += 1
-  kind, _, thr = scenario.success.partition(":")
   if kind == "climb":
     ok = (zmax - z0 >= float(thr)) & ~fell
   elif kind == "descend":
@@ -354,6 +369,15 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   }
   if fell.any():
     result["fall_at_m"] = sorted(round(float(x), 2) for x in fall_along[fell].tolist())
+  moving = [abs(vx) for _, vx, _, _ in scenario.segments if vx]
+  timed = ~marks["t_b"].isnan() & ~fell
+  if sign is not None and len(set(moving)) == 1 and timed.sum() > 0 and not any(
+    vx == 0 for _, vx, _, _ in scenario.segments[1:-1]
+  ):
+    speed = (marks["x_b"] - marks["x_a"]).abs() / (marks["t_b"] - marks["t_a"]).clamp(min=1e-3)
+    r = speed[timed] / moving[0]
+    q = torch.quantile(r, torch.tensor((0.1, 0.5, 0.9), device=r.device)).tolist()
+    result |= {"speed_ratio": q[1], "speed_ratio_p10": q[0], "speed_ratio_p90": q[2]}
   if n:
     result |= {"err_vxy": err_xy / n, "err_wz": err_yaw / n}
   env.close()
