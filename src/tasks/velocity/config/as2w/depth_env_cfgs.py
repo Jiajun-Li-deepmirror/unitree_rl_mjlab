@@ -39,7 +39,9 @@ AS2W_SPEC = replace(
   even_track_std=0.25,
   flat_slow_prob=0.3,
   foothold_overspeed_range=None,
-  onnx_contract="as2w_depth_v1",
+  steer_prob=0.2,
+  wheel_brake_speed=0.1,
+  onnx_contract="as2w_depth_v2",
 )
 
 

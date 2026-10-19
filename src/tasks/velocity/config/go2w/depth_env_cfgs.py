@@ -47,7 +47,11 @@ GO2W_SPEC = LeggedTaskSpec(
   even_track_std=0.25,
   flat_slow_prob=0.3,
   foothold_overspeed_range=None,
-  onnx_contract="go2w_depth_v1",
+  # go2-blind's Go2W v5: arcs with a small yaw rate in the commands, and the
+  # low-speed brake that stopped the creep at a zero command (2.9 -> 0.01 cm).
+  steer_prob=0.2,
+  wheel_brake_speed=0.1,
+  onnx_contract="go2w_depth_v2",
 )
 
 

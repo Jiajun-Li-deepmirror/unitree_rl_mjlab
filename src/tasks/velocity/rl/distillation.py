@@ -382,5 +382,9 @@ class DepthDistillationRunner(DistillationRunner):
       kind = "velocity" if "vel" in type(term).__name__.lower() else "position"
       scale = term.cfg.scale
       layout.append(f"{name}[{kind}]*{scale:g}:" + ",".join(term.target_names))
+      if hasattr(term.cfg, "brake_rad_s"):
+        # Deploy zeroes these velocity targets at a zero command once all of
+        # them are slower than this (mdp/wheel_action.py).
+        metadata["wheel_brake_rad_s"] = f"{term.cfg.brake_rad_s:.6g}"
     metadata["action_layout"] = ";".join(layout)
     attach_metadata_to_onnx(onnx_path, metadata)

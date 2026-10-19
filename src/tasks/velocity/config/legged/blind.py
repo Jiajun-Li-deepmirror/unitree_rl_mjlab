@@ -230,6 +230,7 @@ def make_blind_env_cfg(
     ranges=UniformVelocityCommandCfg.Ranges(**vel_ranges),
     stair_terrain_names=STAIR_TERRAIN_NAMES,
     flat_slow_prob=spec.flat_slow_prob,
+    flat_steer_prob=spec.steer_prob,
   )
 
   ##
@@ -366,6 +367,20 @@ def make_blind_env_cfg(
     weight=0.5,
     params={**standing, "sensor_name": "feet_ground_contact"},
   )
+  # Thighs and hips resolve in model order, the contact sensor's column order.
+  rewards["stance_leg_tilt"] = RewardTermCfg(
+    func=mdp.stance_leg_tilt,
+    weight=spec.stance_tilt_weight,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "scan_sensor_name": "terrain_scan",
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        body_names=tuple(f"{s}_thigh" for s in spec.foot_site_names),
+        joint_names=tuple(f"{s}_hip_joint" for s in spec.foot_site_names),
+      ),
+    },
+  )
 
   if spec.wheel_joints is not None:
     _add_wheels(cfg, spec)
@@ -439,12 +454,20 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
   leg_action = cfg.actions["joint_pos"]
   assert isinstance(leg_action, JointPositionActionCfg)
   leg_action.actuator_names = (spec.leg_joints,)
-  cfg.actions["wheel_vel"] = JointVelocityActionCfg(
-    entity_name="robot",
-    actuator_names=(spec.wheel_joints,),
-    scale=spec.wheel_action_scale,
-    use_default_offset=False,
-  )
+  wheel_action = {
+    "entity_name": "robot",
+    "actuator_names": (spec.wheel_joints,),
+    "scale": spec.wheel_action_scale,
+    "use_default_offset": False,
+  }
+  if spec.wheel_brake_speed is None:
+    cfg.actions["wheel_vel"] = JointVelocityActionCfg(**wheel_action)
+  else:
+    cfg.actions["wheel_vel"] = mdp.BrakedWheelVelocityActionCfg(
+      **wheel_action,
+      wheel_radius=spec.wheel_radius,
+      brake_below_speed=spec.wheel_brake_speed,
+    )
 
   for group in ("actor", "critic"):
     cfg.observations[group].terms["joint_pos"].params["asset_cfg"] = legs()
@@ -488,16 +511,23 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       "sensor_name": "feet_ground_contact",
       "wheel_radius": spec.wheel_radius,
       "command_name": "twist",
+      # Model order, like the contact sensor's columns. Until 2026-10-20 this
+      # preserved the FR, FL, RR, RL spelling while the sensor is FL, FR, RL,
+      # RR: each wheel's slip was weighted by its left/right twin's contact,
+      # so trotting charged the swing wheels' motion and not stance slip.
       "asset_cfg": SceneEntityCfg(
         "robot",
         site_names=spec.foot_site_names,
         body_names=tuple(f"{s}_wheel" for s in spec.foot_site_names),
-        preserve_order=True,
       ),
     },
   )
   if spec.wheel_blind_recipe:
-    gait.weight = 0.0
+    # go2-blind's wheeled tasks have no gait clock: nothing pays for steps,
+    # so a clock could only suggest a rhythm.
+    for group in ("actor", "critic"):
+      cfg.observations[group].terms.pop("phase", None)
+    rewards.pop("foot_gait")
     rewards["foot_swing_clearance"].weight = -3.0
     rewards["foot_swing_clearance"].params["even_only"] = True
     rewards["track_angular_velocity"].params["min_std"] = 0.2

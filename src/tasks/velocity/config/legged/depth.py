@@ -36,7 +36,8 @@ from src.tasks.velocity.config.legged.blind import (
 from src.tasks.velocity.config.legged.spec import LeggedTaskSpec
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
 
-# Proprioceptive actor terms, in the order the deployed policy receives them.
+# Proprioceptive actor terms, in the order the deployed policy receives them
+# (wheeled robots on go2-blind's recipe have no `phase`).
 PROPRIO_TERM_NAMES = (
   "base_ang_vel",
   "projected_gravity",
@@ -249,7 +250,8 @@ def make_depth_teacher_env_cfg(
   actor = cfg.observations["actor"]
   actor.history_length = None
   for name in PROPRIO_TERM_NAMES:
-    actor.terms[name].history_length = ACTOR_HISTORY_LENGTH
+    if name in actor.terms:
+      actor.terms[name].history_length = ACTOR_HISTORY_LENGTH
   height_scan = deepcopy(cfg.observations["critic"].terms["height_scan"])
   height_scan.noise = Unoise(n_min=-0.05, n_max=0.05)
   height_scan.history_length = 0
@@ -340,6 +342,8 @@ def make_depth_student_env_cfg(
   actor = cfg.observations["actor"]
   proprio_terms = {}
   for name in PROPRIO_TERM_NAMES:
+    if name not in actor.terms:
+      continue
     term = deepcopy(actor.terms[name])
     term.history_length = 0
     proprio_terms[name] = term

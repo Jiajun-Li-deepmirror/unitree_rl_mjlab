@@ -56,6 +56,9 @@ class LeggedTaskSpec:
   """Hip tolerance of the posture reward while moving (side steps swing the
   hips out; Go2 default 0.15 capped vy at ~70-80%)."""
   foot_radius: float = 0.022
+  stance_tilt_weight: float = -10.0
+  """Stance legs splayed sideways on uneven ground (mdp.stance_leg_tilt;
+  go2-blind's As2 climbed with its front legs out 11.5 deg, 1.6 with it)."""
 
   # Stairs.
   step_height_range: tuple[float, float] = (0.05, 0.20)
@@ -80,7 +83,14 @@ class LeggedTaskSpec:
   command can be rolled (wheel_air_drivable, -1), swing clearance -3 from the
   start (judged on even ground only) and a yaw tracking std that shrinks with
   the command (min 0.2). Its wheeled robots step sideways 6-8 cm high (vy
-  83-93%) and roll straight, back included, with all four wheels down."""
+  83-93%) and roll straight, back included, with all four wheels down. As
+  there, no gait clock either: no `phase` observation (53-D proprio, the
+  *_depth_v2 contracts) and no trot reward."""
+  steer_prob: float = 0.0
+  """Share of flat commands driving with a small yaw rate (go2-blind: 0.2)."""
+  wheel_brake_speed: float | None = None
+  """Zero the wheel targets at a zero command once every wheel is under this
+  rim speed (m/s; mdp.BrakedWheelVelocityActionCfg). None = no brake."""
 
   # Tracking (go2-blind's map3 stage): at the 0.35 tracking std a 30% shortfall
   # at 0.3 m/s cost only 6% of the reward, and slow walking was mostly seen on

@@ -8,7 +8,7 @@ from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
-from mjlab.utils.lab_api.math import quat_apply_inverse
+from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
@@ -872,3 +872,31 @@ def wall_proximity(
   d = sensor.data.distances
   intrusion = torch.where(d >= 0.0, torch.clamp(safe_distance - d, min=0.0), 0.0)
   return torch.square(intrusion).sum(dim=1)
+
+
+def stance_leg_tilt(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  scan_sensor_name: str,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """Stance legs splayed sideways on uneven ground (go2-blind).
+
+  Per foot on the ground: (asin of the world z of the thigh's lateral axis -
+  default hip angle)^2, summed. The thigh frame is the base frame turned by
+  the hip (+x axis), so on a level base the angle is the hip angle, and base
+  roll counts as tilt too. Swing legs and even ground are free. `asset_cfg`
+  holds the thigh bodies and the hip joints in model order, which is also
+  the order of the foot contact sensor's columns.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  quat = asset.data.body_link_quat_w[:, asset_cfg.body_ids]  # [B, 4, 4]
+  lateral = torch.zeros(*quat.shape[:-1], 3, device=quat.device)
+  lateral[..., 1] = 1.0
+  tilt = torch.asin(quat_apply(quat, lateral)[..., 2].clamp(-1.0, 1.0))
+  hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  contact: ContactSensor = env.scene[sensor_name]
+  assert contact.data.found is not None
+  in_contact = (contact.data.found > 0).float()
+  cost = torch.sum(torch.square(tilt - hip) * in_contact, dim=1)
+  return cost * uneven_terrain_mask(env, scan_sensor_name).float()

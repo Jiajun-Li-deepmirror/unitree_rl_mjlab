@@ -26,16 +26,27 @@ B2W_SPEC = replace(
   wheel_joints=r"^[FR][LR]_wheel_joint$",
   wheel_radius=B2W_WHEEL_RADIUS,
   foot_radius=B2W_WHEEL_RADIUS,
-  # Wheel centre 0.201 m up = the B2 foot's 0.088 m sole clearance.
-  swing_target_height=B2W_WHEEL_RADIUS + 0.088,
   # Wheel spheres reach 0.35 m each side (B2 feet: 0.23 m).
   wall_safe_distance=0.45,
-  # The first B2-W flat teacher only rolled: it never lifted a wheel (no side
-  # steps, vy 0; turning in place 20-36%). Reward the trot harder where it
-  # has to step, and let it find stepping before the swing penalty applies.
-  step_gait_weight=2.0,
-  swing_weight_stages=((0, 0.0), (1000, -0.5), (3000, -1.5)),
-  onnx_contract="b2w_depth_v1",
+  # The first B2-W flat teacher only rolled: it never lifted a wheel, most
+  # likely because the swing target was the wheel centre at 0.201 m (radius
+  # + the B2 sole's 0.088), so at -3 every lower step cost more than standing
+  # on the wheels. flat_v2 / full_v1 then stepped with a tracking-gated trot
+  # reward (2.0) and the swing penalty in stages, but stepped backward and
+  # climbed no map3 flight (full_v1 model_6400). Now go2-blind's wheeled
+  # recipe as for the Go2-W (its B2W steps sideways at 89-92% with -3 at
+  # 0.10 from the start) and the Go2-W's wheel-sized edge rule.
+  swing_target_height=0.10,
+  swing_weight_stages=None,
+  terrain_clearance_weight=-10.0,
+  terrain_clearance_margin=0.02,
+  wheel_blind_recipe=True,
+  even_track_std=0.25,
+  flat_slow_prob=0.3,
+  foothold_overspeed_range=None,
+  steer_prob=0.2,
+  wheel_brake_speed=0.1,
+  onnx_contract="b2w_depth_v2",
 )
 
 

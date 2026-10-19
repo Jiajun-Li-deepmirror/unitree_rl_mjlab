@@ -8,4 +8,5 @@ from .rewards import *  # noqa: F403
 from .terminations import *  # noqa: F403
 from .terrains import *  # noqa: F403
 from .velocity_command import *  # noqa: F403
+from .wheel_action import *  # noqa: F403
 from .wheels import *  # noqa: F403

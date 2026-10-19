@@ -375,6 +375,22 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       ],
       dim=1,
     )
+    if self.cfg.flat_steer_prob > 0.0:
+      # Driving forward or back while turning gently, taken from the moving
+      # modes (standing keeps its share).
+      moving_share = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
+      steer = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.flat_steer_prob / moving_share)
+      lo = self.cfg.flat_steer_min_speed
+      back = uniform((0.0, 1.0)) < self.cfg.flat_steer_back_prob
+      steer_vx = torch.where(
+        back,
+        uniform((min(ranges.lin_vel_x[0], -lo), -lo)),
+        uniform((lo, max(ranges.lin_vel_x[1], lo))),
+      )
+      turn_sign = torch.where(uniform((0.0, 1.0)) < 0.5, -1.0, 1.0)
+      steer_wz = uniform(self.cfg.flat_steer_yaw_rate) * turn_sign
+      steer_cmd = torch.stack([steer_vx, torch.zeros_like(steer_vx), steer_wz], dim=1)
+      flat_cmd = torch.where(steer.unsqueeze(1), steer_cmd, flat_cmd)
 
     # Stair terrain: forward-biased, with extra standing.
     stair_ranges = self.cfg.stair_ranges
@@ -450,6 +466,15 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
       lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.4, 0.4), ang_vel_z=(0.0, 0.0)
     )
   )
+  flat_steer_prob: float = 0.0
+  """Share of flat commands that drive forward or back (`flat_steer_back_prob`
+  of them back, |vx| >= `flat_steer_min_speed`) while turning at a small
+  |wz| in `flat_steer_yaw_rate`, taken from the moving modes. The modes alone
+  leave ~0.4% such arcs, and go2-blind's wheeled robots turned 16-80% of
+  them (0.2 of these: worst small arc 27% -> 74%)."""
+  flat_steer_min_speed: float = 0.3
+  flat_steer_back_prob: float = 0.25
+  flat_steer_yaw_rate: tuple[float, float] = (0.05, 0.4)
   corridor_terrain_names: tuple[str, ...] = ()
   """Sub-terrain names whose moving commands hold the corridor (see the term)."""
   corridor_heading_gain: float = 1.0
