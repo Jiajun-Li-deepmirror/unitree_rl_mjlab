@@ -48,18 +48,20 @@ def main() -> int:
   bad = False
   for ckpt in args.checkpoints:
     torch.manual_seed(args.seed)
-    raw, _ = env.reset()
-    obs = TensorDict(raw, batch_size=[env.num_envs])
-    policy = load_checkpoint_policy(ckpt, obs, env.device)
-    amax = []
-    fell = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    for _ in range(int(round(1.0 / env.step_dt))):
-      with torch.inference_mode():
-        a = policy(obs)
-      amax.append(a.abs().max(-1).values)
-      raw, terminated = step_policy(env, lambda _o, _a=a: _a, obs)
+    # The env state becomes inference tensors once stepped in inference mode,
+    # so the next checkpoint's reset must run in it too.
+    with torch.inference_mode():
+      raw, _ = env.reset()
       obs = TensorDict(raw, batch_size=[env.num_envs])
-      fell |= terminated
+      policy = load_checkpoint_policy(ckpt, obs, env.device)
+      amax = []
+      fell = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+      for _ in range(int(round(1.0 / env.step_dt))):
+        a = policy(obs)
+        amax.append(a.abs().max(-1).values)
+        raw, terminated = step_policy(env, lambda _o, _a=a: _a, obs)
+        obs = TensorDict(raw, batch_size=[env.num_envs])
+        fell |= terminated
     A = torch.stack(amax)
     first, within = (A[0] > 20).float().mean(), (A > 20).any(0).float().mean()
     bad |= bool(first > 0)
