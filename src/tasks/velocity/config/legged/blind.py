@@ -229,6 +229,7 @@ def make_blind_env_cfg(
     debug_vis=True,
     ranges=UniformVelocityCommandCfg.Ranges(**vel_ranges),
     stair_terrain_names=STAIR_TERRAIN_NAMES,
+    flat_slow_prob=spec.flat_slow_prob,
   )
 
   ##
@@ -300,6 +301,11 @@ def make_blind_env_cfg(
 
   rewards = cfg.rewards
   rewards["track_linear_velocity"].params["z_weight"] = 0.0
+  if spec.even_track_std is not None:
+    rewards["track_linear_velocity"].params |= {
+      "even_std": spec.even_track_std,
+      "scan_sensor_name": "terrain_scan",
+    }
   rewards["pose"].func = mdp.variable_posture_terrain_aware
   rewards["pose"].params |= scan
   # Side-stepping swings the hips out; with the Go2 default 0.15 rad tolerance

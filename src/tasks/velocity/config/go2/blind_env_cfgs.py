@@ -17,6 +17,10 @@ GO2_SPEC = LeggedTaskSpec(
   robot_cfg=get_go2_robot_cfg,
   # tinynav-sim's PIE contract, plus the gait phase (go2_depth_v2).
   onnx_contract="go2_depth_v2",
+  # go2-blind's tracking terms; no foothold overspeed gate, as in v8.
+  even_track_std=0.25,
+  flat_slow_prob=0.3,
+  foothold_overspeed_range=None,
 )
 
 

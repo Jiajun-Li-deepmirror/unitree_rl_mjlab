@@ -72,10 +72,6 @@ STAIR_VEL_RANGES = {
   "ang_vel_z": (-0.3, 0.3),
 }
 
-# Foothold progress is paid in full up to 0.05 m/s over the commanded speed and
-# not at all from 0.25 m/s over (v9 ran down map3 at 0.6 m/s for 0.4).
-FOOTHOLD_OVERSPEED_RANGE = (0.05, 0.25)
-
 DEPTH_SENSOR_NAME = "front_depth"
 TERRAIN_TARGET_GROUP = "terrain_target"
 TERRAIN_TARGET_CLIP = (-0.5, 1.5)
@@ -215,7 +211,7 @@ def make_depth_teacher_env_cfg(
       "sensor_name": "feet_ground_contact",
       **standing,
       "asset_cfg": deepcopy(feet),
-      "overspeed_range": FOOTHOLD_OVERSPEED_RANGE,
+      "overspeed_range": spec.foothold_overspeed_range,
     },
   )
   # The policy keeps itself off the walls; corridor commands only hold heading.
@@ -234,7 +230,7 @@ def make_depth_teacher_env_cfg(
       **standing,
       "asset_cfg": deepcopy(feet),
       "descend": True,
-      "overspeed_range": FOOTHOLD_OVERSPEED_RANGE,
+      "overspeed_range": spec.foothold_overspeed_range,
     },
   )
 

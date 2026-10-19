@@ -26,11 +26,15 @@ def track_linear_velocity(
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   z_weight: float = 2.0,
+  even_std: float | None = None,
+  scan_sensor_name: str | None = None,
 ) -> torch.Tensor:
   """Reward for tracking the commanded base linear velocity.
 
   The commanded z velocity is assumed to be zero. Set `z_weight` to 0 on
-  terrain where vertical base motion is expected (e.g. stairs).
+  terrain where vertical base motion is expected (e.g. stairs). With
+  `even_std` and `scan_sensor_name`, ground that is not uneven (see
+  uneven_terrain_mask) uses the tighter `even_std`.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -39,7 +43,11 @@ def track_linear_velocity(
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (z_weight * z_error)
-  return torch.exp(-lin_vel_error / std**2)
+  if even_std is None or scan_sensor_name is None:
+    return torch.exp(-lin_vel_error / std**2)
+  uneven = uneven_terrain_mask(env, scan_sensor_name)
+  std_t = torch.where(uneven, std, even_std)
+  return torch.exp(-lin_vel_error / std_t**2)
 
 
 def track_angular_velocity(

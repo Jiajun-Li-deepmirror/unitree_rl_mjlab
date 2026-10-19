@@ -75,6 +75,19 @@ class LeggedTaskSpec:
   """Weight of the trot reward in step mode; above the legged 0.5 it is also
   scaled by command tracking (mdp.feet_gait_stepping)."""
 
+  # Tracking (go2-blind's map3 stage): at the 0.35 tracking std a 30% shortfall
+  # at 0.3 m/s cost only 6% of the reward, and slow walking was mostly seen on
+  # stairs.
+  even_track_std: float | None = None
+  """Linear tracking std on even ground (go2-blind: 0.25); None = one std."""
+  flat_slow_prob: float = 0.0
+  """Share of flat commands drawn from the slow range (go2-blind: 0.3)."""
+  foothold_overspeed_range: tuple[float, float] | None = (0.05, 0.25)
+  """Foothold progress is paid in full up to lo m/s over the commanded speed and
+  not at all from hi (v9 ran down map3 at 0.6 m/s for 0.4). None = no gate:
+  the gate made v10 descend at 0.25-0.3 m/s for 0.4, and the gate-free v8 had
+  the best descents."""
+
   # Front depth camera on `base_body` (tinynav PIE intrinsics for all robots).
   camera_pos: tuple[float, float, float] = depth_mdp.DEPTH_CAMERA_POS
   camera_quat: tuple[float, float, float, float] = depth_mdp.DEPTH_CAMERA_QUAT

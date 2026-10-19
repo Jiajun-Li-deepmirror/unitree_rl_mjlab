@@ -356,10 +356,21 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     mode_probs = torch.tensor(self.cfg.flat_mode_probs, device=self.device)
     mode = torch.multinomial(mode_probs, n, replacement=True)
     combined = mode == 4
+    # Optional features draw random numbers only when enabled, so tasks without
+    # them keep the random stream their policies were trained with.
+    if self.cfg.flat_slow_prob > 0.0:
+      # Some linear commands come from a narrower range, so slow walking is not
+      # mostly seen on stairs (where the policy learned short strides).
+      slow = uniform((0.0, 1.0)) < self.cfg.flat_slow_prob
+      slow_ranges = self.cfg.flat_slow_ranges
+      vx = torch.where(slow, uniform(slow_ranges.lin_vel_x), uniform(ranges.lin_vel_x))
+      vy = torch.where(slow, uniform(slow_ranges.lin_vel_y), uniform(ranges.lin_vel_y))
+    else:
+      vx, vy = uniform(ranges.lin_vel_x), uniform(ranges.lin_vel_y)
     flat_cmd = torch.stack(
       [
-        torch.where((mode == 1) | combined, uniform(ranges.lin_vel_x), 0.0),
-        torch.where((mode == 2) | combined, uniform(ranges.lin_vel_y), 0.0),
+        torch.where((mode == 1) | combined, vx, 0.0),
+        torch.where((mode == 2) | combined, vy, 0.0),
         torch.where((mode == 3) | combined, uniform(ranges.ang_vel_z), 0.0),
       ],
       dim=1,
@@ -432,6 +443,13 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   flat_mode_probs: tuple[float, float, float, float, float] = (0.2, 0.15, 0.15, 0.15, 0.35)
   """Probabilities of (stand, vx only, vy only, wz only, combined) on flat terrain."""
   stair_standing_prob: float = 0.25
+  flat_slow_prob: float = 0.0
+  """Probability that the linear part of a flat command uses `flat_slow_ranges`."""
+  flat_slow_ranges: UniformVelocityCommandCfg.Ranges = field(
+    default_factory=lambda: UniformVelocityCommandCfg.Ranges(
+      lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.4, 0.4), ang_vel_z=(0.0, 0.0)
+    )
+  )
   corridor_terrain_names: tuple[str, ...] = ()
   """Sub-terrain names whose moving commands hold the corridor (see the term)."""
   corridor_heading_gain: float = 1.0
