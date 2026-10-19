@@ -207,6 +207,10 @@ def set_command(env, vx: float, vy: float, wz: float) -> None:
   term.cfg.stair_ranges = fixed
   term.cfg.flat_mode_probs = (0.0, 0.0, 0.0, 0.0, 1.0)
   term.cfg.stair_standing_prob = 0.0
+  # Sampling options that would replace the command (slow linear range,
+  # steering arcs; map3 counts as flat terrain).
+  term.cfg.flat_slow_prob = 0.0
+  term.cfg.flat_steer_prob = 0.0
   term.time_left[:] = 0.0
 
 
