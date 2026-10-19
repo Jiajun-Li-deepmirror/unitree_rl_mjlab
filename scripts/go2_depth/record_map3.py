@@ -129,6 +129,11 @@ def main() -> None:
     "--solid-gaps", action="store_true",
     help="Fill the open well and slot beside the flights, landings kept open.",
   )
+  # Chase camera behind and above the robot: high enough to look over the
+  # flight behind it when descending (steps rise ~0.6 m per m).
+  parser.add_argument("--cam-distance", type=float, default=2.6)
+  parser.add_argument("--cam-elevation", type=float, default=-40.0)
+  parser.add_argument("--cam-side", type=float, default=0.0, help="Azimuth offset from straight behind (deg).")
   args = parser.parse_args()
 
   import mjlab.tasks  # noqa: F401
@@ -155,7 +160,7 @@ def main() -> None:
   v.origin_type = ViewerConfig.OriginType.ASSET_BODY
   v.entity_name, v.body_name = "robot", "base_link"
   v.width, v.height = args.width, args.height
-  v.distance, v.elevation = 2.2, -22.0
+  v.distance, v.elevation = args.cam_distance, args.cam_elevation
   env = RslRlVecEnvWrapper(
     ManagerBasedRlEnv(cfg=cfg, device="cuda:0", render_mode="rgb_array")
   )
@@ -183,8 +188,8 @@ def main() -> None:
         print(f"[record] FALL during '{label}'", flush=True)
       sim_t += env.unwrapped.step_dt
       if pilot.step % 2 == 0:
-        # Chase camera behind and a bit to the side, smoothed.
-        target = math.degrees(pilot.pose()[1]) + 180.0 + 25.0
+        # Chase camera behind (and --cam-side to the side), smoothed.
+        target = math.degrees(pilot.pose()[1]) + 180.0 + args.cam_side
         if cam_azimuth is None:
           cam_azimuth = target
         cam_azimuth += 0.08 * (((target - cam_azimuth + 180.0) % 360.0) - 180.0)
