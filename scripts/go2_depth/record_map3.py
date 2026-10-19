@@ -103,6 +103,20 @@ class Autopilot:
     self.done_count = 0
 
 
+def soften_lights(mj_model) -> None:
+  """Tone down the video lighting (render-only: the CPU model drives the
+  offline renderer; physics and the depth camera run on the warp model).
+
+  The terrain's two straight-down directional lights (diffuse 0.7 each) plus
+  the headlight (0.6 diffuse, 0.3 ambient) blow upward faces, and the robot
+  seen from above, out to white.
+  """
+  mj_model.light_diffuse[:] = 0.3
+  mj_model.light_specular[:] = 0.1
+  mj_model.vis.headlight.diffuse[:] = 0.45
+  mj_model.vis.headlight.ambient[:] = 0.25
+
+
 def overlay(frame, lines):
   img = Image.fromarray(frame)
   draw = ImageDraw.Draw(img)
@@ -134,6 +148,7 @@ def main() -> None:
   parser.add_argument("--cam-distance", type=float, default=2.6)
   parser.add_argument("--cam-elevation", type=float, default=-40.0)
   parser.add_argument("--cam-side", type=float, default=0.0, help="Azimuth offset from straight behind (deg).")
+  parser.add_argument("--seed", type=int, default=None, help="Env seed (reset randomization: delays, ...).")
   args = parser.parse_args()
 
   import mjlab.tasks  # noqa: F401
@@ -148,6 +163,8 @@ def main() -> None:
   task = f"Unitree-{robot_name}-Depth-{'Teacher' if teacher else 'Student'}"
   spawn, yaw = play_map3.SPAWNS[SPAWN]
   cfg = play_map3.make_env_cfg(task, spawn, yaw, teacher)
+  if args.seed is not None:
+    cfg.seed = args.seed
   map3 = cfg.scene.terrain.terrain_generator.sub_terrains["map3"]
   map3.rail_alpha = 0.18
   if args.solid_gaps:
@@ -164,6 +181,7 @@ def main() -> None:
   env = RslRlVecEnvWrapper(
     ManagerBasedRlEnv(cfg=cfg, device="cuda:0", render_mode="rgb_array")
   )
+  soften_lights(env.unwrapped.sim.mj_model)
   obs = env.get_observations()
   kind = "teacher" if teacher else "student"
   model = eval_map3.load_policy(kind, args.checkpoint, TensorDict(obs, batch_size=[1]), env.unwrapped.device)
@@ -174,7 +192,11 @@ def main() -> None:
   falls = 0
   writer = imageio.get_writer(args.out, fps=25, quality=7, macro_block_size=8)
   sim_t = 0.0
+  last = None
+  terminations = env.unwrapped.termination_manager
   for label, kind_, seg_args in ROUTE:
+    if falls:
+      break
     pilot.reset_segment()
     print(f"[record] {label}", flush=True)
     finished = False
@@ -184,8 +206,17 @@ def main() -> None:
       with torch.inference_mode():
         obs, _, dones, _ = env.step(model(obs))
       if bool(dones[0]):
+        # The env has already reset the robot to the spawn, so the rest of the
+        # route would be meaningless: hold the last frame, marked, and stop.
         falls += 1
-        print(f"[record] FALL during '{label}'", flush=True)
+        why = [t for t in terminations.active_terms if bool(terminations.get_term(t)[0])]
+        print(f"[record] FALL during '{label}' ({', '.join(why)})", flush=True)
+        if last is not None:
+          frame, lines = last
+          marked = overlay(frame, lines[:2] + [f"t {sim_t:5.1f} s   FALL ({', '.join(why)})"])
+          for _ in range(40):
+            writer.append_data(marked)
+        break
       sim_t += env.unwrapped.step_dt
       if pilot.step % 2 == 0:
         # Chase camera behind (and --cam-side to the side), smoothed.
@@ -196,11 +227,13 @@ def main() -> None:
         renderer_cam.azimuth = cam_azimuth
         frame = env.unwrapped.render()
         z = float(env.unwrapped.scene["robot"].data.root_link_pos_w[0, 2]) - float(env.unwrapped.scene.env_origins[0, 2]) + spawn[2]
-        writer.append_data(overlay(frame, [
+        lines = [
           f"{robot_name} {kind} on map3{' (gaps filled)' if args.solid_gaps else ''}: {label}",
           f"cmd vx {cmd[0]:+.2f}  vy {cmd[1]:+.2f}  wz {cmd[2]:+.2f}",
           f"t {sim_t:5.1f} s   height {z:4.2f} m   falls {falls}",
-        ]))
+        ]
+        last = (frame, lines)
+        writer.append_data(overlay(frame, lines))
   writer.close()
   print(f"[record] wrote {args.out} ({sim_t:.1f} s, falls {falls})", flush=True)
 
