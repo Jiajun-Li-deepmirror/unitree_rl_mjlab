@@ -316,7 +316,57 @@ def make_depth_teacher_env_cfg(
 
   if heading:
     apply_depth_heading(cfg, play=play, stairs=stairs)
+    if stairs and spec.wheel_blind_recipe:
+      apply_depth_wheel_stairs(cfg, spec)
   return cfg
+
+
+def apply_depth_wheel_stairs(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
+  """go2-blind's wheeled stairs terms (make_wheeled_blind_env_cfg with stairs,
+  d9ed8ba) on a wheeled heading teacher; its Go2W / As2W walked 85 / 78% of
+  map3's flights without an operator, where our wheeled teachers climbed
+  slowly (B2-W 0.83x) or not at all:
+  - wheel_riser_lift (0.5): pays for lifting a wheel that a riser blocks; its
+    first Go2W stairs pilot without it stalled at the first riser;
+  - linear tracking whose std shrinks with the commanded speed (min_std 0.2),
+    so stalling costs most of it at slow stairs commands too;
+  - wheel_air_spin (-0.01): lifted wheels spinning;
+  - foot friction 0.4-1.0: higher friction let a spinning wheel climb a riser
+    face, a simulator exploit;
+  - no foot_stumble (a wheel finds a riser by bumping into it) and no wheel
+    edge-clearance rule (it penalized partly lifted wheels, not unlifted ones);
+  - the climbing progress reward without the overspeed gate, as there.
+  The descent progress reward keeps its gate: go2-blind's wheeled robots have
+  none and descend at 0.57-0.67x of the command, ours ungated rushed down at
+  1.35-5x and gated went 1.09x (B2-W full_v5ft).
+  """
+  rewards = cfg.rewards
+  rewards.pop("foot_stumble", None)
+  rewards.pop("foot_terrain_clearance", None)
+  rewards["track_linear_velocity"].params["min_std"] = 0.2
+  rewards["wheel_riser_lift"] = RewardTermCfg(
+    func=mdp.wheel_riser_lift,
+    weight=0.5,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "scan_sensor_name": "terrain_scan",
+      "wheel_radius": spec.wheel_radius,
+      "radius": spec.wheel_radius + 0.1,
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=spec.foot_site_names),
+    },
+  )
+  rewards["wheel_air_spin"] = RewardTermCfg(
+    func=mdp.wheel_air_spin,
+    weight=-0.01,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(spec.wheel_joints,)),
+    },
+  )
+  rewards["foothold_height_gain"].params["overspeed_range"] = None
+  cfg.events["foot_friction"].params["ranges"] = (0.4, 1.0)
 
 
 def apply_depth_heading(cfg: ManagerBasedRlEnvCfg, play: bool, stairs: bool) -> None:

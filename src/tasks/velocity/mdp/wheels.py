@@ -16,7 +16,13 @@ import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import wrap_to_pi
 
-from .rewards import _standing_scale, _zero_command_mask, feet_gait, uneven_terrain_mask
+from .rewards import (
+  _DEFAULT_ASSET_CFG,
+  _standing_scale,
+  _zero_command_mask,
+  feet_gait,
+  uneven_terrain_mask,
+)
 
 if TYPE_CHECKING:
   from mjlab.entity import Entity
@@ -318,3 +324,126 @@ def standing_wheel_target(
     env, command_name, command_threshold, calm_std, asset_cfg
   )
 
+
+def wheel_air_spin(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize lifted wheels spinning: sum of |wheel joint velocity| off the ground.
+
+  A lifted wheel has nothing to drive and lands with a jolt if it spins.
+  asset_cfg holds the wheel joints, which resolve in model order like the
+  contact sensor's feet.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  assert contact_sensor.data.found is not None
+  in_air = (contact_sensor.data.found <= 0).float()  # [B, W]
+  wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]  # [B, W]
+  return torch.sum(torch.abs(wheel_vel) * in_air, dim=1)
+
+
+class wheel_riser_lift:
+  """Reward lifting a wheel over a riser that blocks it.
+
+  A wheel is blocked when its contact force is mostly horizontal, |F_xy| >
+  `ratio` |F_z| (at 1.2, friction on flat ground with mu <= 1 cannot do it). The
+  riser counts when its top, the highest privileged terrain-scan hit within
+  `radius` of the wheel center, is above the wheel's highest stable foothold
+  this episode (as in feet_foothold_height_gain), so risers already climbed or
+  below the start of a descent never pay. For `window` seconds after a block,
+  or until the wheel lands after leaving the ground, the term pays the fraction
+  of the riser cleared while the wheel is off the ground: the rise of the sole
+  since the wheel was first blocked there over the rise that clears the riser
+  top by `margin`, clipped to [0, 1].
+
+  Only the rise of the best fraction so far is paid, per second, so with dt
+  scaling the episode sum is at most weight per riser and wheel; lifting and
+  dropping a wheel at the same riser earns nothing more.
+
+  Nothing else pays for partly lifting a blocked wheel, and without a gait clock
+  the blind policy of the first Go2W stairs pilot (2026-10-18) stalled at the
+  first riser. The contact trigger follows CTBC (arXiv 2509.02986). Requires a
+  world-frame contact force.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    shape = (env.num_envs, len(cfg.params["asset_cfg"].site_names))
+    self.record_z = torch.full(shape, -torch.inf, device=env.device)
+    self.riser_top = torch.full(shape, torch.inf, device=env.device)
+    self.start_z = torch.zeros(shape, device=env.device)
+    self.needed = torch.ones(shape, device=env.device)
+    self.best = torch.zeros(shape, device=env.device)
+    self.time_left = torch.zeros(shape, device=env.device)
+    self.airborne = torch.zeros(shape, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.record_z[env_ids] = -torch.inf
+    self.riser_top[env_ids] = torch.inf
+    self.best[env_ids] = 0.0
+    self.time_left[env_ids] = 0.0
+    self.airborne[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    scan_sensor_name: str,
+    wheel_radius: float,
+    radius: float,
+    command_name: str,
+    command_threshold: float,
+    asset_cfg: SceneEntityCfg,
+    ratio: float = 1.2,
+    min_force: float = 5.0,
+    stance_ratio: float = 2.0,
+    stance_min_force: float = 10.0,
+    window: float = 1.0,
+    margin: float = 0.03,
+    min_rise: float = 0.03,
+    tolerance: float = 0.02,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    scan: RayCastSensor = env.scene[scan_sensor_name]
+    force = contact_sensor.data.force
+    assert contact_sensor.data.found is not None and force is not None
+    in_contact = contact_sensor.data.found > 0  # [B, W]
+    force_xy = torch.norm(force[..., :2], dim=-1)
+    force_z = torch.abs(force[..., 2])
+
+    foot_pos = asset.data.site_pos_w[:, asset_cfg.site_ids]  # [B, W, 3]
+    sole_z = foot_pos[..., 2] - wheel_radius
+    stance = in_contact & (force_z > torch.clamp(stance_ratio * force_xy, min=stance_min_force))
+    self.record_z = torch.where(stance, torch.maximum(self.record_z, sole_z), self.record_z)
+
+    hit_pos = scan.data.hit_pos_w  # [B, N, 3]
+    offset = hit_pos[:, None, :, :2] - foot_pos[:, :, None, :2]  # [B, W, N, 2]
+    near = (torch.norm(offset, dim=-1) < radius) & (scan.data.distances >= 0.0)[:, None, :]
+    top_z = torch.where(near, hit_pos[:, None, :, 2], -torch.inf).amax(dim=-1)  # [B, W]
+
+    blocked = in_contact & (force_xy > torch.clamp(ratio * force_z, min=min_force))
+    riser = blocked & (top_z > self.record_z + tolerance)
+    new = riser & ~(torch.abs(top_z - self.riser_top) <= tolerance)
+    self.riser_top = torch.where(new, top_z, self.riser_top)
+    self.start_z = torch.where(new, sole_z, self.start_z)
+    self.needed = torch.where(new, torch.clamp(top_z + margin - sole_z, min=min_rise), self.needed)
+    self.best = torch.where(new, 0.0, self.best)
+    # The window closes early when the wheel lands after leaving the ground.
+    landed = in_contact & self.airborne & ~riser
+    self.time_left = torch.where(
+      riser, window, torch.clamp(self.time_left - env.step_dt, min=0.0)
+    )
+    self.time_left = torch.where(landed, 0.0, self.time_left)
+    self.airborne = ~riser & (self.airborne | ~in_contact) & (self.time_left > 0.0)
+
+    active = ~_zero_command_mask(env, command_name, command_threshold)
+    lifting = (self.time_left > 0.0) & ~in_contact & active[:, None]
+    fraction = torch.clamp((sole_z - self.start_z) / self.needed, min=0.0, max=1.0)
+    gain = torch.where(lifting, torch.clamp(fraction - self.best, min=0.0), 0.0)
+    self.best = self.best + gain
+    env.extras["log"]["Metrics/wheel_riser_blocked"] = torch.mean(riser.float())
+    return torch.sum(gain, dim=1) / env.step_dt

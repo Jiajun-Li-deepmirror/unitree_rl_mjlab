@@ -28,13 +28,17 @@ def track_linear_velocity(
   z_weight: float = 2.0,
   even_std: float | None = None,
   scan_sensor_name: str | None = None,
+  min_std: float | None = None,
 ) -> torch.Tensor:
   """Reward for tracking the commanded base linear velocity.
 
   The commanded z velocity is assumed to be zero. Set `z_weight` to 0 on
   terrain where vertical base motion is expected (e.g. stairs). With
   `even_std` and `scan_sensor_name`, ground that is not uneven (see
-  uneven_terrain_mask) uses the tighter `even_std`.
+  uneven_terrain_mask) uses the tighter `even_std`. With `min_std` instead
+  (go2-blind's wheeled stairs), the std shrinks with the commanded planar speed
+  to clamp(|v_cmd,xy|, min_std, std): standing still then keeps exp(-1) of the
+  reward at any command of at least `min_std`, not most of it at slow ones.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -43,6 +47,10 @@ def track_linear_velocity(
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (z_weight * z_error)
+  if min_std is not None:
+    assert even_std is None, "min_std and even_std are exclusive."
+    std_t = torch.clamp(torch.norm(command[:, :2], dim=1), min=min_std, max=std)
+    return torch.exp(-lin_vel_error / std_t**2)
   if even_std is None or scan_sensor_name is None:
     return torch.exp(-lin_vel_error / std**2)
   uneven = uneven_terrain_mask(env, scan_sensor_name)
