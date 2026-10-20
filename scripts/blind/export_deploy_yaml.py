@@ -53,6 +53,7 @@ OBS_NAMES = {
   "joint_pos": "joint_pos_rel",
   "joint_vel": "joint_vel_rel",
   "actions": "last_action",
+  "heading_error": "heading_error",
 }
 
 
@@ -160,6 +161,9 @@ def main() -> None:
         params = {"asset_cfg": {"joint_ids": FlowList([order.index(n) for n in names])}}
     elif name == "actions":
       dim = action_dim
+    elif name == "heading_error":
+      # After velocity_commands, whose deadzoned command it integrates.
+      params, dim = {"max_error": term.params.get("max_error", 0.5)}, 1
     else:
       dim = 3
     assert term.scale is None, f"obs scale not handled: {name}"

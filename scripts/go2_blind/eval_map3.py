@@ -118,6 +118,75 @@ SCENARIOS = [
 ]
 
 
+# --set flights: up and down every map3 flight (step_<flight>_NN boxes).
+APPROACH = 0.65
+"""Spawn distance before the first riser (up) or the top edge (down), m."""
+GOAL_SHARE = 0.85
+"""Share of the flight's rise that counts as done."""
+TIME_SLACK = 1.25
+"""Walking time = this x (approach + goal share of the flight) / commanded speed."""
+
+
+def _surface_z(boxes, x: float, y: float, below: float | None = None, above: float | None = None) -> float:
+  """Top of the highest box under (x, y) up to `below`, or of the lowest one from `above`."""
+  tops = [
+    p[2] + s[2]
+    for name, s, p in boxes
+    if not name.startswith(("rail", "roof")) and abs(x - p[0]) <= s[0] and abs(y - p[1]) <= s[1]
+  ]
+  if below is not None:
+    return max(t for t in tops if t <= below)
+  return min(t for t in tops if t >= above)
+
+
+def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Scenario]:
+  """Up and down every map3 flight, spawned on its landings."""
+  flights: dict[str, list] = {}
+  for name, size, pos in boxes:
+    m = re.match(r"step_(.+)_\d+$", name)
+    if m:
+      flights.setdefault(m.group(1), []).append((size, pos))
+  scenarios = []
+  for flight, steps in sorted(flights.items()):
+    steps.sort(key=lambda b: b[1][2] + b[0][2])  # by tread height
+    (s_lo, p_lo), (s_hi, p_hi) = steps[0], steps[-1]
+    d = p_hi[:2] - p_lo[:2]
+    axis = int(abs(d[1]) > abs(d[0]))  # ascent along x (0) or y (1)
+    sign = 1.0 if d[axis] > 0 else -1.0
+    other = 1 - axis
+    lateral = float(np.mean([p[other] for _, p in steps]))
+    length = max(p[axis] + s[axis] for s, p in steps) - min(p[axis] - s[axis] for s, p in steps)
+    first_riser = p_lo[axis] - sign * s_lo[axis]
+    top_edge = p_hi[axis] + sign * s_hi[axis]
+
+    def point(u: float, axis=axis, other=other, lateral=lateral) -> tuple[float, float]:
+      xy = [0.0, 0.0]
+      xy[axis], xy[other] = u, lateral
+      return xy[0], xy[1]
+
+    bottom = point(first_riser - sign * APPROACH)
+    top = point(top_edge + sign * APPROACH)
+    z_bottom = _surface_z(boxes, *bottom, below=p_lo[2] + s_lo[2] - 0.02)
+    z_top = _surface_z(boxes, *top, above=p_hi[2] + s_hi[2] + 0.02)
+    rise = z_top - z_bottom
+    yaw_up = math.degrees(math.atan2(sign * axis, sign * (1 - axis)))
+    for direction, (x, y), z, yaw, vx, kind in (
+      ("up", bottom, z_bottom, yaw_up, up_vx, "climb"),
+      ("down", top, z_top, yaw_up + 180.0, down_vx, "descend"),
+    ):
+      walk = round(float(TIME_SLACK * (APPROACH + GOAL_SHARE * length) / vx), 1)
+      scenarios.append(
+        Scenario(
+          f"{flight}_{direction}",
+          (x, y, z),
+          (yaw + 180.0) % 360.0 - 180.0,
+          [(1.0, 0, 0, 0), (walk, vx, 0, 0), (2.0, 0, 0, 0)],
+          f"{kind}:{GOAL_SHARE * rise:.2f}",
+        )
+      )
+  return scenarios
+
+
 def load_map3_boxes(map3_dir: Path = MAP3_DIR) -> list[tuple[str, np.ndarray, np.ndarray]]:
   text = (map3_dir / "map3_collision.xml").read_text() + (map3_dir / "scene.xml").read_text()
   boxes = []
@@ -235,6 +304,10 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   sign = 1.0 if kind == "climb" else -1.0
   t_in = torch.full((env.num_envs,), float("nan"), device=env.device)
   t_out, s_in, s_out = t_in.clone(), t_in.clone(), t_in.clone()
+  # Heading error (deg, + = turned left) and offset from the spawn line along the
+  # flight heading (m, + = left) when a robot reaches the goal: drift with
+  # --no-operator, which the operator otherwise corrects.
+  yaw_at, lat_at = t_in.clone(), t_in.clone()
   steps_done = 0
 
   for duration, vx, vy, wz in scenario.segments:
@@ -254,6 +327,13 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       # Goal reached before any termination (wall hits after the end of a flight,
       # where the command keeps walking forward, do not undo it).
       reached |= goal_met() & ~fell
+      new = reached & torch.isnan(yaw_at) & ~terminated
+      if new.any():
+        err = robot.data.heading_w - yaw_target
+        err = torch.rad2deg(torch.atan2(torch.sin(err), torch.cos(err)))
+        rel = robot.data.root_link_pos_w[:, :2] - env.scene.env_origins[:, :2]
+        yaw_at = torch.where(new, err, yaw_at)
+        lat_at = torch.where(new, -axis[1] * rel[:, 0] + axis[0] * rel[:, 1], lat_at)
       fell |= terminated
       z = robot.data.root_link_pos_w[:, 2]
       zmin = torch.where(fell, zmin, torch.minimum(zmin, z))
@@ -288,6 +368,15 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       "reached_legacy": float(legacy_reached.float().mean()),
       "reset_before_goal_legacy": float((legacy_fell & ~legacy_reached).float().mean()),
     }
+  if kind != "track":
+    ok = ~torch.isnan(yaw_at)
+    qs = torch.tensor((0.1, 0.5, 0.9), device=env.device)
+    yq = yaw_at[ok].quantile(qs).tolist() if ok.any() else [math.nan] * 3
+    lq = lat_at[ok].quantile(qs).tolist() if ok.any() else [math.nan] * 3
+    result |= {
+      "yaw_deg_p10": yq[0], "yaw_deg_p50": yq[1], "yaw_deg_p90": yq[2],
+      "lat_m_p10": lq[0], "lat_m_p50": lq[1], "lat_m_p90": lq[2],
+    }
   if measure_speed:
     ok = ~torch.isnan(t_out) & (t_out > t_in)
     ratio = ((s_out - s_in) / (t_out - t_in) / moving_vx[0])[ok]
@@ -303,15 +392,28 @@ def main() -> None:
   parser.add_argument("--task", default=TASK, help="Blind stairs task whose play config matches the policy.")
   parser.add_argument("--num-envs", type=int, default=128)
   parser.add_argument("--time-scale", type=float, default=1.0)
-  parser.add_argument("--scenarios", nargs="*", default=[s.name for s in SCENARIOS])
+  parser.add_argument(
+    "--set", choices=("default", "flights"), default="default",
+    help="default: the scenarios above; flights: up and down every map3 flight.",
+  )
+  parser.add_argument("--up-vx", type=float, default=0.5, help="--set flights: climbing command (m/s).")
+  parser.add_argument("--down-vx", type=float, default=0.4, help="--set flights: descending command (m/s).")
+  parser.add_argument("--scenarios", nargs="*", default=None, help="Names to run (default: the whole set).")
+  parser.add_argument("--list", action="store_true", help="Print the scenarios and exit.")
   parser.add_argument("--operator", action=argparse.BooleanOptionalAction, default=True)
   parser.add_argument("--seed", type=int, default=0)
   args = parser.parse_args()
 
   boxes = load_map3_boxes()
+  scenarios = SCENARIOS if args.set == "default" else flight_scenarios(boxes, args.up_vx, args.down_vx)
+  if args.list:
+    for s in scenarios:
+      print(f"{s.name:16s} spawn ({s.spawn[0]:7.2f}, {s.spawn[1]:5.2f}, {s.spawn[2]:6.3f}) "
+            f"yaw {s.yaw_deg:6.1f}  {s.success:14s} segments {s.segments}")
+    return
   results = []
-  for s in SCENARIOS:
-    if s.name not in args.scenarios:
+  for s in scenarios:
+    if args.scenarios is not None and s.name not in args.scenarios:
       continue
     if s.success != "track":
       s.segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.segments]
