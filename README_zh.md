@@ -19,6 +19,67 @@ Mjlab 结合了 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的成熟高�
 </div>
 
 
+## 🦿 盲走（只用本体感知）
+
+Go2、As2、B2 以及轮足 Go2W、As2W、B2W 的摇杆速度策略：在平地上全向行走，能上下楼梯
+（台阶最高 18 cm），不使用任何地形感知。actor 只看 IMU、关节状态、指令和朝向误差
+（指令角速度积分出的目标朝向减去 IMU 朝向），所以只给前进指令、没人修正方向时也能走直。
+训练任务是 `Unitree-<机器人>-Blind-Map3-Heading`（`src/tasks/velocity/blind_env_cfg.py`）。
+
+| 机器人 | 最终模型 | map3 楼梯（无 / 有操作员） | 平地指令误差 20% 以内 |
+|---|---|---|---|
+| Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
+| As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
+| B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
+| Go2W | `go2w_blind` stairs_v8_deficit model_9700 | 87.2% / 99.7% | 38 / 44 |
+| As2W | `as2w_blind` stairs_v2_deficit model_6600 | 82.7% / 99.7% | 37 / 44 |
+| B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
+
+map3 楼梯：[map3](src/assets/terrains/map3) 楼梯间全部 18 段楼梯上下（每段 64 台机器人、
+给 1.6 倍标准时间），无 / 有一个把机器人拉回楼梯中心线的操作员时到达目标的比例。
+平地指令：44 条验收指令（前后、横移、斜走、原地转、边走边转）中速度误差在 20% 以内的条数。
+
+每个最终模型的验收视频：先是平地上各方向的指令，然后是 map3 巡游（上 L0 → 平台转身 →
+上 R1 → 掉头 → 下 R1 → 下 L0 → 站立），由一个像人用摇杆一样把机器人拉回每段楼梯中心线的
+自动驾驶控制。B2W 在 R1 顶部平台上先横移再掉头：它的机身比 R1 中心线到平台墙的 0.46 m 更长。
+
+### Go2
+
+https://github.com/user-attachments/assets/5e0eb2b3-dafd-455a-8dc4-497529ec5214
+
+https://github.com/user-attachments/assets/e9e70485-e859-45a3-92ed-e707ffb961bf
+
+### As2
+
+https://github.com/user-attachments/assets/4c27d9e6-c423-48e1-91da-bd708b813d7a
+
+https://github.com/user-attachments/assets/6e439e22-0a88-4013-9b13-7d3e97bd47c5
+
+### B2
+
+https://github.com/user-attachments/assets/cb721035-033f-488e-a566-54e69dea20d1
+
+https://github.com/user-attachments/assets/9dc66da2-b24f-4566-9f79-e9f2f39f5218
+
+### Go2W
+
+https://github.com/user-attachments/assets/21919298-5b1a-4872-91bc-7b39cfcf249c
+
+https://github.com/user-attachments/assets/a52a11b0-37ef-4274-9b4b-14ca375c1a69
+
+### As2W
+
+https://github.com/user-attachments/assets/5ab96eff-2a3b-4fb5-b627-c46100b92747
+
+https://github.com/user-attachments/assets/a7ac3924-ee03-450f-b6ab-e495f19d2f2b
+
+### B2W
+
+https://github.com/user-attachments/assets/7dad356c-0d05-4b23-914a-7fd552adef31
+
+https://github.com/user-attachments/assets/44b2d2e0-d613-4328-b160-0a61675e3e46
+
+
 ## 📦 安装配置
 
 安装和配置步骤请参考 [setup.md](doc/setup_zh.md)

@@ -20,6 +20,74 @@ and sim-to-real deployment.
 </div>
 
 
+## 🦿 Blind Locomotion (Proprioception Only)
+
+Joystick velocity policies for Go2, As2, B2 and the wheel-legged Go2W, As2W and B2W
+that walk in every direction on flat ground and go up and down stairs (risers up to
+18 cm) without any terrain sensing. The actor sees only the IMU, joint states, the
+command and a heading error (the heading integrated from the commanded yaw rate minus
+the IMU heading), so it walks straight under a forward command with nobody steering.
+Training tasks are `Unitree-<Robot>-Blind-Map3-Heading`
+(`src/tasks/velocity/blind_env_cfg.py`).
+
+| Robot | Final model | map3 flights (no operator / operator) | Flat commands within 20% |
+|---|---|---|---|
+| Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
+| As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
+| B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
+| Go2W | `go2w_blind` stairs_v8_deficit model_9700 | 87.2% / 99.7% | 38 / 44 |
+| As2W | `as2w_blind` stairs_v2_deficit model_6600 | 82.7% / 99.7% | 37 / 44 |
+| B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
+
+map3 flights: share of runs that reach the goal over all 18 flights of the
+[map3](src/assets/terrains/map3) stairwell, up and down (64 robots each, 1.6x the
+nominal time), without and with an operator who steers back to the flight's
+centerline. Flat commands: the 44 acceptance commands (forward, backward, sideways,
+diagonal, turning, arcs) tracked within 20%.
+
+Acceptance videos of each final model: commands in every direction on flat ground,
+then a map3 tour (up L0, turn on the landing, up R1, turn around, down R1 and L0,
+stand) driven by an autopilot that steers back to each flight's centerline like a
+person with a joystick. B2W steps sideways on R1's top landing to turn around: it is
+longer than the 0.46 m from R1's centerline to the landing wall.
+
+### Go2
+
+https://github.com/user-attachments/assets/5e0eb2b3-dafd-455a-8dc4-497529ec5214
+
+https://github.com/user-attachments/assets/e9e70485-e859-45a3-92ed-e707ffb961bf
+
+### As2
+
+https://github.com/user-attachments/assets/4c27d9e6-c423-48e1-91da-bd708b813d7a
+
+https://github.com/user-attachments/assets/6e439e22-0a88-4013-9b13-7d3e97bd47c5
+
+### B2
+
+https://github.com/user-attachments/assets/cb721035-033f-488e-a566-54e69dea20d1
+
+https://github.com/user-attachments/assets/9dc66da2-b24f-4566-9f79-e9f2f39f5218
+
+### Go2W
+
+https://github.com/user-attachments/assets/21919298-5b1a-4872-91bc-7b39cfcf249c
+
+https://github.com/user-attachments/assets/a52a11b0-37ef-4274-9b4b-14ca375c1a69
+
+### As2W
+
+https://github.com/user-attachments/assets/5ab96eff-2a3b-4fb5-b627-c46100b92747
+
+https://github.com/user-attachments/assets/a7ac3924-ee03-450f-b6ab-e495f19d2f2b
+
+### B2W
+
+https://github.com/user-attachments/assets/7dad356c-0d05-4b23-914a-7fd552adef31
+
+https://github.com/user-attachments/assets/44b2d2e0-d613-4328-b160-0a61675e3e46
+
+
 ## 📦 Installation and Configuration
 
 Please refer to [setup.md](doc/setup_en.md) for installation and configuration steps.
