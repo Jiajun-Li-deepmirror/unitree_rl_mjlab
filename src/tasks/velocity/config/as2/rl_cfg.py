@@ -44,3 +44,12 @@ def unitree_as2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     num_steps_per_env=24,
     max_iterations=10001,
   )
+
+
+def unitree_as2_blind_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for the Unitree As2 blind velocity tasks."""
+  cfg = unitree_as2_ppo_runner_cfg()
+  cfg.experiment_name = "as2_blind"
+  cfg.logger = "tensorboard"
+  cfg.max_iterations = max_iterations
+  return cfg

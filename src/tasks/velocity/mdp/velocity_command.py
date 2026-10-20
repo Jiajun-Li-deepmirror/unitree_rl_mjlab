@@ -375,6 +375,21 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       ],
       dim=1,
     )
+    if self.cfg.steer_prob > 0.0:
+      # Driving with a gentle turn replaces some moving commands (standing keeps
+      # its share): drawn from the combined mode it is under 1% of commands.
+      p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
+      steer = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.steer_prob / p_moving)
+      back = uniform((0.0, 1.0)) < self.cfg.steer_back_prob
+      lo, hi = self.cfg.steer_vx_range
+      fwd_max, back_max = ranges.lin_vel_x[1], -ranges.lin_vel_x[0]
+      fwd_vx = uniform((min(lo, fwd_max), min(hi, fwd_max)))
+      back_vx = -uniform((min(lo, back_max), min(hi, back_max)))
+      wz = uniform(self.cfg.steer_wz_range) * torch.where(uniform((0.0, 1.0)) < 0.5, -1.0, 1.0)
+      steer_cmd = torch.stack(
+        [torch.where(back, back_vx, fwd_vx), torch.zeros_like(wz), wz], dim=1
+      )
+      flat_cmd = torch.where(steer.unsqueeze(1), steer_cmd, flat_cmd)
 
     # Stair terrain: forward-biased, with extra standing.
     stair_ranges = self.cfg.stair_ranges
@@ -451,6 +466,14 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
       lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.4, 0.4), ang_vel_z=(0.0, 0.0)
     )
   )
+  steer_prob: float = 0.0
+  """Share of flat commands that drive with a gentle turn (vx, 0, wz), taken
+  from the moving modes. |vx| from `steer_vx_range` (backwards with
+  `steer_back_prob`, both within `ranges.lin_vel_x`), |wz| from
+  `steer_wz_range` with a random sign."""
+  steer_vx_range: tuple[float, float] = (0.3, 1.5)
+  steer_back_prob: float = 0.25
+  steer_wz_range: tuple[float, float] = (0.05, 0.4)
   corridor_terrain_names: tuple[str, ...] = ()
   """Sub-terrain names whose moving commands hold the corridor (see the term)."""
   corridor_heading_gain: float = 1.0

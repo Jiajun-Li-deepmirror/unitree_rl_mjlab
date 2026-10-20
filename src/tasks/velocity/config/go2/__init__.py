@@ -69,3 +69,13 @@ register_mjlab_task(
   rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=4000, entropy_coef=0.005),
   runner_cls=VelocityOnPolicyRunner,
 )
+
+# The map3 fine-tune with legs on the ground kept upright on stairs (resume from
+# the release model_20000; see stance_leg_tilt).
+register_mjlab_task(
+  task_id="Unitree-Go2-Blind-Map3-Tilt",
+  env_cfg=unitree_go2_blind_map3_env_cfg(stance_tilt_weight=-10.0),
+  play_env_cfg=unitree_go2_blind_map3_env_cfg(play=True, stance_tilt_weight=-10.0),
+  rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
+  runner_cls=VelocityOnPolicyRunner,
+)
