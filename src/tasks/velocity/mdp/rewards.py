@@ -664,6 +664,35 @@ def uneven_terrain_mask(
   return span > threshold
 
 
+def stair_speed_deficit(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  ratio: float = 0.9,
+  min_speed: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """On uneven ground (stairs), how far the speed along the commanded direction
+  falls short of `ratio` times the commanded speed, as a fraction of the command
+  (0 to 1). Going faster than that earns nothing, so it cannot pay to rush.
+
+  The wheeled stairs policies (2026-10-20) went down map3's flights at 0.5-0.7x
+  the command: at tracking std 0.35 half of 0.4 m/s costs 28% of the tracking
+  reward. An ungated descent progress reward made the go2-depth wheeled robots
+  rush down at 1.35-5x instead.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  cmd = command[:, :2]
+  speed = torch.norm(cmd, dim=1)
+  direction = cmd / speed.clamp(min=1e-6).unsqueeze(1)
+  along = (asset.data.root_link_lin_vel_b[:, :2] * direction).sum(dim=1)
+  deficit = ((ratio * speed - along) / speed.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+  active = (speed >= min_speed) & uneven_terrain_mask(env, sensor_name)
+  return torch.where(active, deficit, torch.zeros_like(deficit))
+
+
 def _zero_command_mask(
   env: ManagerBasedRlEnv, command_name: str, command_threshold: float
 ) -> torch.Tensor:

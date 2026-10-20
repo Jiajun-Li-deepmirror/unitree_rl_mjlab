@@ -844,7 +844,9 @@ def apply_blind_map3(
   actions).
 
   Changes: walled flights in the terrain (with an operator-style corridor
-  command and little spawn x/y noise there), and with `legged_terms` a tighter
+  command and little spawn x/y noise there); without `legged_terms` (wheeled) a
+  penalty for going slower than 0.9x the command on stairs (stair_speed_deficit),
+  and with `legged_terms` a tighter
   linear tracking std on even ground plus more slow flat commands (flat
   low-speed under-tracking) and a progress reward for going down stairs. Built
   for the Go2 (release map3_ft). The wheeled stairs tasks keep their own
@@ -868,6 +870,13 @@ def apply_blind_map3(
   reset_base.params["stair_terrain_names"] = MAP3_STAIR_TERRAIN_NAMES
   reset_base.params["narrow_terrain_names"] = WALLED_TERRAIN_NAMES
   if not legged_terms:
+    # Go2W, As2W and B2W (2026-10-20) went down the map3 flights at 0.5-0.7x the
+    # command; the shortfall below 0.9x costs up to 1 per step on stairs.
+    cfg.rewards["stair_speed_deficit"] = RewardTermCfg(
+      func=mdp.stair_speed_deficit,
+      weight=-1.0,
+      params={"command_name": "twist", "sensor_name": "terrain_scan"},
+    )
     return cfg
 
   twist.flat_slow_prob = 0.3

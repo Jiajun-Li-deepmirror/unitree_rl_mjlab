@@ -33,6 +33,7 @@ an on-time one.
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import re
 from dataclasses import asdict, dataclass, field
@@ -420,6 +421,11 @@ def main() -> None:
       if s.legacy_segments:
         s.legacy_segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.legacy_segments]
     results.append(run_scenario(args, s, boxes))
+    # A closed env's GPU arrays go only when Python collects its reference cycles;
+    # without this the trainers failed to capture a later scenario's CUDA graph
+    # (~11th of the 18 flights; found by the go2-depth session, 2026-10-20).
+    gc.collect()
+    torch.cuda.empty_cache()
   print(f"\n[map3] {args.checkpoint}: {args.num_envs} robots per scenario, time scale {args.time_scale}")
   for r in results:
     print("  " + "  ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in r.items()))
