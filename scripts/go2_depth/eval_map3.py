@@ -16,6 +16,7 @@ change.
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import os
 import re
@@ -102,6 +103,77 @@ SCENARIOS = [
     1.0,
   ),
 ]
+
+
+# --set flights (go2-blind d9ed8ba): up and down every map3 flight (step_<flight>_NN boxes).
+APPROACH = 0.65
+"""Spawn distance before the first riser (up) or the top edge (down), m."""
+GOAL_SHARE = 0.85
+"""Share of the flight's rise that counts as done."""
+TIME_SLACK = 1.25
+"""Walking time = this x (approach + goal share of the flight) / commanded speed."""
+
+
+def _surface_z(boxes, x: float, y: float, below: float | None = None, above: float | None = None) -> float:
+  """Top of the highest box under (x, y) up to `below`, or of the lowest one from `above`."""
+  tops = [
+    p[2] + s[2]
+    for name, s, p in boxes
+    if not name.startswith(("rail", "roof")) and abs(x - p[0]) <= s[0] and abs(y - p[1]) <= s[1]
+  ]
+  if below is not None:
+    return max(t for t in tops if t <= below)
+  return min(t for t in tops if t >= above)
+
+
+def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Scenario]:
+  """Up and down every map3 flight, spawned on its landings (go2-blind's set)."""
+  flights: dict[str, list] = {}
+  for name, size, pos in boxes:
+    m = re.match(r"step_(.+)_\d+$", name)
+    if m:
+      flights.setdefault(m.group(1), []).append((size, pos))
+  scenarios = []
+  for flight, steps in sorted(flights.items()):
+    steps.sort(key=lambda b: b[1][2] + b[0][2])  # by tread height
+    (s_lo, p_lo), (s_hi, p_hi) = steps[0], steps[-1]
+    d = p_hi[:2] - p_lo[:2]
+    axis = int(abs(d[1]) > abs(d[0]))  # ascent along x (0) or y (1)
+    sign = 1.0 if d[axis] > 0 else -1.0
+    other = 1 - axis
+    lateral = float(np.mean([p[other] for _, p in steps]))
+    length = max(p[axis] + s[axis] for s, p in steps) - min(p[axis] - s[axis] for s, p in steps)
+    first_riser = p_lo[axis] - sign * s_lo[axis]
+    top_edge = p_hi[axis] + sign * s_hi[axis]
+
+    def point(u: float, axis=axis, other=other, lateral=lateral) -> tuple[float, float]:
+      xy = [0.0, 0.0]
+      xy[axis], xy[other] = u, lateral
+      return xy[0], xy[1]
+
+    bottom = point(first_riser - sign * APPROACH)
+    top = point(top_edge + sign * APPROACH)
+    z_bottom = _surface_z(boxes, *bottom, below=p_lo[2] + s_lo[2] - 0.02)
+    z_top = _surface_z(boxes, *top, above=p_hi[2] + s_hi[2] + 0.02)
+    rise = z_top - z_bottom
+    yaw_up = math.degrees(math.atan2(sign * axis, sign * (1 - axis)))
+    for direction, (x, y), z, yaw, vx, kind in (
+      ("up", bottom, z_bottom, yaw_up, up_vx, "climb"),
+      ("down", top, z_top, yaw_up + 180.0, down_vx, "descend"),
+    ):
+      walk = round(float(TIME_SLACK * (APPROACH + GOAL_SHARE * length) / vx), 1)
+      scenarios.append(
+        Scenario(
+          f"{flight}_{direction}",
+          (float(x), float(y), float(z)),
+          (yaw + 180.0) % 360.0 - 180.0,
+          [(1.0, 0, 0, 0), (walk, vx, 0, 0), (2.0, 0, 0, 0)],
+          f"{kind}:{GOAL_SHARE * rise:.2f}",
+          # Teacher: the stories above the flight's top landing are dropped.
+          z_top + 1.0,
+        )
+      )
+  return scenarios
 
 
 MAP3_DIR = Path(__file__).resolve().parents[2] / "src" / "assets" / "terrains" / "map3"
@@ -254,6 +326,8 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
   from mjlab.envs import ManagerBasedRlEnv
 
   task = f"Unitree-{ROBOT_TASK_NAMES[args.robot]}-Depth-{args.policy.capitalize()}"
+  if args.heading:
+    task += "-Heading"
   if args.policy == "teacher" or args.drop_overhead:
     boxes = [
       (n, size, pos) for n, size, pos in boxes
@@ -322,6 +396,13 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     for t in env.termination_manager.active_terms
     if t != "time_out"
   }
+  # go2-blind's goal: reached before any termination (a wall hit after the end
+  # of a flight, where the command keeps walking forward, does not undo it),
+  # with the heading error (deg, + = turned left) and the offset from the spawn
+  # line (m, + = left) at that moment: the drift without the operator.
+  reached = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  yaw_at = torch.full((env.num_envs,), float("nan"), device=env.device)
+  lat_at = yaw_at.clone()
   for duration, vx, vy, wz in scenario.segments:
     set_command(env, vx, vy, wz)
     for step in range(int(round(duration / env.step_dt))):
@@ -345,6 +426,17 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       obs = TensorDict(raw, batch_size=[env.num_envs])
       for t in reasons:
         reasons[t] |= env.termination_manager.get_term(t) & ~fell
+      if sign is not None:
+        z_now = robot.data.root_link_pos_w[:, 2]
+        met = sign * (z_now - z0) >= float(thr)
+        new = met & ~fell & ~terminated & ~reached
+        if new.any():
+          err = robot.data.heading_w - yaw_target
+          err = torch.rad2deg(torch.atan2(torch.sin(err), torch.cos(err)))
+          rel = robot.data.root_link_pos_w[:, :2] - env.scene.env_origins[:, :2]
+          yaw_at = torch.where(new, err, yaw_at)
+          lat_at = torch.where(new, -axis[1] * rel[:, 0] + axis[0] * rel[:, 1], lat_at)
+        reached |= met & ~fell & ~terminated
       new_fall = terminated & ~fell
       fall_along = torch.where(new_fall, pre_along, fall_along)
       fell |= terminated
@@ -395,6 +487,13 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     "dz_down": float((z0 - zmin).mean()),
     **{f"by_{t}": float(v.float().mean()) for t, v in reasons.items()},
   }
+  if sign is not None:
+    result["reached"] = float(reached.float().mean())
+    ok_at = ~torch.isnan(yaw_at)
+    if ok_at.any():
+      qs = torch.tensor((0.1, 0.5, 0.9), device=env.device)
+      yq, lq = yaw_at[ok_at].quantile(qs).tolist(), lat_at[ok_at].quantile(qs).tolist()
+      result |= {"yaw_deg_p10": yq[0], "yaw_deg_p90": yq[2], "lat_m_p10": lq[0], "lat_m_p90": lq[2]}
   if fell.any():
     result["fall_at_m"] = sorted(round(float(x), 2) for x in fall_along[fell].tolist())
   moving = [abs(vx) for _, vx, _, _ in scenario.segments if vx]
@@ -425,7 +524,18 @@ def main() -> None:
     help="Folder with map3_collision.xml and scene.xml (default: the copy in this repo).",
   )
   parser.add_argument("--num-envs", type=int, default=16)
-  parser.add_argument("--scenarios", nargs="*", default=[s.name for s in SCENARIOS])
+  parser.add_argument(
+    "--set", choices=("default", "flights"), default="default",
+    help="default: the scenarios above; flights: up and down every map3 flight (go2-blind's 18).",
+  )
+  parser.add_argument("--up-vx", type=float, default=0.5, help="--set flights: climbing command (m/s).")
+  parser.add_argument("--down-vx", type=float, default=0.4, help="--set flights: descending command (m/s).")
+  parser.add_argument("--scenarios", nargs="*", default=None, help="Names to run (default: the whole set).")
+  parser.add_argument("--list", action="store_true", help="Print the scenarios and exit.")
+  parser.add_argument(
+    "--heading", action="store_true",
+    help="Policy from a heading task (go2-blind d9ed8ba recipe, heading-error input).",
+  )
   parser.add_argument("--solid-gaps", action="store_true")
   parser.add_argument("--trace", action="store_true", help="Print progress along the flight every second.")
   parser.add_argument(
@@ -442,10 +552,26 @@ def main() -> None:
   import src.tasks  # noqa: F401
 
   boxes = _load_map3_boxes(args.map3_dir.expanduser())
-  results = [run_scenario(args, s, boxes) for s in SCENARIOS if s.name in args.scenarios]
-  print("\n[map3 eval]", args.policy, args.checkpoint)
+  scenarios = SCENARIOS if args.set == "default" else flight_scenarios(boxes, args.up_vx, args.down_vx)
+  if args.list:
+    for s in scenarios:
+      print(f"{s.name:16s} spawn ({s.spawn[0]:7.2f}, {s.spawn[1]:5.2f}, {s.spawn[2]:6.3f}) "
+            f"yaw {s.yaw_deg:6.1f}  {s.success:14s} segments {s.segments}")
+    return
+  results = []
+  for s in scenarios:
+    if args.scenarios is None or s.name in args.scenarios:
+      results.append(run_scenario(args, s, boxes))
+      # A closed env holds its GPU arrays until the garbage collector breaks its
+      # reference cycles; without this the next env's CUDA graph capture failed
+      # (2nd scenario on a 6 GB GPU, ~11th on go2-blind's 24 GB one).
+      gc.collect()
+      torch.cuda.empty_cache()
+  print("\n[map3 eval]", args.policy, args.checkpoint, f"set={args.set}", f"operator={args.operator}")
   for r in results:
     print("  " + "  ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in r.items()))
+  if args.set == "flights" and results:
+    print(f"  flights reached mean {np.mean([r['reached'] for r in results]):.3f} over {len(results)}")
 
 
 if __name__ == "__main__":
