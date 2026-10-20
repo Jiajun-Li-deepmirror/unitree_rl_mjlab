@@ -335,10 +335,13 @@ def apply_depth_wheel_stairs(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) ->
     face, a simulator exploit;
   - no foot_stumble (a wheel finds a riser by bumping into it) and no wheel
     edge-clearance rule (it penalized partly lifted wheels, not unlifted ones);
-  - the climbing progress reward without the overspeed gate, as there.
-  The descent progress reward keeps its gate: go2-blind's wheeled robots have
-  none and descend at 0.57-0.67x of the command, ours ungated rushed down at
-  1.35-5x and gated went 1.09x (B2-W full_v5ft).
+  - the climbing progress reward without the overspeed gate, as there;
+  - stair_speed_deficit (-1, its ea6aae8): going slower than 0.9x the command
+    on stairs; its Go2W / As2W / B2W went down map3's flights at 0.57 / 0.66 /
+    0.84x the command, 0.80 / 0.80 / 1.02x after 300 iterations with it.
+  The descent progress reward stays too, with its gate: go2-blind's wheeled
+  robots have none, ours ungated rushed down at 1.35-5x and gated went 1.09x
+  (B2-W full_v5ft); above 0.9x the command only it still pays for going down.
   """
   rewards = cfg.rewards
   rewards.pop("foot_stumble", None)
@@ -364,6 +367,11 @@ def apply_depth_wheel_stairs(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) ->
       "sensor_name": "feet_ground_contact",
       "asset_cfg": SceneEntityCfg("robot", joint_names=(spec.wheel_joints,)),
     },
+  )
+  rewards["stair_speed_deficit"] = RewardTermCfg(
+    func=mdp.stair_speed_deficit,
+    weight=-1.0,
+    params={"command_name": "twist", "sensor_name": "terrain_scan"},
   )
   rewards["foothold_height_gain"].params["overspeed_range"] = None
   cfg.events["foot_friction"].params["ranges"] = (0.4, 1.0)
