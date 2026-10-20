@@ -8,6 +8,14 @@ robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
 #robot_scene: "src/assets/robots/unitree_go2/xmls/scene_go2.xml"
 #robot: "a2"
 #robot_scene: "src/assets/robots/unitree_a2/xmls/scene_a2.xml"
+#robot: "b2"
+#robot_scene: "src/assets/robots/unitree_b2/xmls/scene_b2.xml"
+#robot: "go2w"
+#robot_scene: "src/assets/robots/unitree_go2w/xmls/scene_go2w.xml"
+#robot: "b2w"
+#robot_scene: "src/assets/robots/unitree_b2w/xmls/scene_b2w.xml"
+#robot: "as2w"
+#robot_scene: "src/assets/robots/unitree_as2w/xmls/scene_as2w.xml"
 
 domain_id: 0  # Domain id
 interface: "lo" # Interface
