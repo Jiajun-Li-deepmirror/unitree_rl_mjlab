@@ -1,11 +1,15 @@
 from mjlab.tasks.registry import register_mjlab_task
-from src.tasks.velocity.rl import VelocityOnPolicyRunner
+from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner, VelocityOnPolicyRunner
 
 from .env_cfgs import (
   unitree_go2_flat_env_cfg,
   unitree_go2_rough_env_cfg,
 )
-from .blind_env_cfgs import unitree_go2_blind_env_cfg, unitree_go2_blind_map3_env_cfg
+from .blind_env_cfgs import (
+  unitree_go2_blind_env_cfg,
+  unitree_go2_blind_heading_env_cfg,
+  unitree_go2_blind_map3_env_cfg,
+)
 from .rl_cfg import unitree_go2_blind_ppo_runner_cfg, unitree_go2_ppo_runner_cfg
 
 register_mjlab_task(
@@ -79,3 +83,19 @@ register_mjlab_task(
   rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
   runner_cls=VelocityOnPolicyRunner,
 )
+
+# Map3-Tilt walking straight without an operator, with the heading-error input and
+# the left-right mirror loss (resume from its model widened by
+# scripts/blind/widen_obs.py): training (map3) and evaluation (stairs, flat) tasks.
+for task_id, terrain in (
+  ("Unitree-Go2-Blind-Map3-Heading", "map3"),
+  ("Unitree-Go2-Blind-Heading", "stairs"),
+  ("Unitree-Go2-Blind-Flat-Heading", "flat"),
+):
+  register_mjlab_task(
+    task_id=task_id,
+    env_cfg=unitree_go2_blind_heading_env_cfg(terrain=terrain),
+    play_env_cfg=unitree_go2_blind_heading_env_cfg(play=True, terrain=terrain),
+    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
+    runner_cls=MirrorVelocityOnPolicyRunner,
+  )

@@ -62,3 +62,52 @@ def foot_height_rel_base(
   asset: Entity = env.scene[asset_cfg.name]
   foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
   return foot_z - asset.data.root_link_pos_w[:, 2:3]  # (num_envs, num_sites)
+
+
+class heading_error:
+  """Heading the command asks for minus the base heading (rad, wrapped, + = turn left).
+
+  The target heading starts at the base heading after a reset and integrates the
+  commanded yaw rate every control step, so with wz = 0 it holds the heading the
+  robot had: blind policies see their yaw rate but not how far they have turned
+  in total, and drifted ~11 deg per 10 s walking straight (2026-10-20). The target
+  stays within `max_error` of the base heading (anti-windup when the robot cannot
+  follow, e.g. pushed or against a wall). On the robot the same is computed from
+  the IMU yaw and the deadzoned stick command (deploy: observation heading_error).
+  """
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.target = torch.zeros(env.num_envs, device=env.device)
+    # Set from the base heading on the next two control steps: right after a reset
+    # the derived root pose may still be the previous episode's.
+    self.settle = torch.full((env.num_envs,), 2, dtype=torch.long, device=env.device)
+    self.last_step = -1
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.settle[env_ids] = 2
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    max_error: float = 0.5,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    heading = asset.data.heading_w
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    # Integrate once per control step, however often the observation is computed.
+    advance = env.common_step_counter != self.last_step
+    self.last_step = env.common_step_counter
+    settling = self.settle > 0
+    step = command[:, 2] * env.step_dt if advance else torch.zeros_like(heading)
+    self.target = torch.where(settling, heading, self.target + step)
+    if advance:
+      self.settle = (self.settle - 1).clamp(min=0)
+    error = torch.atan2(torch.sin(self.target - heading), torch.cos(self.target - heading))
+    error = error.clamp(-max_error, max_error)
+    self.target = heading + error
+    return error.unsqueeze(1)

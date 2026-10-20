@@ -20,7 +20,9 @@ from src.tasks.velocity.blind_env_cfg import (
 )
 from src.tasks.velocity.blind_env_cfg import (
   BlindRobotCfg,
+  apply_blind_heading,
   apply_blind_map3,
+  apply_blind_straight,
   blind_collision_cfg,
   make_blind_env_cfg,
 )
@@ -63,3 +65,20 @@ def unitree_go2_blind_map3_env_cfg(
   its front hips 7 deg)."""
   cfg = unitree_go2_blind_env_cfg(play=play, stairs=True, stance_tilt_weight=stance_tilt_weight)
   return apply_blind_map3(cfg, play)
+
+
+def unitree_go2_blind_heading_env_cfg(
+  play: bool = False, terrain: str = "map3"
+) -> ManagerBasedRlEnvCfg:
+  """The Go2 stance-tilt tasks with straight walking without an operator (see
+  apply_blind_straight) and the heading-error input (see apply_blind_heading),
+  fine-tuned from Unitree-Go2-Blind-Map3-Tilt widened by scripts/blind/widen_obs.py:
+  `terrain` "map3" is the training task, "stairs" and "flat" the evaluation
+  tasks of the same policy. The As2 run with both (2026-10-20) walked map3's
+  flights without an operator 79% of the time (51% before) and drifted +-1.5 deg
+  per 10 s at 0.5 m/s on flat ground (p50/p90 +11/+34 deg before)."""
+  if terrain == "map3":
+    cfg = apply_blind_straight(unitree_go2_blind_map3_env_cfg(play=play, stance_tilt_weight=-10.0))
+  else:
+    cfg = unitree_go2_blind_env_cfg(play=play, stairs=terrain == "stairs", stance_tilt_weight=-10.0)
+  return apply_blind_heading(cfg)

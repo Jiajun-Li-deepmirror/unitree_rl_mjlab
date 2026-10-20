@@ -5,7 +5,9 @@ swap (FL <-> FR, RL <-> RR); hip joints (axis +x) change sign while thigh, calf
 and wheel joints (axis +y) keep it. The base angular velocity, a pseudo-vector,
 maps to (-wx, wy, -wz), gravity to (gx, -gy, gz) and the command (vx, vy, wz) to
 (vx, -vy, -wz). Joint observations and actions are relative to the default pose,
-whose own mirror must be itself (checked), as must the action scales.
+whose own mirror must be itself (checked), as must the action scales. The trot
+clock (sin, cos) maps to (-sin, -cos), half a period on (checked against the
+foot_gait offsets), and the heading error, a yaw angle, changes sign.
 
 Only the actor group is mirrored: the function serves the mirror loss
 (symmetry_cfg with use_mirror_loss=True, use_data_augmentation=False), for which
@@ -86,6 +88,23 @@ def _action_map(env: ManagerBasedRlEnv) -> tuple[list[int], list[float]]:
   return perm, sign
 
 
+def _check_gait_phase(env: ManagerBasedRlEnv) -> None:
+  """The gait clock observation (sin, cos of the phase) mirrors to (-sin, -cos):
+  swapping left and right legs is a half-period shift of the clock. That holds
+  only if each leg's clock offset is its mirror's plus half a period (trot)."""
+  rm = env.reward_manager
+  if "foot_gait" not in rm.active_terms:
+    raise ValueError("Phase observation without a foot_gait reward: cannot check the clock.")
+  params = rm._term_cfgs[rm.active_terms.index("foot_gait")].params
+  sensor = env.scene[params["sensor_name"]]
+  feet = [s.primary_name for s in sensor._slots if s.field_name == "found"]
+  legs = [name[:2] for name in feet]
+  offsets = dict(zip(legs, params["offset"], strict=True))
+  for leg, value in offsets.items():
+    if abs((offsets[_SIDE_SWAP[leg]] - value - 0.5) % 1.0) > 1e-6:
+      raise ValueError(f"Gait offsets {offsets} are not half a period apart left to right.")
+
+
 def _build(env: ManagerBasedRlEnv) -> tuple[_Mirror, _Mirror]:
   robot = env.scene["robot"]
   joint_names = list(robot.joint_names)
@@ -106,7 +125,9 @@ def _build(env: ManagerBasedRlEnv) -> tuple[_Mirror, _Mirror]:
     if name in _VECTOR_SIGNS:
       p, s = [0, 1, 2], list(_VECTOR_SIGNS[name])
     elif name in ("joint_pos", "joint_vel"):
-      ids = term_cfg.params["asset_cfg"].joint_ids
+      # No asset_cfg (the legged tasks): the term's default, all joints in order.
+      asset_cfg = term_cfg.params.get("asset_cfg")
+      ids = asset_cfg.joint_ids if asset_cfg is not None else slice(None)
       ids = list(range(len(joint_names))) if isinstance(ids, slice) else list(ids)
       p, s = _joint_map([joint_names[i] for i in ids])
       if name == "joint_pos":
@@ -114,6 +135,11 @@ def _build(env: ManagerBasedRlEnv) -> tuple[_Mirror, _Mirror]:
         _check_invariant(default, p, s, "Default joint position")
     elif name == "actions":
       p, s = act_perm, act_sign
+    elif name == "phase":
+      _check_gait_phase(env)
+      p, s = [0, 1], [-1.0, -1.0]
+    elif name == "heading_error":
+      p, s = [0], [-1.0]  # a yaw angle
     else:
       raise ValueError(f"No mirror for actor observation term {name!r}.")
     size = int(math.prod(dims))

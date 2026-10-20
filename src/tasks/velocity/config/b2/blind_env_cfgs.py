@@ -13,7 +13,9 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from src.assets.robots import get_b2_robot_cfg
 from src.tasks.velocity.blind_env_cfg import (
   BlindRobotCfg,
+  apply_blind_heading,
   apply_blind_map3,
+  apply_blind_straight,
   blind_collision_cfg,
   make_blind_env_cfg,
 )
@@ -101,3 +103,25 @@ def unitree_b2_blind_map3_env_cfg(
 ) -> ManagerBasedRlEnvCfg:
   """The B2 stairs task with the Go2 map3 fine-tune changes (see apply_blind_map3)."""
   return apply_blind_map3(unitree_b2_blind_env_cfg(play=play, stairs=True, robot=robot), play)
+
+
+def unitree_b2_blind_straight_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """The B2 map3 stairs task that walks straight without an operator (see
+  apply_blind_straight): the As2 and Go2 stairs models drifted into map3's walls
+  without one (2026-10-20)."""
+  return apply_blind_straight(unitree_b2_blind_map3_env_cfg(play=play))
+
+
+def unitree_b2_blind_heading_env_cfg(
+  play: bool = False, terrain: str = "map3"
+) -> ManagerBasedRlEnvCfg:
+  """The B2 R1 stairs tasks with the heading-error input (see apply_blind_heading),
+  fine-tuned from Unitree-B2-Blind-R1-Map3-Straight widened by
+  scripts/blind/widen_obs.py: `terrain` "map3" is the training task, "stairs"
+  and "flat" the evaluation tasks of the same policy. Its model_6000 drifted
+  +-13 deg (p10/p90) per 10 s at 0.5 m/s on flat ground (2026-10-20)."""
+  if terrain == "map3":
+    cfg = unitree_b2_blind_straight_env_cfg(play=play)
+  else:
+    cfg = unitree_b2_blind_env_cfg(play=play, stairs=terrain == "stairs", robot=B2_BLIND_R1_STAIRS)
+  return apply_blind_heading(cfg)

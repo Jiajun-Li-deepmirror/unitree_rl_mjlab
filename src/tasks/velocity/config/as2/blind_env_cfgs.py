@@ -10,7 +10,9 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from src.assets.robots import get_as2_robot_cfg
 from src.tasks.velocity.blind_env_cfg import (
   BlindRobotCfg,
+  apply_blind_heading,
   apply_blind_map3,
+  apply_blind_straight,
   blind_collision_cfg,
   make_blind_env_cfg,
 )
@@ -46,3 +48,23 @@ def unitree_as2_blind_map3_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   5-97%), with 16-28% resets on the L0 flight and its 0.188 m tread.
   """
   return apply_blind_map3(unitree_as2_blind_env_cfg(play=play, stairs=True), play)
+
+
+def unitree_as2_blind_straight_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """The As2 map3 task that walks straight without an operator (see
+  apply_blind_straight). The stairs model_7500 drifted into the walls of map3's
+  flights on 41-69% of the runs without one."""
+  return apply_blind_straight(unitree_as2_blind_map3_env_cfg(play=play))
+
+
+def unitree_as2_blind_heading_env_cfg(
+  play: bool = False, terrain: str = "map3"
+) -> ManagerBasedRlEnvCfg:
+  """The As2 tasks with the heading-error input (see apply_blind_heading):
+  `terrain` "map3" is the straight-walking training task, "stairs" and "flat"
+  the evaluation tasks of the same policy."""
+  if terrain == "map3":
+    cfg = unitree_as2_blind_straight_env_cfg(play=play)
+  else:
+    cfg = unitree_as2_blind_env_cfg(play=play, stairs=terrain == "stairs")
+  return apply_blind_heading(cfg)

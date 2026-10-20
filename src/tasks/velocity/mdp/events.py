@@ -26,13 +26,16 @@ def reset_root_state_terrain_aware(
   velocity_range: dict[str, tuple[float, float]] | None = None,
   narrow_terrain_names: tuple[str, ...] = (),
   narrow_xy_range: float = 0.1,
+  narrow_yaw_noise: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   """Like reset_root_state_uniform, but faces stair envs toward a staircase side.
 
   Pyramid stairs are axis-aligned, so stair envs get yaw = k * 90 deg plus
   noise; other envs use `pose_range["yaw"]`. Envs on `narrow_terrain_names`
-  (walled corridors) get x/y noise of only +-`narrow_xy_range`.
+  (walled corridors) get x/y noise of only +-`narrow_xy_range`, and with
+  `narrow_yaw_noise` that yaw noise instead of `stair_yaw_noise` (lined up with
+  the flight, as an operator would start a robot that must walk it uncorrected).
   """
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
@@ -61,6 +64,11 @@ def reset_root_state_terrain_aware(
       pose_samples[:, 0:2].clamp(-narrow_xy_range, narrow_xy_range),
       pose_samples[:, 0:2],
     )
+    if narrow_yaw_noise is not None:
+      # The same draw, scaled: no extra random numbers.
+      base = side * (math.pi / 2)
+      narrow_yaw = base + (stair_yaw - base) * (narrow_yaw_noise / stair_yaw_noise)
+      pose_samples[:, 5] = torch.where(narrow, narrow_yaw, pose_samples[:, 5])
 
   positions = root_states[:, 0:3] + pose_samples[:, 0:3] + env.scene.env_origins[env_ids]
   orientations_delta = quat_from_euler_xyz(

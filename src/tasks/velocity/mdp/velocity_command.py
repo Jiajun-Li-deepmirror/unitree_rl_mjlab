@@ -403,17 +403,26 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     )
     stair_stand = uniform((0.0, 1.0)) < self.cfg.stair_standing_prob
     stair_cmd[stair_stand] = 0.0
+    if self.cfg.stair_straight_prob > 0.0:
+      stair_cmd[uniform((0.0, 1.0)) < self.cfg.stair_straight_prob, 1:] = 0.0
 
     is_stair = self.is_stair_env[env_ids].unsqueeze(1)
     cmd = torch.where(is_stair, stair_cmd, flat_cmd)
     # Treat tiny commands as zero; matches the deploy-side stick deadzone.
     cmd *= (torch.norm(cmd, dim=1) > self.cfg.zero_threshold).unsqueeze(1)
-    self.vel_command_b[env_ids] = cmd
 
     if not self.cfg.corridor_terrain_names:
+      self.vel_command_b[env_ids] = cmd
       return
     # Corridor hold for moving commands; wz and vy are set in _update_command.
-    self.corridor_hold[env_ids] = self.is_corridor_env[env_ids] & (cmd[:, 0].abs() > 0.0)
+    hold = self.is_corridor_env[env_ids] & (cmd[:, 0].abs() > 0.0)
+    if self.cfg.corridor_operator_prob < 1.0:
+      # The other moving commands walk straight along the flight, uncorrected.
+      operator = uniform((0.0, 1.0)) < self.cfg.corridor_operator_prob
+      cmd[hold & ~operator, 1:] = 0.0
+      hold &= operator
+    self.vel_command_b[env_ids] = cmd
+    self.corridor_hold[env_ids] = hold
     # Picked at the next update: right after a reset the derived root pose
     # (heading_w) may still be the previous episode's.
     self._corridor_needs_heading[env_ids] = True
@@ -459,6 +468,13 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   flat_mode_probs: tuple[float, float, float, float, float] = (0.2, 0.15, 0.15, 0.15, 0.35)
   """Probabilities of (stand, vx only, vy only, wz only, combined) on flat terrain."""
   stair_standing_prob: float = 0.25
+  stair_straight_prob: float = 0.0
+  """Share of stair commands that walk straight (vy = wz = 0), drawn after standing."""
+  corridor_operator_prob: float = 1.0
+  """Share of moving commands on `corridor_terrain_names` that get the operator
+  (heading and centerline corrections); the others walk straight along the
+  flight (vy = wz = 0) with no correction, so the policy must keep straight by
+  itself."""
   flat_slow_prob: float = 0.0
   """Probability that the linear part of a flat command uses `flat_slow_ranges`."""
   flat_slow_ranges: UniformVelocityCommandCfg.Ranges = field(

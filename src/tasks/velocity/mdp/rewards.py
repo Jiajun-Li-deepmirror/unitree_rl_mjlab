@@ -795,6 +795,85 @@ class standing_position_hold:
     return standing.float() * (dist + yaw_scale * turn)
 
 
+class straight_drift:
+  """Penalize drifting off the commanded line under a command without turning.
+
+  While the command has no yaw rate (|wz| <= `wz_threshold`) and a planar speed
+  of at least `min_speed`, the heading and position at the start of that command
+  (a new command or a reset restarts them) define the line the robot should walk
+  along. The cost is |heading change| / `heading_scale` + |sideways offset from
+  the line| / `lateral_scale`, each clamped at 1; `lateral_scale=None` leaves
+  the sideways term out (it grows with the distance walked, so walking slower
+  lowers it: As2 2026-10-20 capped its speed at ~0.9 m/s). The exp tracking kernels are
+  flat near zero: a steady 0.02 rad/s yaw error, 11 deg in 10 s, costs under
+  0.2% of the yaw tracking reward, and the blind policies (2026-10-20) drifted
+  ~11 deg per 10 s walking straight and into the walls of map3 flights without
+  an operator. A blind policy sees no heading, so it lowers this cost by keeping
+  its yaw rate and sideways velocity at zero on average.
+
+  `max_speed` and `forward_only` limit it to commands up to that planar speed and
+  without a sideways part: penalized at 1.5 m/s and sideways, Go2 and As2
+  (2026-10-20) gave up 10 points of top speed and of diagonal sideways speed,
+  where walking slower drifted less.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    n = env.num_envs
+    self.ref_heading = torch.zeros(n, device=env.device)
+    self.ref_pos = torch.zeros(n, 2, device=env.device)
+    self.ref_dir = torch.zeros(n, 2, device=env.device)
+    self.prev_command = torch.zeros(n, 3, device=env.device)
+    self.active = torch.zeros(n, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    # Restarted at the next call: the root pose may still be the previous episode's.
+    self.active[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    wz_threshold: float = 1e-6,
+    min_speed: float = 0.1,
+    heading_scale: float = 0.17,
+    lateral_scale: float | None = 0.2,
+    max_speed: float | None = None,
+    forward_only: bool = False,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    heading = asset.data.heading_w
+    pos = asset.data.root_link_pos_w[:, :2]
+    speed = torch.norm(command[:, :2], dim=1)
+    straight = (command[:, 2].abs() <= wz_threshold) & (speed >= min_speed)
+    if max_speed is not None:
+      straight &= speed <= max_speed
+    if forward_only:
+      straight &= command[:, 1].abs() <= 1e-6
+    changed = (command - self.prev_command).abs().amax(dim=1) > 1e-6
+    start = straight & (~self.active | changed)
+    # Commanded direction in the world frame at the start.
+    v = command[:, :2] / speed.clamp(min=1e-6).unsqueeze(1)
+    c, s = torch.cos(heading), torch.sin(heading)
+    direction = torch.stack([c * v[:, 0] - s * v[:, 1], s * v[:, 0] + c * v[:, 1]], dim=1)
+    self.ref_heading = torch.where(start, heading, self.ref_heading)
+    self.ref_pos = torch.where(start.unsqueeze(1), pos, self.ref_pos)
+    self.ref_dir = torch.where(start.unsqueeze(1), direction, self.ref_dir)
+    self.active = straight
+    self.prev_command = command.clone()
+    turn = torch.abs(wrap_to_pi(heading - self.ref_heading))
+    cost = (turn / heading_scale).clamp(max=1.0)
+    if lateral_scale is not None:
+      rel = pos - self.ref_pos
+      side = torch.abs(self.ref_dir[:, 0] * rel[:, 1] - self.ref_dir[:, 1] * rel[:, 0])
+      cost = cost + (side / lateral_scale).clamp(max=1.0)
+    return torch.where(straight & ~start, cost, torch.zeros_like(cost))
+
+
 def standing_speed(
   env: ManagerBasedRlEnv,
   command_name: str,

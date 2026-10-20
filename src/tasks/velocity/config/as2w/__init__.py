@@ -1,8 +1,18 @@
 from mjlab.tasks.registry import register_mjlab_task
 from src.tasks.velocity.blind_rl_cfg import make_blind_ppo_runner_cfg
 from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner
+from src.tasks.velocity.rl.anchor import AnchoredMirrorVelocityOnPolicyRunner
 
-from .blind_env_cfgs import unitree_as2w_blind_env_cfg
+from .blind_env_cfgs import unitree_as2w_blind_env_cfg, unitree_as2w_blind_heading_env_cfg
+
+
+class As2WFlatAnchoredHeadingRunner(AnchoredMirrorVelocityOnPolicyRunner):
+  """Anchored on flat ground to the v5 flat model widened for the heading input,
+  sideways commands included."""
+
+  ANCHOR_CHECKPOINT = "logs/rsl_rl/as2w_blind/2026-10-20_02-01-07_flat_v5_gbrake/model_5300_widened.pt"
+  ANCHOR_SKIP_SIDEWAYS = False
+
 
 # Blind joystick policy (see make_wheeled_blind_env_cfg): flat ground first, then stairs.
 register_mjlab_task(
@@ -20,3 +30,18 @@ register_mjlab_task(
   rl_cfg=make_blind_ppo_runner_cfg("as2w_blind", max_iterations=20000),
   runner_cls=MirrorVelocityOnPolicyRunner,
 )
+
+# Stairs with the heading-error input: training (map3, anchored) and evaluation
+# (stairs, flat) tasks.
+for task_id, terrain, runner in (
+  ("Unitree-As2W-Blind-Map3-Heading", "map3", As2WFlatAnchoredHeadingRunner),
+  ("Unitree-As2W-Blind-Heading", "stairs", MirrorVelocityOnPolicyRunner),
+  ("Unitree-As2W-Blind-Flat-Heading", "flat", MirrorVelocityOnPolicyRunner),
+):
+  register_mjlab_task(
+    task_id=task_id,
+    env_cfg=unitree_as2w_blind_heading_env_cfg(terrain=terrain),
+    play_env_cfg=unitree_as2w_blind_heading_env_cfg(play=True, terrain=terrain),
+    rl_cfg=make_blind_ppo_runner_cfg("as2w_blind", max_iterations=20000),
+    runner_cls=runner,
+  )

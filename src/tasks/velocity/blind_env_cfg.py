@@ -890,3 +890,67 @@ def apply_blind_map3(
     },
   )
   return cfg
+
+
+##
+# Straight walking without an operator (2026-10-20).
+##
+
+
+def apply_blind_straight(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
+  """Make a map3 stairs config walk straight under a command without turning,
+  with no operator; the corridor operator stays an optional correction.
+
+  The blind policies (2026-10-20) drifted ~11 deg per 10 s walking straight on
+  flat ground and, without the operator, hit the walls on 41-69% (As2) and
+  20-50% (Go2) of the runs on map3's flights: the operator was in every walled
+  training command, open-stairs commands turn at random, and the tracking
+  kernels hardly see a small steady yaw rate. Changes:
+  - half of the walled-flight commands walk straight with no operator, and
+    walled-flight spawns are lined up with the flight (yaw +-3 instead of 15 deg);
+  - half of the open-stairs commands walk straight (vy = wz = 0), and the flat
+    vx-only mode takes 0.1 more of the flat commands from the combined mode;
+  - straight_drift (-1.0): heading change since the start of a forward or
+    backward command without turning, up to 1.0 m/s (stairs and corridor
+    speeds). Its sideways-offset term is left out: that offset grows with the
+    distance walked, and with it (weight -0.5) As2 capped its speed at ~0.9 m/s
+    (1.5 m/s tracked 62%). Applied at all speeds and to sideways commands too,
+    Go2 and As2 still slowed to ~76% at 1.5 m/s and ~65-70% sideways on diagonals.
+  Train it with MirrorVelocityOnPolicyRunner (left-right mirror loss).
+  """
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, TerrainAwareVelocityCommandCfg)
+  assert twist.corridor_terrain_names, "apply_blind_map3 first"
+  twist.corridor_operator_prob = 0.5
+  twist.stair_straight_prob = 0.5
+  stand, vx, vy, wz, combined = twist.flat_mode_probs
+  twist.flat_mode_probs = (stand, vx + 0.1, vy, wz, combined - 0.1)
+  cfg.events["reset_base"].params["narrow_yaw_noise"] = math.radians(3.0)
+  cfg.rewards["straight_drift"] = RewardTermCfg(
+    func=mdp.straight_drift,
+    weight=-1.0,
+    params={"command_name": "twist", "lateral_scale": None, "max_speed": 1.0, "forward_only": True},
+  )
+  return cfg
+
+
+def apply_blind_heading(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
+  """Add the heading error (target heading = integral of the commanded yaw rate,
+  minus the base heading; see mdp.heading_error) to the actor and critic
+  observations, appended last so a trained policy widens with zero weights.
+
+  The blind policies cannot tell how far they have turned in total and drifted
+  +-8-14 deg over a map3 flight even after straight_drift and the mirror loss
+  (As2, 2026-10-20); 0.9 m flights tolerate about +-5 deg. On the robot the
+  same quantity comes from the IMU yaw (noise +-0.02 rad here).
+  """
+  from mjlab.utils.noise import UniformNoiseCfg
+
+  params = {"command_name": "twist"}
+  cfg.observations["actor"].terms["heading_error"] = ObservationTermCfg(
+    func=mdp.heading_error, params=dict(params), noise=UniformNoiseCfg(n_min=-0.02, n_max=0.02)
+  )
+  cfg.observations["critic"].terms["heading_error"] = ObservationTermCfg(
+    func=mdp.heading_error, params=dict(params)
+  )
+  return cfg
