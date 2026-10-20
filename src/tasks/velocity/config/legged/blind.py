@@ -166,7 +166,7 @@ def make_blind_env_cfg(
   # 4096 envs on a 16 GB GPU. Measured peak on the hardest stairs (random
   # actions) is ~56 constraints per env; collision primitives are simple.
   cfg.sim.mujoco.ccd_iterations = 50
-  cfg.sim.njmax = 300
+  cfg.sim.njmax = spec.njmax
   cfg.sim.contact_sensor_maxmatch = 128
   if spec.nconmax is not None:
     cfg.sim.nconmax = spec.nconmax
@@ -518,7 +518,8 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       "asset_cfg": SceneEntityCfg(
         "robot",
         site_names=spec.foot_site_names,
-        body_names=tuple(f"{s}_wheel" for s in spec.foot_site_names),
+        # Go2-W / B2-W wheel bodies are *_wheel_link, As2-W *_wheel.
+        body_names=(r"[FR][LR]_wheel(_link)?",),
       ),
     },
   )

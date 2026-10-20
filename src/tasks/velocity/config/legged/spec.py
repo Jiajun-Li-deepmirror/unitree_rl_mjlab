@@ -40,6 +40,9 @@ class LeggedTaskSpec:
 
   nconmax: int | None = None
   """Contacts per world, if the rough config's default is too small."""
+  njmax: int = 300
+  """Constraint rows per world; at qpos0 (legs straight) a big robot's calves
+  reach into the stairs and the initial state needs more than the default."""
 
   # Domain randomization and reward scales.
   base_payload_range: tuple[float, float] = (-1.0, 2.0)

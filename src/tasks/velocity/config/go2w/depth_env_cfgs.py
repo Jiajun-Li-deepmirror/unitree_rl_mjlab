@@ -9,13 +9,15 @@ camera as the Go2 (same body and head).
 from mjlab.envs import ManagerBasedRlEnvCfg
 
 from src.assets.robots import get_go2w_robot_cfg
-from src.assets.robots.unitree_go2w.go2w_constants import GO2W_WHEEL_RADIUS
 from src.tasks.velocity.config.go2w.env_cfgs import unitree_go2w_rough_env_cfg
 from src.tasks.velocity.config.legged.depth import (
   make_depth_student_env_cfg,
   make_depth_teacher_env_cfg,
 )
 from src.tasks.velocity.config.legged.spec import LeggedTaskSpec
+
+# Wheel collision spheres in go2w.xml (*_foot_collision).
+GO2W_WHEEL_RADIUS = 0.086
 
 GO2W_SPEC = LeggedTaskSpec(
   name="go2w",
@@ -67,10 +69,12 @@ GO2W_SPEC = LeggedTaskSpec(
 
 
 def unitree_go2w_depth_teacher_env_cfg(
-  play: bool = False, stairs: bool = True
+  play: bool = False, stairs: bool = True, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
-  return make_depth_teacher_env_cfg(GO2W_SPEC, play=play, stairs=stairs)
+  return make_depth_teacher_env_cfg(GO2W_SPEC, play=play, stairs=stairs, heading=heading)
 
 
-def unitree_go2w_depth_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  return make_depth_student_env_cfg(GO2W_SPEC, play=play)
+def unitree_go2w_depth_student_env_cfg(
+  play: bool = False, heading: bool = False
+) -> ManagerBasedRlEnvCfg:
+  return make_depth_student_env_cfg(GO2W_SPEC, play=play, heading=heading)

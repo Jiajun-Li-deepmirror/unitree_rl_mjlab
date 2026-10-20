@@ -1,5 +1,7 @@
 """RL configuration shared by the robots' depth tasks."""
 
+from dataclasses import replace
+
 
 def depth_student_runner_cfg(robot: str, onnx_contract: str):
   """DAgger distillation of a depth student from its teacher."""
@@ -17,3 +19,10 @@ def depth_student_runner_cfg(robot: str, onnx_contract: str):
     },
     onnx_contract=onnx_contract,
   )
+
+
+def heading_student_runner_cfg(cfg):
+  """A robot's student runner config for its heading task: the exported ONNX
+  takes the heading error too (last in `proprio`, and in `proprio_history`),
+  a contract of its own (`<contract>_heading`)."""
+  return replace(cfg, onnx_contract=f"{cfg.onnx_contract}_heading")

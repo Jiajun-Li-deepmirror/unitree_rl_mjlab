@@ -27,6 +27,7 @@ def reset_root_state_terrain_aware(
   fixed_yaw_terrain_names: tuple[str, ...] = (),
   narrow_terrain_names: tuple[str, ...] = (),
   narrow_xy_range: float = 0.1,
+  narrow_yaw_noise: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   """Like reset_root_state_uniform, but faces stair envs toward a staircase side.
@@ -35,7 +36,9 @@ def reset_root_state_terrain_aware(
   noise; other envs use `pose_range["yaw"]`. Envs on `fixed_yaw_terrain_names`
   get yaw 0 plus noise (single-direction stairwells). Envs on
   `narrow_terrain_names` (walled corridors) get x/y noise of only
-  +-`narrow_xy_range`.
+  +-`narrow_xy_range`, and with `narrow_yaw_noise` that yaw noise instead of
+  `stair_yaw_noise` (lined up with the flight, as an operator would start a
+  robot that must walk it uncorrected; go2-blind 2026-10-20).
   """
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
@@ -53,13 +56,14 @@ def reset_root_state_terrain_aware(
 
   on_stairs = spawned_on_sub_terrain(env, stair_terrain_names)[env_ids.long()]
   side = torch.randint(0, 4, (len(env_ids),), device=env.device).float()
-  stair_yaw = side * (math.pi / 2) + sample_uniform(
+  stair_base = side * (math.pi / 2)
+  stair_noise = sample_uniform(
     -stair_yaw_noise, stair_yaw_noise, (len(env_ids),), device=env.device
   )
   if fixed_yaw_terrain_names:
     fixed_yaw = spawned_on_sub_terrain(env, fixed_yaw_terrain_names)[env_ids.long()]
-    stair_yaw = torch.where(fixed_yaw, stair_yaw - side * (math.pi / 2), stair_yaw)
-  pose_samples[:, 5] = torch.where(on_stairs, stair_yaw, pose_samples[:, 5])
+    stair_base = torch.where(fixed_yaw, 0.0, stair_base)
+  pose_samples[:, 5] = torch.where(on_stairs, stair_base + stair_noise, pose_samples[:, 5])
   if narrow_terrain_names:
     narrow = spawned_on_sub_terrain(env, narrow_terrain_names)[env_ids.long()]
     pose_samples[:, 0:2] = torch.where(
@@ -67,6 +71,10 @@ def reset_root_state_terrain_aware(
       pose_samples[:, 0:2].clamp(-narrow_xy_range, narrow_xy_range),
       pose_samples[:, 0:2],
     )
+    if narrow_yaw_noise is not None:
+      # The same draw, scaled: no extra random numbers.
+      narrow_yaw = stair_base + stair_noise * (narrow_yaw_noise / stair_yaw_noise)
+      pose_samples[:, 5] = torch.where(narrow, narrow_yaw, pose_samples[:, 5])
 
   positions = root_states[:, 0:3] + pose_samples[:, 0:3] + env.scene.env_origins[env_ids]
   orientations_delta = quat_from_euler_xyz(

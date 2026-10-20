@@ -14,6 +14,9 @@ from mjlab.utils.spec_config import CollisionCfg
 # MJCF and assets.
 ##
 
+# Geometry from unitree_mujoco's B2 model; link masses and inertias (74.6 kg in
+# total) from unitree_ros b2_description, with fixed-joint links (motor rotors,
+# feet, head/tail and sensor links) merged into their parent bodies.
 B2_XML: Path = (
   SRC_PATH / "assets" / "robots" / "unitree_b2" / "xmls" / "b2.xml"
 )
@@ -36,31 +39,34 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
+# Gains from unitree_rl_lab (UNITREE_B2_CFG); effort limits from the unitree_mujoco
+# B2 motors (unitree_rl_lab lists 320 Nm for the calf, the MJCF 300 Nm); armature
+# is the unitree_mujoco joint default.
 B2_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*hip_.*",
   ),
-  stiffness=200.0,
-  damping=10.0,
-  effort_limit=200.0,
+  stiffness=160.0,
+  damping=5.0,
+  effort_limit=200,
   armature=0.1,
 )
 B2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*thigh_.*",
   ),
-  stiffness=200.0,
-  damping=10.0,
-  effort_limit=200.0,
+  stiffness=160.0,
+  damping=5.0,
+  effort_limit=200,
   armature=0.1,
 )
 B2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*calf_.*",
   ),
-  stiffness=240.0,
-  damping=12.0,
-  effort_limit=300.0,
+  stiffness=160.0,
+  damping=5.0,
+  effort_limit=300,
   armature=0.1,
 )
 
@@ -68,13 +74,16 @@ B2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
 # Keyframes.
 ##
 
-
+# Default pose from unitree_rl_lab; at this pose the front feet touch the ground
+# with the base at 0.529 m (the rear feet are 1.5 cm higher).
 INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.467),
+  pos=(0.0, 0.0, 0.53),
   joint_pos={
-    ".*thigh_joint": 0.9,
-    ".*calf_joint": -1.8,
-    ".*hip_joint": 0.0,
+    ".*L_hip_joint": 0.1,
+    ".*R_hip_joint": -0.1,
+    "F[LR]_thigh_joint": 0.8,
+    "R[LR]_thigh_joint": 1.0,
+    ".*_calf_joint": -1.5,
   },
   joint_vel={".*": 0.0},
 )
@@ -135,6 +144,7 @@ def get_b2_robot_cfg() -> EntityCfg:
     spec_fn=get_spec,
     articulation=B2_ARTICULATION,
   )
+
 
 if __name__ == "__main__":
   import mujoco.viewer as viewer

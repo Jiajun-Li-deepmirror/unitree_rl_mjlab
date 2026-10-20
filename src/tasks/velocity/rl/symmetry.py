@@ -8,7 +8,9 @@ the other groups are repeated as they are.
 Reflection across the base's x-z plane: angular velocity (-wx, wy, -wz),
 gravity (gx, -gy, gz), command (vx, -vy, -wz); left and right legs swap, hip
 angles change sign (their axes are along x), thigh, calf and wheel angles do
-not (along y on both sides); the height scan's points swap y for -y.
+not (along y on both sides); the height scan's points swap y for -y. The trot
+clock (sin, cos) maps to (-sin, -cos), half a period on (checked against the
+foot_gait offsets), and the heading error, a yaw angle, changes sign.
 """
 
 from __future__ import annotations
@@ -54,6 +56,21 @@ def _scan_map(offsets: torch.Tensor) -> tuple[list[int], list[float]]:
   return index.tolist(), [1.0] * len(index)
 
 
+def _check_gait_phase(base) -> None:
+  """Swapping left and right legs is a half-period shift of the gait clock only
+  if each leg's clock offset is its mirror's plus half a period (trot)."""
+  rm = base.reward_manager
+  if "foot_gait" not in rm.active_terms:
+    raise ValueError("Phase observation without a foot_gait reward: cannot check the clock.")
+  params = rm._term_cfgs[rm.active_terms.index("foot_gait")].params
+  sensor = base.scene[params["sensor_name"]]
+  legs = [slot.primary_name[:2] for slot in sensor._slots if slot.field_name == "found"]
+  offsets = dict(zip(legs, params["offset"], strict=True))
+  for leg, value in offsets.items():
+    if abs((offsets[_SIDE[leg]] - value - 0.5) % 1.0) > 1e-6:
+      raise ValueError(f"Gait offsets {offsets} are not half a period apart left to right.")
+
+
 def _action_map(base) -> tuple[list[int], list[float]]:
   names: list[str] = []
   for term_name in base.action_manager.active_terms:
@@ -85,6 +102,11 @@ def _build(env) -> _Mirror:
       term_index, term_sign = _action_map(base)
     elif name == "height_scan":
       term_index, term_sign = _scan_map(base.scene[cfg.params["sensor_name"]]._local_offsets)
+    elif name == "phase":
+      _check_gait_phase(base)
+      term_index, term_sign = [0, 1], [-1.0, -1.0]
+    elif name == "heading_error":
+      term_index, term_sign = [0], [-1.0]
     else:
       raise ValueError(f"No mirror rule for actor observation {name!r}.")
     frame = len(term_index)

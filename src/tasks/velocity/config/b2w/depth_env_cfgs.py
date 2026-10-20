@@ -10,13 +10,15 @@ from dataclasses import replace
 from mjlab.envs import ManagerBasedRlEnvCfg
 
 from src.assets.robots import get_b2w_robot_cfg
-from src.assets.robots.unitree_b2w.b2w_constants import B2W_WHEEL_RADIUS
 from src.tasks.velocity.config.b2.depth_env_cfgs import B2_SPEC
 from src.tasks.velocity.config.b2w.env_cfgs import unitree_b2w_rough_env_cfg
 from src.tasks.velocity.config.legged.depth import (
   make_depth_student_env_cfg,
   make_depth_teacher_env_cfg,
 )
+
+# Wheel collision spheres in b2w.xml (*_foot_collision).
+B2W_WHEEL_RADIUS = 0.113
 
 B2W_SPEC = replace(
   B2_SPEC,
@@ -54,10 +56,12 @@ B2W_SPEC = replace(
 
 
 def unitree_b2w_depth_teacher_env_cfg(
-  play: bool = False, stairs: bool = True
+  play: bool = False, stairs: bool = True, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
-  return make_depth_teacher_env_cfg(B2W_SPEC, play=play, stairs=stairs)
+  return make_depth_teacher_env_cfg(B2W_SPEC, play=play, stairs=stairs, heading=heading)
 
 
-def unitree_b2w_depth_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  return make_depth_student_env_cfg(B2W_SPEC, play=play)
+def unitree_b2w_depth_student_env_cfg(
+  play: bool = False, heading: bool = False
+) -> ManagerBasedRlEnvCfg:
+  return make_depth_student_env_cfg(B2W_SPEC, play=play, heading=heading)

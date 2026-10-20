@@ -107,11 +107,11 @@ def unitree_b2_rough_env_cfg(
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
 
-  # Go2 weights rescaled to the B2's 5.5x mass and 13.6x inertia: landing
-  # impacts scale with mass, the squared angular momentum with inertia^2
-  # (eased to 1/100, as the B2 also rotates slower).
-  cfg.rewards["soft_landing"].weight = -1e-3 / 5.5
-  cfg.rewards["angular_momentum"].weight = -0.025 / 100.0
+  # go2-blind's B2 (its accepted stairs model): the Go2 landing weight, and the
+  # Go2 angular momentum weight scaled by (Go2 / B2 yaw inertia)^2, 0.53 / 6.38
+  # kg m^2. Before (2026-10-20): -1e-3 / 5.5 and -0.025 / 100.
+  cfg.rewards["soft_landing"].weight = -1e-3
+  cfg.rewards["angular_momentum"].weight = -1.7e-4
 
   cfg.terminations["illegal_contact"] = TerminationTermCfg(
     func=mdp.illegal_contact,

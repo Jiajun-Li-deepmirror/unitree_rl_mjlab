@@ -14,10 +14,12 @@ from src.tasks.velocity.config.legged.depth import (
 
 
 def unitree_go2_depth_teacher_env_cfg(
-  play: bool = False, stairs: bool = True
+  play: bool = False, stairs: bool = True, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
-  return make_depth_teacher_env_cfg(GO2_SPEC, play=play, stairs=stairs)
+  return make_depth_teacher_env_cfg(GO2_SPEC, play=play, stairs=stairs, heading=heading)
 
 
-def unitree_go2_depth_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  return make_depth_student_env_cfg(GO2_SPEC, play=play)
+def unitree_go2_depth_student_env_cfg(
+  play: bool = False, heading: bool = False
+) -> ManagerBasedRlEnvCfg:
+  return make_depth_student_env_cfg(GO2_SPEC, play=play, heading=heading)

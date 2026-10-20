@@ -1,1 +1,1 @@
-"""Unitree B2 quadruped robot."""
+"""Unitree B2 quadruped."""

@@ -1,17 +1,18 @@
-"""Unitree As2-W constants."""
+"""Unitree As2W (As2 with wheels) constants.
+
+Built from the unitree_ros As2W URDF (robots/as2w_description): legs have the
+As2 kinematics, a wheel motor at the end of each calf drives a 0.086 m wheel.
+"""
 
 from pathlib import Path
 
 import mujoco
 
 from src import SRC_PATH
-from mjlab.actuator import BuiltinPositionActuatorCfg
+from mjlab.actuator import BuiltinPositionActuatorCfg, IdealPdActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.utils.actuator import ElectricActuator, reflected_inertia
 from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
-
-from src.assets.robots.wheel_actuator import WheelVelocityActuatorCfg
 
 ##
 # MJCF and assets.
@@ -39,7 +40,8 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
-# Effort limits 60 / 60 / 90 Nm as go2-blind's wheeled v5 (50 / 50 / 75 before).
+# Leg gains and armature as the As2; effort limits from the As2W URDF (60 / 60 /
+# 90 Nm, the same as the unitree_mujoco As2 motors).
 As2W_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*hip_.*",
@@ -67,28 +69,30 @@ As2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
   effort_limit=90,
   armature=0.038,
 )
-# Velocity-controlled wheels (radius 0.086 m, +-15 Nm per unitree_ros' as2w
-# URDF). go2-blind's wheel gain and armature (its wheeled v5): at a zero
-# command the low-speed brake holds the robot, not a stiff wheel damping.
-As2W_ACTUATOR_WHEEL = WheelVelocityActuatorCfg(
+
+
+# Wheels track a velocity target: torque = damping * (target - velocity), limited
+# to the URDF 15 Nm, as the real motor does with kp = 0. An explicit PD with zero
+# stiffness: mjlab's BuiltinVelocityActuator inherits its control range from the
+# joint range, which a continuous wheel joint does not have. The rotor inertia is
+# not published; 0.005 is a guess.
+As2W_ACTUATOR_WHEEL = IdealPdActuatorCfg(
   target_names_expr=(".*_wheel_joint",),
-  velocity_limit=40.0,
+  stiffness=0.0,
   damping=1.0,
   effort_limit=15.0,
   armature=0.005,
 )
-# The wheels collide as spheres of this radius (*_foot_collision), not as
-# cylinders: on box seams and step edges the GJK/EPA cylinder contact could
-# give only sideways normals and let a wheel sink in (rare NaN observations
-# on the first Go2-W runs), while the analytic sphere-box contact always
-# supports the wheel from below. Spheres are wider than the real wheels.
-As2W_WHEEL_RADIUS = 0.086
+
+WHEEL_RADIUS = 0.086
 
 ##
 # Keyframes.
 ##
 
 
+# As2 leg pose; wheels 6 mm above the ground (they touch at a base height of
+# 0.364 m), so the robot settles onto them after a reset.
 INIT_STATE = EntityCfg.InitialStateCfg(
   pos=(0.0, 0.0, 0.37),
   joint_pos={
@@ -105,10 +109,13 @@ INIT_STATE = EntityCfg.InitialStateCfg(
 # Collision config.
 ##
 
+# The wheels are the feet: {leg}_foot_collision spheres of the wheel radius (cylinders
+# sink into the seams between terrain boxes, see go2w_constants.py). The sim2sim scene
+# (scene_as2w.xml, plane floor) keeps the cylinders.
 _foot_regex = "^[FR][LR]_foot_collision$"
 
-# This disables all collisions except the feet.
-# Furthermore, feet self collisions are disabled.
+# This disables all collisions except the wheels.
+# Furthermore, wheel self collisions are disabled.
 FEET_ONLY_COLLISION = CollisionCfg(
   geom_names_expr=(_foot_regex,),
   contype=0,
@@ -120,7 +127,7 @@ FEET_ONLY_COLLISION = CollisionCfg(
 )
 
 # This enables all collisions, excluding self collisions.
-# Foot collisions are given custom condim, friction and solimp.
+# Wheel collisions are given custom condim, friction and solimp.
 FULL_COLLISION = CollisionCfg(
   geom_names_expr=(".*_collision",),
   condim={_foot_regex: 3, ".*_collision": 1},
@@ -147,7 +154,7 @@ As2W_ARTICULATION = EntityArticulationInfoCfg(
 
 
 def get_as2w_robot_cfg() -> EntityCfg:
-  """Get a fresh As2-W robot configuration instance.
+  """Get a fresh As2W robot configuration instance.
 
   Returns a new EntityCfg instance each time to avoid mutation issues when
   the config is shared across multiple places.

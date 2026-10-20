@@ -1,4 +1,7 @@
-"""Unitree As2 constants."""
+"""Unitree As2 constants.
+
+Model converted from the unitree_mujoco As2 (unitree_robots/as2/as2.xml).
+"""
 
 from pathlib import Path
 
@@ -37,13 +40,14 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
+# Effort limits of the As2 motors (unitree_mujoco As2: 60 / 60 / 90 Nm).
 As2_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*hip_.*",
   ),
   stiffness=40.0,
   damping=2.0,
-  effort_limit=50,
+  effort_limit=60,
   armature=0.026,
 )
 As2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
@@ -52,7 +56,7 @@ As2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
   ),
   stiffness=40.0,
   damping=2.0,
-  effort_limit=50,
+  effort_limit=60,
   armature=0.026,
 )
 As2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
@@ -61,7 +65,7 @@ As2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
   ),
   stiffness=60.0,
   damping=3.0,
-  effort_limit=75,
+  effort_limit=90,
   armature=0.038,
 )
 
@@ -70,8 +74,9 @@ As2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
 ##
 
 
+# Feet 5 mm above the ground (they touch at a base height of 0.3017 m).
 INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.4),
+  pos=(0.0, 0.0, 0.307),
   joint_pos={
     ".*thigh_joint": 0.9,
     ".*calf_joint": -1.8,

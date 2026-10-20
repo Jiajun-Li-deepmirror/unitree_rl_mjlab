@@ -43,7 +43,8 @@ from src.tasks.velocity.config.legged.spec import LeggedTaskSpec
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
 
 # Proprioceptive actor terms, in the order the deployed policy receives them
-# (wheeled robots on go2-blind's recipe have no `phase`).
+# (wheeled robots on go2-blind's recipe have no `phase`; only the heading tasks
+# have `heading_error`).
 PROPRIO_TERM_NAMES = (
   "base_ang_vel",
   "projected_gravity",
@@ -52,6 +53,7 @@ PROPRIO_TERM_NAMES = (
   "joint_pos",
   "joint_vel",
   "actions",
+  "heading_error",
 )
 
 # Sub-terrains, in generator (column) order.
@@ -76,6 +78,12 @@ INITIAL_VEL_RANGES = {
 STAIR_VEL_RANGES = {
   "lin_vel_x": (0.2, 0.6),
   "lin_vel_y": (-0.1, 0.1),
+  "ang_vel_z": (-0.3, 0.3),
+}
+# go2-blind's stairs commands (the heading tasks).
+BLIND_STAIR_VEL_RANGES = {
+  "lin_vel_x": (0.2, 0.8),
+  "lin_vel_y": (-0.2, 0.2),
   "ang_vel_z": (-0.3, 0.3),
 }
 
@@ -136,13 +144,14 @@ def make_depth_terrains_cfg(spec: LeggedTaskSpec, stairs: bool) -> TerrainGenera
 
 
 def make_depth_teacher_env_cfg(
-  spec: LeggedTaskSpec, play: bool = False, stairs: bool = True
+  spec: LeggedTaskSpec, play: bool = False, stairs: bool = True, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
   """The blind task with a height scan in the actor and the map3-like terrains.
 
   The actor keeps the blind 10-step proprio history and adds the current
   height scan (no history), so its first dims match the student's
-  `proprio_history` layout.
+  `proprio_history` layout. With `heading`, go2-blind's straight walking and
+  heading-error input (see apply_depth_heading).
   """
   cfg = make_blind_env_cfg(spec, play=play, stairs=stairs)
 
@@ -305,20 +314,84 @@ def make_depth_teacher_env_cfg(
       {"step": 1500 * NUM_STEPS_PER_ENV, **final_ranges},
     ]
 
+  if heading:
+    apply_depth_heading(cfg, play=play, stairs=stairs)
   return cfg
 
 
+def apply_depth_heading(cfg: ManagerBasedRlEnvCfg, play: bool, stairs: bool) -> None:
+  """go2-blind's straight walking without an operator and heading-error input
+  (its d9ed8ba, 2026-10-20), on a depth teacher config.
+
+  Its blind policies drifted ~11 deg per 10 s walking straight and, without
+  the operator, hit map3's flight walls; with these its Go2 / As2 / B2 walked
+  the 18 map3 flights without an operator 87 / 85 / 93% of the time and
+  drifted +-2-5 deg per 10 s at 0.5 m/s on flat ground. Changes:
+  - go2-blind's command ranges for every robot (back to -1.0, forward to 1.5
+    m/s; tinynav-sim's keyboard is a share of the policy's range) and its
+    stairs ranges;
+  - half of the walled-flight commands walk straight with no operator, lined
+    up with the flight at the spawn (yaw +-3 instead of 15 deg); half of the
+    stairs commands walk straight (vy = wz = 0); 0.1 more of the flat commands
+    are vx only;
+  - straight_drift (-1.0): heading change since the start of a forward or
+    backward command without turning, up to 1.0 m/s;
+  - heading_error (target heading = integral of the commanded yaw rate, minus
+    the base heading, +-0.5 rad) last in the actor (with the proprio history,
+    so in the student's proprio groups too) and critic, so a trained teacher
+    widens with zero weights (scripts/go2_depth/widen_obs.py). On the robot it
+    comes from the IMU yaw (noise +-0.02 rad here).
+  Train it with MirrorVelocityOnPolicyRunner (left-right mirror loss).
+  """
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, mdp.TerrainAwareVelocityCommandCfg)
+  vel_ranges = BLIND_FINAL_VEL_RANGES if play else BLIND_INITIAL_VEL_RANGES
+  twist.ranges = UniformVelocityCommandCfg.Ranges(**vel_ranges)
+  twist.stair_ranges = UniformVelocityCommandCfg.Ranges(**BLIND_STAIR_VEL_RANGES)
+  if "command_vel" in cfg.curriculum:
+    cfg.curriculum["command_vel"].params["velocity_stages"] = [
+      {"step": 0, **BLIND_INITIAL_VEL_RANGES},
+      {"step": 1500 * NUM_STEPS_PER_ENV, **BLIND_FINAL_VEL_RANGES},
+    ]
+  stand, vx, vy, wz, combined = twist.flat_mode_probs
+  twist.flat_mode_probs = (stand, vx + 0.1, vy, wz, combined - 0.1)
+  if stairs:
+    twist.stair_straight_prob = 0.5
+    twist.corridor_operator_prob = 0.5
+    cfg.events["reset_base"].params["narrow_yaw_noise"] = math.radians(3.0)
+  cfg.rewards["straight_drift"] = RewardTermCfg(
+    func=mdp.straight_drift,
+    weight=-1.0,
+    params={
+      "command_name": "twist",
+      "lateral_scale": None,
+      "max_speed": 1.0,
+      "forward_only": True,
+    },
+  )
+  params = {"command_name": "twist"}
+  cfg.observations["actor"].terms["heading_error"] = ObservationTermCfg(
+    func=mdp.heading_error,
+    params=dict(params),
+    noise=Unoise(n_min=-0.02, n_max=0.02),
+    history_length=ACTOR_HISTORY_LENGTH,
+  )
+  cfg.observations["critic"].terms["heading_error"] = ObservationTermCfg(
+    func=mdp.heading_error, params=dict(params)
+  )
+
+
 def make_depth_student_env_cfg(
-  spec: LeggedTaskSpec, play: bool = False
+  spec: LeggedTaskSpec, play: bool = False, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
   """Teacher env plus the front depth camera and the student observation groups.
 
   Groups: `actor` (teacher input, unchanged), `critic` (unused), `proprio`
-  (47 for 12 joints), `proprio_history` (x 10, term-major, oldest first) and
+  (47 for 12 joints, 48 with the heading error), `proprio_history` (x 10, term-major, oldest first) and
   `depth` (2 x 60 x 86). The last three are the deployed ONNX inputs of the
   same name.
   """
-  cfg = make_depth_teacher_env_cfg(spec, play=play, stairs=True)
+  cfg = make_depth_teacher_env_cfg(spec, play=play, stairs=True, heading=heading)
 
   robot = cfg.scene.entities["robot"]
   camera_cfg = mdp.front_depth_camera_spec_cfg(

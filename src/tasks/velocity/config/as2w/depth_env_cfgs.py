@@ -10,7 +10,7 @@ from dataclasses import replace
 from mjlab.envs import ManagerBasedRlEnvCfg
 
 from src.assets.robots import get_as2w_robot_cfg
-from src.assets.robots.unitree_as2w.as2w_constants import As2W_WHEEL_RADIUS
+from src.assets.robots.unitree_as2w.as2w_constants import WHEEL_RADIUS as As2W_WHEEL_RADIUS
 from src.tasks.velocity.config.as2.depth_env_cfgs import AS2_SPEC
 from src.tasks.velocity.config.as2w.env_cfgs import unitree_as2w_rough_env_cfg
 from src.tasks.velocity.config.legged.depth import (
@@ -26,6 +26,9 @@ AS2W_SPEC = replace(
   wheel_joints=r"^[FR][LR]_wheel_joint$",
   wheel_radius=As2W_WHEEL_RADIUS,
   foot_radius=As2W_WHEEL_RADIUS,
+  # go2-blind's As2W contact split (both thigh geoms count as leg).
+  body_ground_patterns=(r"base\d_collision", r"[FR][LR]_hip_collision"),
+  leg_ground_patterns=(r"[FR][LR]_thigh\d_collision", r"[FR][LR]_calf\d_collision"),
   # Swing clearance is the wheel centre's rise between footholds (see Go2-W).
   swing_target_height=0.10,
   # Wheel spheres reach 0.31 m each side.
@@ -49,10 +52,12 @@ AS2W_SPEC = replace(
 
 
 def unitree_as2w_depth_teacher_env_cfg(
-  play: bool = False, stairs: bool = True
+  play: bool = False, stairs: bool = True, heading: bool = False
 ) -> ManagerBasedRlEnvCfg:
-  return make_depth_teacher_env_cfg(AS2W_SPEC, play=play, stairs=stairs)
+  return make_depth_teacher_env_cfg(AS2W_SPEC, play=play, stairs=stairs, heading=heading)
 
 
-def unitree_as2w_depth_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  return make_depth_student_env_cfg(AS2W_SPEC, play=play)
+def unitree_as2w_depth_student_env_cfg(
+  play: bool = False, heading: bool = False
+) -> ManagerBasedRlEnvCfg:
+  return make_depth_student_env_cfg(AS2W_SPEC, play=play, heading=heading)

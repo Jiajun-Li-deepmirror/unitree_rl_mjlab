@@ -1,16 +1,23 @@
-"""Unitree B2-W constants."""
+"""Unitree B2W (wheel-legged B2) constants.
+
+xmls/b2w.xml is converted from unitree_mujoco (unitree_robots/b2w): B2 legs with a
+velocity-controlled wheel at the end of each calf. Wheel collisions are spheres of the
+wheel radius (0.113 m, measured from the wheel meshes; the tread is 24 mm wide), centered
+where the visual meshes and wheel inertias are (upstream's collision meshes were shifted
+by -0.0458 m in y on every wheel). Spheres, not cylinders: see go2w_constants.py.
+xmls/scene_b2w.xml is the unitree_mujoco simulation scene (upstream motors, sensors and
+joint dynamics, mesh wheels) for sim2sim.
+"""
 
 from pathlib import Path
 
 import mujoco
 
 from src import SRC_PATH
-from mjlab.actuator import BuiltinPositionActuatorCfg
+from mjlab.actuator import BuiltinPositionActuatorCfg, IdealPdActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
-
-from src.assets.robots.wheel_actuator import WheelVelocityActuatorCfg
 
 ##
 # MJCF and assets.
@@ -38,64 +45,56 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
-# kp 160 / kd 5 on every leg joint as go2-blind's deployed B2W v5 (200 / 10,
-# calf 240 / 12 before).
+# Legs: B2 motors (unitree_rl_lab: 200 Nm hip/thigh, kp 160, kd 5; upstream MJCF limits
+# the calf to 300 Nm) and the upstream MJCF armature.
 B2W_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
-  target_names_expr=(
-    ".*hip_.*",
-  ),
+  target_names_expr=(".*hip_.*",),
   stiffness=160.0,
   damping=5.0,
   effort_limit=200.0,
   armature=0.1,
 )
 B2W_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
-  target_names_expr=(
-    ".*thigh_.*",
-  ),
+  target_names_expr=(".*thigh_.*",),
   stiffness=160.0,
   damping=5.0,
   effort_limit=200.0,
   armature=0.1,
 )
 B2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
-  target_names_expr=(
-    ".*calf_.*",
-  ),
+  target_names_expr=(".*calf_.*",),
   stiffness=160.0,
   damping=5.0,
   effort_limit=300.0,
   armature=0.1,
 )
-# Velocity-controlled wheels (radius 0.113 m). go2-blind's gain, armature and
-# 40 Nm limit (its deployed B2W v5; unitree_mujoco's b2w motors are +-20 Nm):
-# at a zero command the low-speed brake holds the robot.
-B2W_ACTUATOR_WHEEL = WheelVelocityActuatorCfg(
+# Wheels: torque = damping * (target velocity - velocity), like the real robot's dq
+# command with kp = 0. 40 Nm is the maximum wheel torque on unitree.com/b2-w (the
+# upstream MJCF ctrlrange says 20 Nm). No reference value exists for the gain:
+# Go2W's 0.5 scaled by the mass x wheel radius ratio (~4-6x) gives 2-3; 2.0
+# saturates the torque at a 20 rad/s (2.3 m/s) velocity error. Armature as upstream.
+# An explicit PD with zero stiffness: mjlab's BuiltinVelocityActuator inherits its
+# control range from the joint range, which a continuous wheel joint does not have.
+B2W_ACTUATOR_WHEEL = IdealPdActuatorCfg(
   target_names_expr=(".*_wheel_joint",),
-  velocity_limit=40.0,
+  stiffness=0.0,
   damping=2.0,
   effort_limit=40.0,
   armature=0.1,
 )
-# The wheels collide as spheres of this radius (*_foot_collision), not as
-# cylinders: on box seams and step edges the GJK/EPA cylinder contact could
-# give only sideways normals and let a wheel sink in (rare NaN observations
-# on the first Go2-W runs), while the analytic sphere-box contact always
-# supports the wheel from below. Spheres are wider than the real wheels.
-B2W_WHEEL_RADIUS = 0.113
 
 ##
 # Keyframes.
 ##
 
-
-# go2-blind's wheeled default pose (thigh 0.9 / calf -1.8 before).
+# Same leg angles as Go2W (unitree_rl_lab's B2 deploy also stands at 0, 0.8, -1.5).
+# The wheels touch the ground at a base height of 0.6245 m; spawn 2 cm above.
 INIT_STATE = EntityCfg.InitialStateCfg(
   pos=(0.0, 0.0, 0.645),
   joint_pos={
-    ".*thigh_joint": 0.8,
-    ".*calf_joint": -1.5,
-    ".*hip_joint": 0.0,
+    ".*_hip_joint": 0.0,
+    ".*_thigh_joint": 0.8,
+    ".*_calf_joint": -1.5,
     ".*_wheel_joint": 0.0,
   },
   joint_vel={".*": 0.0},
@@ -105,27 +104,28 @@ INIT_STATE = EntityCfg.InitialStateCfg(
 # Collision config.
 ##
 
+# The wheels.
 _foot_regex = "^[FR][LR]_foot_collision$"
 
-# This disables all collisions except the feet.
-# Furthermore, feet self collisions are disabled.
+# This disables all collisions except the wheels.
+# Furthermore, wheel self collisions are disabled.
 FEET_ONLY_COLLISION = CollisionCfg(
   geom_names_expr=(_foot_regex,),
   contype=0,
   conaffinity=1,
   condim=3,
   priority=1,
-  friction=(0.6,),
+  friction=(0.8,),
   solimp=(0.9, 0.95, 0.023),
 )
 
 # This enables all collisions, excluding self collisions.
-# Foot collisions are given custom condim, friction and solimp.
+# Wheel collisions are given custom condim, friction and solimp.
 FULL_COLLISION = CollisionCfg(
   geom_names_expr=(".*_collision",),
   condim={_foot_regex: 3, ".*_collision": 1},
   priority={_foot_regex: 1},
-  friction={_foot_regex: (0.6,)},
+  friction={_foot_regex: (0.8,)},
   solimp={_foot_regex: (0.9, 0.95, 0.023)},
   contype=1,
   conaffinity=0,
@@ -147,7 +147,7 @@ B2W_ARTICULATION = EntityArticulationInfoCfg(
 
 
 def get_b2w_robot_cfg() -> EntityCfg:
-  """Get a fresh B2-W robot configuration instance.
+  """Get a fresh B2W robot configuration instance.
 
   Returns a new EntityCfg instance each time to avoid mutation issues when
   the config is shared across multiple places.
@@ -158,6 +158,7 @@ def get_b2w_robot_cfg() -> EntityCfg:
     spec_fn=get_spec,
     articulation=B2W_ARTICULATION,
   )
+
 
 if __name__ == "__main__":
   import mujoco.viewer as viewer
