@@ -22,15 +22,15 @@ import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
-from src.tasks.velocity.config.go2.blind_env_cfgs import STAIR_TERRAIN_NAMES
+from src.tasks.velocity.blind_env_cfg import STAIR_TERRAIN_NAMES
 
-TASK = "Unitree-Go2-Blind"
 NUM_ROWS = 4
 STEP_RANGE = (0.05, 0.18)
 
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument("--task", default="Unitree-Go2-Blind", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoint")
   parser.add_argument("--vx", type=float, default=0.5)
   parser.add_argument("--wz", type=float, default=0.0)
@@ -38,7 +38,7 @@ def main() -> None:
   parser.add_argument("--seed", type=int, default=0)
   args = parser.parse_args()
 
-  env_cfg = load_env_cfg(TASK, play=True)
+  env_cfg = load_env_cfg(args.task, play=True)
   env_cfg.seed = args.seed
   gen = env_cfg.scene.terrain.terrain_generator
   gen.sub_terrains = {k: v for k, v in gen.sub_terrains.items() if k in STAIR_TERRAIN_NAMES}
@@ -50,10 +50,10 @@ def main() -> None:
   num_envs = gen.num_rows * gen.num_cols * args.envs_per_tile
   env_cfg.scene.num_envs = num_envs
 
-  agent_cfg = load_rl_cfg(TASK)
+  agent_cfg = load_rl_cfg(args.task)
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner = load_runner_cls(TASK)(venv, asdict(agent_cfg), device="cuda:0")
+  runner = load_runner_cls(args.task)(venv, asdict(agent_cfg), device="cuda:0")
   runner.load(args.checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
   policy = runner.get_inference_policy(device="cuda:0")
 

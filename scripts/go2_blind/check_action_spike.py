@@ -21,25 +21,25 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
-TASK = "Unitree-Go2-Blind-Flat"
 
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument("--task", default="Unitree-Go2-Blind-Flat", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoints", nargs="+")
   parser.add_argument("--num-envs", type=int, default=2048)
   parser.add_argument("--obs-noise", action="store_true", help="Keep the training observation noise.")
   parser.add_argument("--seed", type=int, default=0)
   args = parser.parse_args()
 
-  env_cfg = load_env_cfg(TASK, play=True)
+  env_cfg = load_env_cfg(args.task, play=True)
   env_cfg.scene.num_envs = args.num_envs
   env_cfg.seed = args.seed
   env_cfg.observations["actor"].enable_corruption = args.obs_noise
-  agent_cfg = load_rl_cfg(TASK)
+  agent_cfg = load_rl_cfg(args.task)
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner = load_runner_cls(TASK)(venv, asdict(agent_cfg), device="cuda:0")
+  runner = load_runner_cls(args.task)(venv, asdict(agent_cfg), device="cuda:0")
   for ckpt in args.checkpoints:
     runner.load(ckpt, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
     policy = runner.get_inference_policy(device="cuda:0")

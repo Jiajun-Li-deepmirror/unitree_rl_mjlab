@@ -24,21 +24,21 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
-TASK = "Unitree-Go2-Blind"
 
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument("--task", default="Unitree-Go2-Blind", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoint")
   parser.add_argument("--out", required=True, help="Output directory; the file is policy.onnx.")
   args = parser.parse_args()
 
-  env_cfg = load_env_cfg(TASK, play=True)
+  env_cfg = load_env_cfg(args.task, play=True)
   env_cfg.scene.num_envs = 64
-  agent_cfg = load_rl_cfg(TASK)
+  agent_cfg = load_rl_cfg(args.task)
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner = load_runner_cls(TASK)(venv, asdict(agent_cfg), device="cuda:0")
+  runner = load_runner_cls(args.task)(venv, asdict(agent_cfg), device="cuda:0")
   runner.load(args.checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
   os.makedirs(args.out, exist_ok=True)
   runner.export_policy_to_onnx(args.out, "policy.onnx")

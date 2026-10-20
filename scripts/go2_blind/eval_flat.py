@@ -23,7 +23,6 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
-TASK = "Unitree-Go2-Blind-Flat"
 CMDS = [
   (0, 0, 0), (0.3, 0, 0), (0.5, 0, 0), (1.0, 0, 0), (1.5, 0, 0), (-0.5, 0, 0), (-1.0, 0, 0),
   (0, 0.3, 0), (0, 0.6, 0), (0, -0.6, 0), (0, 0, 0.5), (0, 0, 1.5), (0, 0, -1.5),
@@ -33,6 +32,7 @@ CMDS = [
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  parser.add_argument("--task", default="Unitree-Go2-Blind-Flat", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoints", nargs="+")
   parser.add_argument("--envs-per-cmd", type=int, default=32)
   parser.add_argument("--duration", type=float, default=8.0)
@@ -41,13 +41,13 @@ def main() -> None:
   args = parser.parse_args()
 
   n = args.envs_per_cmd
-  env_cfg = load_env_cfg(TASK, play=True)
+  env_cfg = load_env_cfg(args.task, play=True)
   env_cfg.scene.num_envs = len(CMDS) * n
   env_cfg.seed = args.seed
-  agent_cfg = load_rl_cfg(TASK)
+  agent_cfg = load_rl_cfg(args.task)
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner = load_runner_cls(TASK)(venv, asdict(agent_cfg), device="cuda:0")
+  runner = load_runner_cls(args.task)(venv, asdict(agent_cfg), device="cuda:0")
   dev, dt = env.device, env.step_dt
   robot = env.scene["robot"]
   feet = env.scene["feet_ground_contact"]

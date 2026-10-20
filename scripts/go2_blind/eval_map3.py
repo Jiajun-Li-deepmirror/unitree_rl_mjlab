@@ -3,7 +3,7 @@
 map3 (src/assets/terrains/map3: 123 collision boxes plus guard rails) is loaded as
 a single terrain tile; it is never part of the training terrain. Each scenario
 spawns all robots at one map3 spot with a fixed heading and runs a fixed command
-script on the Unitree-Go2-Blind play config. Stair scenarios count a robot as
+script on the play config of --task (default Unitree-Go2-Blind). Stair scenarios count a robot as
 `reached` when it gains (climb) or loses (descend) the target height before any
 termination; `reset_before_goal` is the share terminated before that. With
 --operator (default) the command also holds the flight heading and steers back
@@ -12,6 +12,20 @@ to the flight centerline, like an operator with a joystick.
 --time-scale stretches the moving segments of the stair scenarios: at 1.0 a
 policy must track the commanded speed to finish in time, at 1.6 slower robots
 can still finish.
+
+L0_down walks 10 s at 0.4 m/s and then stops for 2 s on the landing, like the
+go2-depth eval: the 3.65 m flight alone takes ~9.1 s at 0.4 m/s, so the earlier
+9 s script needed ~12% overspeed. The same run also reports the result at the end
+of that earlier script (`reached_legacy`, `reset_before_goal_legacy`; the new
+script starts with the same commands), so results stay comparable with older ones.
+
+Stair scenarios with one moving segment also report the speed along the flight
+over the commanded speed (`speed_p10`/`speed_p50`/`speed_p90`): the horizontal
+speed along the flight heading from 0.15 m of height change to 0.15 m short of the
+target, over the robots that got that far before any termination (`speed_share`,
+so read it at --time-scale 1.6, where nearly all robots get there). Pick stairs
+checkpoints by it as well: a share at a time limit does not tell a slow policy from
+an on-time one.
 
   python scripts/go2_blind/eval_map3.py logs/rsl_rl/go2_blind/<run>/model_N.pt --num-envs 512
 """
@@ -60,11 +74,21 @@ class Scenario:
   success: str
   """'climb:<dz>' (gain at least dz), 'descend:<dz>' (lose at least dz) or
   'track' (no fall, follow commands)."""
+  legacy_segments: list[tuple[float, float, float, float]] | None = None
+  """Earlier, shorter command script that `segments` starts with; the result at its
+  end is reported too."""
 
 
 SCENARIOS = [
   Scenario("L0_up", (-10.34, 5.75, 0.431), -90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:2.0"),
-  Scenario("L0_down", (-10.34, 1.05, 2.659), 90.0, [(1.0, 0, 0, 0), (9.0, 0.4, 0, 0)], "descend:2.0"),
+  Scenario(
+    "L0_down",
+    (-10.34, 1.05, 2.659),
+    90.0,
+    [(1.0, 0, 0, 0), (10.0, 0.4, 0, 0), (2.0, 0, 0, 0)],
+    "descend:2.0",
+    legacy_segments=[(1.0, 0, 0, 0), (9.0, 0.4, 0, 0)],
+  ),
   Scenario("R1_up", (-8.80, 1.05, 2.659), 90.0, [(1.0, 0, 0, 0), (9.0, 0.5, 0, 0)], "climb:1.7"),
   Scenario("R2b_down", (-8.75, 5.70, 11.802), -90.0, [(1.0, 0, 0, 0), (7.0, 0.4, 0, 0)], "descend:1.0"),
   Scenario(
@@ -122,8 +146,8 @@ class Map3TerrainCfg(SubTerrainCfg):
     return TerrainOutput(origin=np.asarray(self.spawn) + MAP3_OFFSET, geometries=geometries)
 
 
-def make_env_cfg(scenario: Scenario, boxes, num_envs: int, seed: int):
-  cfg = load_env_cfg(TASK, play=True)
+def make_env_cfg(scenario: Scenario, boxes, num_envs: int, seed: int, task: str = TASK):
+  cfg = load_env_cfg(task, play=True)
   cfg.scene.num_envs = num_envs
   cfg.seed = seed
   cfg.scene.terrain.terrain_generator = TerrainGeneratorCfg(
@@ -167,17 +191,19 @@ def set_command(env, vx: float, vy: float, wz: float) -> None:
   term.time_left[:] = 0.0
 
 
-def load_policy(env, checkpoint: str):
-  agent_cfg = load_rl_cfg(TASK)
+def load_policy(env, checkpoint: str, task: str = TASK):
+  agent_cfg = load_rl_cfg(task)
   venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  runner = load_runner_cls(TASK)(venv, asdict(agent_cfg), device="cuda:0")
+  runner = load_runner_cls(task)(venv, asdict(agent_cfg), device="cuda:0")
   runner.load(checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
   return venv, runner.get_inference_policy(device="cuda:0")
 
 
 def run_scenario(args, scenario: Scenario, boxes) -> dict:
-  env = ManagerBasedRlEnv(cfg=make_env_cfg(scenario, boxes, args.num_envs, args.seed), device="cuda:0")
-  venv, policy = load_policy(env, args.checkpoint)
+  env = ManagerBasedRlEnv(
+    cfg=make_env_cfg(scenario, boxes, args.num_envs, args.seed, args.task), device="cuda:0"
+  )
+  venv, policy = load_policy(env, args.checkpoint, args.task)
   env.reset()
   obs = venv.get_observations()
 
@@ -198,6 +224,18 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     if kind == "descend":
       return z0 - zmin >= float(thr)
     return torch.zeros_like(reached)
+
+  legacy_steps, legacy = None, None
+  if scenario.legacy_segments:
+    legacy_steps = sum(int(round(d / env.step_dt)) for d, *_ in scenario.legacy_segments)
+  # Speed along the flight: time and position along the heading when a robot has
+  # changed height by 0.15 m and when it is 0.15 m short of the target.
+  moving_vx = [vx for _, vx, _, _ in scenario.segments if vx != 0.0]
+  measure_speed = kind != "track" and len(moving_vx) == 1
+  sign = 1.0 if kind == "climb" else -1.0
+  t_in = torch.full((env.num_envs,), float("nan"), device=env.device)
+  t_out, s_in, s_out = t_in.clone(), t_in.clone(), t_in.clone()
+  steps_done = 0
 
   for duration, vx, vy, wz in scenario.segments:
     set_command(env, vx, vy, wz)
@@ -220,6 +258,17 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
       z = robot.data.root_link_pos_w[:, 2]
       zmin = torch.where(fell, zmin, torch.minimum(zmin, z))
       zmax = torch.where(fell, zmax, torch.maximum(zmax, z))
+      steps_done += 1
+      if measure_speed:
+        t = torch.full_like(t_in, steps_done * env.step_dt)
+        dz = sign * (z - z0)
+        s = robot.data.root_link_pos_w[:, :2] @ axis
+        enter = torch.isnan(t_in) & (dz >= 0.15) & ~fell
+        t_in, s_in = torch.where(enter, t, t_in), torch.where(enter, s, s_in)
+        leave = torch.isnan(t_out) & ~torch.isnan(t_in) & (dz >= float(thr) - 0.15) & ~fell
+        t_out, s_out = torch.where(leave, t, t_out), torch.where(leave, s, s_out)
+      if steps_done == legacy_steps:
+        legacy = (reached | (goal_met() & ~fell), fell.clone())
       alive = ~fell
       if kind == "track" and alive.any():
         v = robot.data.root_link_lin_vel_b[alive]
@@ -233,6 +282,17 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
     result |= {"success": float((~fell).float().mean()), "err_vxy": err_xy / n, "err_wz": err_yaw / n}
   else:
     result |= {"reached": float(reached.float().mean()), "reset_before_goal": float((fell & ~reached).float().mean())}
+  if legacy is not None:
+    legacy_reached, legacy_fell = legacy
+    result |= {
+      "reached_legacy": float(legacy_reached.float().mean()),
+      "reset_before_goal_legacy": float((legacy_fell & ~legacy_reached).float().mean()),
+    }
+  if measure_speed:
+    ok = ~torch.isnan(t_out) & (t_out > t_in)
+    ratio = ((s_out - s_in) / (t_out - t_in) / moving_vx[0])[ok]
+    q = ratio.quantile(torch.tensor((0.1, 0.5, 0.9), device=env.device)).tolist() if ok.any() else [math.nan] * 3
+    result |= {"speed_p10": q[0], "speed_p50": q[1], "speed_p90": q[2], "speed_share": float(ok.float().mean())}
   env.close()
   return result
 
@@ -240,6 +300,7 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   parser.add_argument("checkpoint")
+  parser.add_argument("--task", default=TASK, help="Blind stairs task whose play config matches the policy.")
   parser.add_argument("--num-envs", type=int, default=128)
   parser.add_argument("--time-scale", type=float, default=1.0)
   parser.add_argument("--scenarios", nargs="*", default=[s.name for s in SCENARIOS])
@@ -254,6 +315,8 @@ def main() -> None:
       continue
     if s.success != "track":
       s.segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.segments]
+      if s.legacy_segments:
+        s.legacy_segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.legacy_segments]
     results.append(run_scenario(args, s, boxes))
   print(f"\n[map3] {args.checkpoint}: {args.num_envs} robots per scenario, time scale {args.time_scale}")
   for r in results:
