@@ -546,8 +546,11 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
     rewards["standing_position_hold"] = RewardTermCfg(
       func=mdp.standing_position_hold, weight=-10.0, params=dict(standing)
     )
+    # yaw_weight spelled out so a run can raise it (--env.rewards.standing-speed
+    # .params.yaw-weight): the Go2-W flat teacher turned in place at the zero
+    # command, where the calm-scaled standing terms fade out.
     rewards["standing_speed"] = RewardTermCfg(
-      func=mdp.standing_speed, weight=-2.0, params=dict(standing)
+      func=mdp.standing_speed, weight=-2.0, params={**standing, "yaw_weight": 0.3}
     )
     rewards["standing_feet_air"] = RewardTermCfg(
       func=mdp.standing_feet_air,
