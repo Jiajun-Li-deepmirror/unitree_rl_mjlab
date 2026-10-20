@@ -33,6 +33,12 @@ from src.tasks.velocity.config.legged.blind import (
   NUM_STEPS_PER_ENV,
   make_blind_env_cfg,
 )
+from src.tasks.velocity.config.legged.blind import (
+  FINAL_VEL_RANGES as BLIND_FINAL_VEL_RANGES,
+)
+from src.tasks.velocity.config.legged.blind import (
+  INITIAL_VEL_RANGES as BLIND_INITIAL_VEL_RANGES,
+)
 from src.tasks.velocity.config.legged.spec import LeggedTaskSpec
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
 
@@ -263,7 +269,15 @@ def make_depth_teacher_env_cfg(
 
   twist = cfg.commands["twist"]
   assert isinstance(twist, mdp.TerrainAwareVelocityCommandCfg)
-  vel_ranges = FINAL_VEL_RANGES if play else INITIAL_VEL_RANGES
+  # go2-blind's wheeled robots train on its wider blind ranges (back to -1.0,
+  # forward to 1.5 m/s). On the tinynav-sim envelope the AS2-W, B2-W and Go2-W
+  # stepped when backing up at -0.4 and the first two at 1.0 m/s, both near
+  # its edges and seldom drawn.
+  if spec.wheel_blind_recipe:
+    initial_ranges, final_ranges = BLIND_INITIAL_VEL_RANGES, BLIND_FINAL_VEL_RANGES
+  else:
+    initial_ranges, final_ranges = INITIAL_VEL_RANGES, FINAL_VEL_RANGES
+  vel_ranges = final_ranges if play else initial_ranges
   twist.ranges = UniformVelocityCommandCfg.Ranges(**vel_ranges)
   twist.stair_ranges = UniformVelocityCommandCfg.Ranges(**STAIR_VEL_RANGES)
   twist.stair_terrain_names = STAIR_TERRAIN_NAMES
@@ -287,8 +301,8 @@ def make_depth_teacher_env_cfg(
 
   if "command_vel" in cfg.curriculum:
     cfg.curriculum["command_vel"].params["velocity_stages"] = [
-      {"step": 0, **INITIAL_VEL_RANGES},
-      {"step": 1500 * NUM_STEPS_PER_ENV, **FINAL_VEL_RANGES},
+      {"step": 0, **initial_ranges},
+      {"step": 1500 * NUM_STEPS_PER_ENV, **final_ranges},
     ]
 
   return cfg
