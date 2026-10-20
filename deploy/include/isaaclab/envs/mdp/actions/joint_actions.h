@@ -108,7 +108,30 @@ public:
     JointVelocityAction(YAML::Node cfg, ManagerBasedRLEnv* env)
     :JointAction(cfg, env)
     {
+        // Optional parking brake (wheels): zero velocity targets while the
+        // velocity command (after its deadzone) is zero and every joint of this
+        // term turns slower than brake_below_speed (rad/s), as in training.
+        _zero_when_command_zero = cfg["zero_when_command_zero"].as<bool>(false);
+        _brake_below_speed = cfg["brake_below_speed"].as<float>(std::numeric_limits<float>::infinity());
     }
+
+    void process_actions(std::vector<float> actions) override
+    {
+        JointAction::process_actions(actions);
+        if(!_zero_when_command_zero) return;
+        const auto & cmd = env->velocity_command;
+        if(!std::all_of(cmd.begin(), cmd.end(), [](float v) { return v == 0.0f; })) return;
+        const auto & joint_vel = env->robot->data.joint_vel;
+        for(int i(0); i<_action_dim; ++i) {
+            const int id = _joint_ids.empty() ? i : _joint_ids[i];
+            if(std::abs(joint_vel[id]) >= _brake_below_speed) return;
+        }
+        std::fill(_processed_actions.begin(), _processed_actions.end(), 0.0f);
+    }
+
+private:
+    bool _zero_when_command_zero = false;
+    float _brake_below_speed = std::numeric_limits<float>::infinity();
 };
 
 REGISTER_ACTION(JointPositionAction);

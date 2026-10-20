@@ -75,6 +75,10 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+    // Velocity command of the current step as the velocity_commands observation
+    // computed it (after scaling and the zero deadzone); read by actions that
+    // brake at the zero command.
+    std::vector<float> velocity_command = std::vector<float>(3, 0.0f);
 };
 
 };

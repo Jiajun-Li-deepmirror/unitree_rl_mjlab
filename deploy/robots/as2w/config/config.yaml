@@ -1,0 +1,35 @@
+# No reference gains for As2W: FixStand kp is ~2.5x the policy's (40/40/60), wheel kd a guess.
+# Check standing up with the robot hanging first.
+# Motors 0-11 are the legs (FR, FL, RR, RL x hip, thigh, calf), 12-15 the wheels.
+FSM:
+  _: # enabled fsms
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+    Velocity:
+      id: 3
+      type: RLBase
+  Passive:
+    transitions:
+      FixStand: LT + up.on_pressed
+    mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    kd: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 3]
+  FixStand:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    kp: [100, 120, 120, 100, 120, 120, 100, 120, 120, 100, 120, 120, 0, 0, 0, 0]
+    kd: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 3, 3, 3, 3]
+    ts: [0, 1, 2]
+    # Every pose lists all 16 motors (wheel entries are unused, kp 0). The last
+    # pose is the policy default pose in SDK order; see deploy.yaml.
+    qs: [
+      [],
+      [0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 0, 0, 0],
+      [0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0, 0, 0, 0],
+    ]
+  Velocity:
+    transitions:
+      Passive: LT + B.on_pressed
+    policy_dir: config/policy/velocity/blind_v0

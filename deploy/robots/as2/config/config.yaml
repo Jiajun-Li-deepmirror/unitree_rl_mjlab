@@ -1,0 +1,34 @@
+# No reference gains for As2: FixStand kp is ~2.5x the policy's (40/40/60);
+# check standing up with the robot hanging first.
+FSM:
+  _: # enabled fsms
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+    Velocity:
+      id: 3
+      type: RLBase
+  Passive:
+    transitions:
+      FixStand: LT + up.on_pressed
+    mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    kd: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+  FixStand:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    kp: [100, 120, 120, 100, 120, 120, 100, 120, 120, 100, 120, 120]
+    kd: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+    ts: [0, 1, 2]
+    # Last pose = policy default pose in SDK order (FR, FL, RR, RL); see
+    # default_joint_pos and joint_ids_map in the policy's deploy.yaml.
+    qs: [
+      [],
+      [0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65],
+      [0.1, 0.9, -1.8, -0.1, 0.9, -1.8, 0.1, 0.9, -1.8, -0.1, 0.9, -1.8],
+    ]
+  Velocity:
+    transitions:
+      Passive: LT + B.on_pressed
+    policy_dir: config/policy/velocity/blind_v0

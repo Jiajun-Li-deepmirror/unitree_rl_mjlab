@@ -1,0 +1,35 @@
+# Leg gains from unitree_rl_lab's B2; wheel kd 10 is a guess (no reference). Check standing up
+# with the robot hanging first.
+# Motors 0-11 are the legs (FR, FL, RR, RL x hip, thigh, calf), 12-15 the wheels.
+FSM:
+  _: # enabled fsms
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+    Velocity:
+      id: 3
+      type: RLBase
+  Passive:
+    transitions:
+      FixStand: LT + up.on_pressed
+    mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    kd: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+  FixStand:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    kp: [400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 0, 0, 0, 0]
+    kd: [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 10, 10, 10, 10]
+    ts: [0, 1, 3]
+    # Every pose lists all 16 motors (wheel entries are unused, kp 0). The last
+    # pose is the policy default pose in SDK order; see deploy.yaml.
+    qs: [
+      [],
+      [0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 0, 0, 0],
+      [0, 0.8, -1.5, 0, 0.8, -1.5, 0, 0.8, -1.5, 0, 0.8, -1.5, 0, 0, 0, 0],
+    ]
+  Velocity:
+    transitions:
+      Passive: LT + B.on_pressed
+    policy_dir: config/policy/velocity/blind_v0

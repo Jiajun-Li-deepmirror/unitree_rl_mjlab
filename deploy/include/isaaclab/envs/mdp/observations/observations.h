@@ -138,6 +138,7 @@ REGISTER_OBSERVATION(velocity_commands)
         if(norm <= zero_threshold) std::fill(obs.begin(), obs.end(), 0.0f);
     }
 
+    env->velocity_command = obs;
     return obs;
 }
 
