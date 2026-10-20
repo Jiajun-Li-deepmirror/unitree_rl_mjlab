@@ -46,11 +46,15 @@ GO2W_SPEC = LeggedTaskSpec(
   wheel_blind_recipe=True,
   even_track_std=0.25,
   flat_slow_prob=0.3,
-  # The foothold overspeed gate stays (spec default): without it the progress
-  # rewards' discounting paid for rolling down the flights, B2-W full_v2ft
-  # descending map3 at 1.8x the command at 10500 and 3-5x by 12000, Go2-W
-  # full_v6ft 1.35-2.6x (the legged Go2 needs no gate: 1.1-1.2x).
-  foothold_overspeed_range=(0.05, 0.25),
+  # A foothold overspeed gate, wider than the legged default: without one the
+  # progress rewards' discounting paid for rolling down the flights (B2-W
+  # full_v2ft descended map3 at 1.8x the command at 10500 and 3-5x by 12000,
+  # Go2-W full_v6ft at 1.35-2.6x; the legged Go2 needs none: 1.1-1.2x). At
+  # (0.05, 0.25), judged on the speed at the foothold, where the body lurches
+  # forward, they went ~0.1 m/s under the command instead (B2-W climbs 0.8x
+  # and stalled atop the L0 descent, Go2-W 0.88x; the legged Go2 v10 had
+  # descended at 0.6-0.75x).
+  foothold_overspeed_range=(0.15, 0.4),
   # go2-blind's Go2W v5: arcs with a small yaw rate in the commands, and the
   # low-speed brake that stopped the creep at a zero command (2.9 -> 0.01 cm).
   steer_prob=0.2,

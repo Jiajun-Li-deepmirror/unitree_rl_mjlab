@@ -38,8 +38,8 @@ AS2W_SPEC = replace(
   wheel_blind_recipe=True,
   even_track_std=0.25,
   flat_slow_prob=0.3,
-  # The foothold overspeed gate stays (see GO2W_SPEC).
-  foothold_overspeed_range=(0.05, 0.25),
+  # The Go2-W's foothold overspeed gate (see GO2W_SPEC).
+  foothold_overspeed_range=(0.15, 0.4),
   steer_prob=0.2,
   wheel_brake_speed=0.1,
   onnx_contract="as2w_depth_v2",
