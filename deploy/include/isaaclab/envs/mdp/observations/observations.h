@@ -142,6 +142,32 @@ REGISTER_OBSERVATION(velocity_commands)
     return obs;
 }
 
+// Heading the command asks for minus the base heading (rad, wrapped, + = turn
+// left), as mdp.heading_error in training: the target starts at the IMU yaw after
+// a reset and integrates the commanded yaw rate every control step, held within
+// max_error of the base yaw. Must come after velocity_commands in the yaml, whose
+// deadzoned command it integrates.
+REGISTER_OBSERVATION(heading_error)
+{
+    const auto & q = env->robot->data.root_quat_w;
+    const float yaw = std::atan2(2.0f * (q.w() * q.z() + q.x() * q.y()),
+                                 1.0f - 2.0f * (q.y() * q.y() + q.z() * q.z()));
+    const float max_error = params["max_error"].as<float>(0.5f);
+    if(env->heading_settle > 0)
+    {
+        env->heading_target = yaw;
+        env->heading_settle -= 1;
+    }
+    else
+    {
+        env->heading_target += env->velocity_command[2] * env->step_dt;
+    }
+    float error = std::atan2(std::sin(env->heading_target - yaw), std::cos(env->heading_target - yaw));
+    error = std::clamp(error, -max_error, max_error);
+    env->heading_target = yaw + error;
+    return std::vector<float>{error};
+}
+
 REGISTER_OBSERVATION(gait_phase)
 {
     float period = params["period"].as<float>();

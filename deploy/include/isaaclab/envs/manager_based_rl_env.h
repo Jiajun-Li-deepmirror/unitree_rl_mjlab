@@ -51,6 +51,7 @@ public:
     {
         global_phase = 0;
         episode_length = 0;
+        heading_settle = 2;
         robot->update();
         action_manager->reset();
         observation_manager->reset();
@@ -79,6 +80,11 @@ public:
     // computed it (after scaling and the zero deadzone); read by actions that
     // brake at the zero command.
     std::vector<float> velocity_command = std::vector<float>(3, 0.0f);
+    // State of the heading_error observation: the target heading (rad) and the
+    // control steps left before it starts integrating the command (set to the
+    // base yaw until then).
+    float heading_target = 0.0f;
+    int heading_settle = 2;
 };
 
 };
