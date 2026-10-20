@@ -41,12 +41,23 @@ SPAWN, SPAWN_YAW = (-10.34, 5.75, 0.431), -90.0
 R1_TOP_Y = 5.0
 
 
-def make_route(r1_top_y: float):
+def make_route(r1_top_y: float, r1_turn_x: float | None = None):
   """(label, kind, args) in map3 coordinates, headings in degrees:
     pause  seconds
     turn   heading                  (turn in place)
     follow ((x, y), heading, vx)    (walk along the line through (x, y) at heading)
+    strafe ((x, y), heading)        (step sideways to the line through (x, y), holding heading)
+  With `r1_turn_x` the robot steps sideways on R1's top landing to that x before
+  turning around and back after: R1's centerline is 0.46 m from the landing's east
+  wall (x = -8.34), less than half the length of B2W, whose turn there hit it.
   """
+  turn_around = [("原地掉头", "turn", -90.0)]
+  if r1_turn_x is not None:
+    turn_around = [
+      ("平台上横移", "strafe", ((r1_turn_x, r1_top_y), 90.0)),
+      ("原地掉头", "turn", -90.0),
+      ("横移回 R1", "strafe", ((-8.80, r1_top_y), -90.0)),
+    ]
   return [
     ("站立", "pause", 1.5),
     ("L0 上楼", "follow", ((-10.34, 1.15), -90.0, 0.5)),
@@ -55,7 +66,7 @@ def make_route(r1_top_y: float):
     ("转向 R1", "turn", 90.0),
     (f"R1 上楼到 y = {r1_top_y:g} m", "follow", ((-8.80, r1_top_y), 90.0, 0.5)),
     ("站立", "pause", 1.5),
-    ("原地掉头", "turn", -90.0),
+    *turn_around,
     ("R1 下楼", "follow", ((-8.80, 1.15), -90.0, 0.4)),
     ("平台上转身", "turn", 180.0),
     ("横穿平台到 L0", "follow", ((-10.34, 1.15), 180.0, 0.4)),
@@ -108,6 +119,17 @@ class Autopilot:
       wz = float(np.clip(2.0 * err, -self.turn_rate, self.turn_rate))
       timed_out = t > TURN_TIMEOUT
       return (0.0, 0.0, wz), self.settled > 10 or timed_out, timed_out
+    if kind == "strafe":
+      target, heading = args
+      h = math.radians(heading)
+      rel = np.asarray(target) - pos
+      left = float(-math.sin(h) * rel[0] + math.cos(h) * rel[1])  # target offset to the robot's left
+      # At least 0.12 m/s: commands under 0.1 m/s are zeroed (the deadzone).
+      vy = float(np.clip(math.copysign(max(0.12, 1.5 * abs(left)), left), -0.3, 0.3))
+      wz = float(np.clip(wrap(h - yaw), -0.5, 0.5))
+      timed_out = t > FOLLOW_TIMEOUT
+      done = abs(left) < 0.06
+      return (0.0, 0.0 if done else vy, wz), done or timed_out, timed_out
     target, heading, vx = args
     h = math.radians(heading)
     axis = np.array([math.cos(h), math.sin(h)])
@@ -135,9 +157,10 @@ def main() -> None:
   p.add_argument("--cam-side", type=float, default=0.0, help="azimuth offset from straight behind (deg)")
   p.add_argument("--turn-rate", type=float, default=1.0, help="max |wz| of the in-place turns (rad/s)")
   p.add_argument("--r1-top-y", type=float, default=R1_TOP_Y, help="map3 y where the robot stops on R1 and turns around")
+  p.add_argument("--r1-turn-x", type=float, default=None, help="step sideways to this map3 x on R1's top landing to turn around (B2W: -9.3)")
   p.add_argument("--seed", type=int, default=0)
   args = p.parse_args()
-  route = make_route(args.r1_top_y)
+  route = make_route(args.r1_top_y, args.r1_turn_x)
 
   scenario = eval_map3.Scenario("tour", SPAWN, SPAWN_YAW, [(600.0, 0.0, 0.0, 0.0)], "track")
   cfg = eval_map3.make_env_cfg(scenario, eval_map3.load_map3_boxes(), 1, args.seed, args.task)
