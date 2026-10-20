@@ -154,3 +154,22 @@ def unitree_g1_balanced_leg_tracking_env_cfg(play: bool = False) -> ManagerBased
     func=mdp.motion_measured_contact_slip, weight=-1.0,
     params={"command_name": "motion"})
   return cfg
+
+
+def unitree_g1_step_tracking_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Third experiment: Leg-Rewards policies drag 3-12 cm reference steps along the floor.
+
+  A grounded foot under a 6 cm reference lift still earned 85% of the broad
+  swing term, and slip cost under 0.5% of the reward. The tight term starts
+  1.5 cm above the 0.035 m flat-foot ankle height and pays only when the lift
+  is matched within a few centimetres; the broad term still guides large lifts.
+  """
+  from mjlab.managers.reward_manager import RewardTermCfg
+  from src.tasks.tracking import mdp
+  cfg = unitree_g1_balanced_leg_tracking_env_cfg(play=play)
+  cfg.rewards["motion_swing_height_tight"] = RewardTermCfg(
+    func=mdp.motion_swing_height_error_exp, weight=1.0,
+    params={"command_name": "motion", "std": .03,
+            "body_names": ("left_ankle_roll_link", "right_ankle_roll_link"), "swing_height": .05})
+  cfg.rewards["measured_foot_contact_slip"].weight = -3.0
+  return cfg
