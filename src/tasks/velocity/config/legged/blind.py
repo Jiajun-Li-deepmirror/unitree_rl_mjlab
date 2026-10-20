@@ -528,6 +528,10 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
     for group in ("actor", "critic"):
       cfg.observations[group].terms.pop("phase", None)
     rewards.pop("foot_gait")
+    # Skidding costs at a zero command too (turning in place is stepped), and
+    # wheel accelerations count with the legs', as there.
+    rewards["wheel_slip"].params.pop("command_name")
+    rewards["joint_acc_l2"].params.pop("asset_cfg", None)
     rewards["foot_swing_clearance"].weight = -3.0
     rewards["foot_swing_clearance"].params["even_only"] = True
     rewards["track_angular_velocity"].params["min_std"] = 0.2
@@ -535,6 +539,22 @@ def _add_wheels(cfg: ManagerBasedRlEnvCfg, spec: LeggedTaskSpec) -> None:
       func=mdp.wheel_air_drivable,
       weight=-1.0,
       params={**standing, **scan, "sensor_name": "feet_ground_contact"},
+    )
+    # go2-blind's standing terms (with its low-speed brake: creep 2.9 -> 0.01
+    # cm per 4 s); the last two only while the base is calm.
+    rewards["standing_position_hold"] = RewardTermCfg(
+      func=mdp.standing_position_hold, weight=-10.0, params=dict(standing)
+    )
+    rewards["standing_speed"] = RewardTermCfg(
+      func=mdp.standing_speed, weight=-2.0, params=dict(standing)
+    )
+    rewards["standing_feet_air"] = RewardTermCfg(
+      func=mdp.standing_feet_air,
+      weight=-1.0,
+      params={**standing, "sensor_name": "feet_ground_contact"},
+    )
+    rewards["standing_wheel_target"] = RewardTermCfg(
+      func=mdp.standing_wheel_target, weight=-0.1, params=dict(standing)
     )
     return
   # Roll mode carries penalties only (legs moving, legs off the default pose,

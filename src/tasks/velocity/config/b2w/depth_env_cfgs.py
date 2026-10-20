@@ -41,8 +41,10 @@ B2W_SPEC = replace(
   terrain_clearance_weight=-10.0,
   terrain_clearance_margin=0.02,
   wheel_blind_recipe=True,
-  even_track_std=0.25,
-  flat_slow_prob=0.3,
+  even_track_std=None,
+  flat_slow_prob=0.0,
+  # go2-blind's B2W v5: 6 rad/s per unit wheel action (0.68 m/s at the rim).
+  wheel_action_scale=6.0,
   # The Go2-W's foothold overspeed gate (see GO2W_SPEC).
   foothold_overspeed_range=(0.15, 0.4),
   steer_prob=0.2,

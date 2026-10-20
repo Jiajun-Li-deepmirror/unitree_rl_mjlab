@@ -66,13 +66,14 @@ GO2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
   effort_limit=45,
   armature=0.02,
 )
-# Velocity-controlled wheels (radius 0.086 m). The damping gain is a brake
-# too: under a load torque the wheel creeps at torque / damping.
+# Velocity-controlled wheels (radius 0.086 m). go2-blind's wheel gain (its
+# deployed wheeled v5): at a zero command the low-speed brake holds the robot
+# (mdp/wheel_action.py), not a stiff wheel damping.
 GO2W_ACTUATOR_WHEEL = WheelVelocityActuatorCfg(
   target_names_expr=(".*_wheel_joint",),
   velocity_limit=30.0,
-  damping=4.0,
-  effort_limit=23.5,
+  damping=0.5,
+  effort_limit=15.0,
   armature=0.01,
 )
 # The wheels collide as spheres of this radius (*_foot_collision), not as
@@ -87,13 +88,13 @@ GO2W_WHEEL_RADIUS = 0.086
 ##
 
 
+# go2-blind's wheeled default pose (thigh 0.9 / calf -1.8 before).
 INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.40),
+  pos=(0.0, 0.0, 0.43),
   joint_pos={
-    ".*thigh_joint": 0.9,
-    ".*calf_joint": -1.8,
-    ".*R_hip_joint": 0.1,
-    ".*L_hip_joint": -0.1,
+    ".*thigh_joint": 0.8,
+    ".*calf_joint": -1.5,
+    ".*hip_joint": 0.0,
     ".*_wheel_joint": 0.0,
   },
   joint_vel={".*": 0.0},

@@ -1,5 +1,5 @@
 from mjlab.tasks.registry import register_mjlab_task
-from src.tasks.velocity.rl import VelocityOnPolicyRunner
+from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner
 from src.tasks.velocity.rl.distillation import DepthDistillationRunner
 
 from .depth_env_cfgs import (
@@ -19,7 +19,7 @@ register_mjlab_task(
   env_cfg=unitree_b2w_depth_teacher_env_cfg(stairs=False),
   play_env_cfg=unitree_b2w_depth_teacher_env_cfg(play=True, stairs=False),
   rl_cfg=unitree_b2w_depth_teacher_ppo_runner_cfg(max_iterations=3000),
-  runner_cls=VelocityOnPolicyRunner,
+  runner_cls=MirrorVelocityOnPolicyRunner,
 )
 
 register_mjlab_task(
@@ -27,7 +27,7 @@ register_mjlab_task(
   env_cfg=unitree_b2w_depth_teacher_env_cfg(stairs=True),
   play_env_cfg=unitree_b2w_depth_teacher_env_cfg(play=True, stairs=True),
   rl_cfg=unitree_b2w_depth_teacher_ppo_runner_cfg(max_iterations=20000),
-  runner_cls=VelocityOnPolicyRunner,
+  runner_cls=MirrorVelocityOnPolicyRunner,
 )
 
 register_mjlab_task(

@@ -30,8 +30,8 @@ GO2W_SPEC = LeggedTaskSpec(
   swing_target_height=0.10,
   # Wheel spheres reach 0.28 m each side (Go2 feet: 0.16 m).
   wall_safe_distance=0.40,
-  # Side steps reached only ~45% of vy at the Go2's 0.3.
-  hip_walking_std=0.45,
+  # The Go2's walking hip std (0.3) as go2-blind's Go2W: its swing penalty and
+  # wheel_slip make the side steps (0.45 had been tried at the Go2's 45% vy).
   # The Go2's edge rule (sole 5 cm over any edge within 12 cm ahead, -40)
   # asks a 0.086 m wheel to lift its centre ~22 cm before an 8 cm step:
   # the first teacher never stepped up even 5 cm rises (descents were fine).
@@ -42,10 +42,13 @@ GO2W_SPEC = LeggedTaskSpec(
   # the B2-W's tracking-gated 2.0 (full_v5ft) raised vy to 0.65 but it trotted
   # at every forward speed and climbed no map3 flight. Now go2-blind's wheeled
   # recipe (swing -3 at 0.10, nothing paying for steps, wheels down while the
-  # command can be rolled) and its tracking terms.
+  # command can be rolled).
   wheel_blind_recipe=True,
-  even_track_std=0.25,
-  flat_slow_prob=0.3,
+  # go2-blind's wheeled v5 (its flat models pass every flat gate) has neither
+  # the even-ground tracking std nor the slow commands of its legged map3
+  # stage, which these had taken over.
+  even_track_std=None,
+  flat_slow_prob=0.0,
   # A foothold overspeed gate, wider than the legged default: without one the
   # progress rewards' discounting paid for rolling down the flights (B2-W
   # full_v2ft descended map3 at 1.8x the command at 10500 and 3-5x by 12000,

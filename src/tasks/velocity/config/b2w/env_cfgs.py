@@ -107,10 +107,10 @@ def unitree_b2w_rough_env_cfg(
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].params["asset_cfg"].site_names = site_names
 
-  # Go2 weights rescaled to the B2-W's 5.7x mass and 13.6x inertia: landing
-  # impacts scale with mass, the squared angular momentum with inertia^2:
-  # go2-blind's -0.025 * (0.53 / I_yaw)^2 (its B2W turns in place at full rate).
-  cfg.rewards["soft_landing"].weight = -1e-3 / 5.5
+  # The squared angular momentum rescaled to the B2-W's 13.6x inertia:
+  # go2-blind's -0.025 * (0.53 / I_yaw)^2 (its B2W turns in place at full
+  # rate). Landing impacts keep the Go2's weight, as its B2W v5 does (it was
+  # -1e-3 / 5.5 here for the 5.7x mass).
   cfg.rewards["angular_momentum"].weight = -1.2e-4
 
   cfg.terminations["illegal_contact"] = TerminationTermCfg(

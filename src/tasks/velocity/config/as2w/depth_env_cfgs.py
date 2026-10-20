@@ -30,14 +30,16 @@ AS2W_SPEC = replace(
   swing_target_height=0.10,
   # Wheel spheres reach 0.31 m each side.
   wall_safe_distance=0.42,
-  # The wheel-sized edge rule and looser hips of the Go2-W (same size and
-  # wheel), and go2-blind's wheeled recipe and tracking terms (see GO2W_SPEC).
+  # The wheel-sized edge rule of the Go2-W (same size and wheel), and
+  # go2-blind's wheeled recipe (see GO2W_SPEC).
   terrain_clearance_weight=-10.0,
   terrain_clearance_margin=0.02,
-  hip_walking_std=0.45,
   wheel_blind_recipe=True,
-  even_track_std=0.25,
-  flat_slow_prob=0.3,
+  even_track_std=None,
+  flat_slow_prob=0.0,
+  # go2-blind's As2W v5: 8 rad/s per unit wheel action, payload -1..+3 kg.
+  wheel_action_scale=8.0,
+  base_payload_range=(-1.0, 3.0),
   # The Go2-W's foothold overspeed gate (see GO2W_SPEC).
   foothold_overspeed_range=(0.15, 0.4),
   steer_prob=0.2,

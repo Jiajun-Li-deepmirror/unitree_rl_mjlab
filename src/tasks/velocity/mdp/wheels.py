@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.utils.lab_api.math import wrap_to_pi
 
-from .rewards import feet_gait, uneven_terrain_mask
+from .rewards import _standing_scale, _zero_command_mask, feet_gait, uneven_terrain_mask
 
 if TYPE_CHECKING:
   from mjlab.entity import Entity
   from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.managers.reward_manager import RewardTermCfg
   from mjlab.sensor import ContactSensor
 
 
@@ -87,11 +89,13 @@ def wheel_slip(
   env: ManagerBasedRlEnv,
   sensor_name: str,
   wheel_radius: float,
-  command_name: str,
+  command_name: str | None = None,
   command_threshold: float = 0.01,
   asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
   """Squared slip speed at the contact point of each wheel on the ground.
+
+  With `command_name`, only while the command is non-zero.
 
   `asset_cfg` holds the wheel centre sites and the wheel bodies (same order).
   The contact point is taken `wheel_radius` straight below the centre (level
@@ -108,7 +112,10 @@ def wheel_slip(
   down[..., 2] = -wheel_radius
   v_contact = v_center + torch.cross(omega, down, dim=-1)
   slip_sq = torch.sum(torch.square(v_contact[..., :2]), dim=-1)
-  active = _moving(env, command_name, command_threshold).float()
+  if command_name is None:
+    active = torch.ones(env.num_envs, device=env.device)
+  else:
+    active = _moving(env, command_name, command_threshold).float()
   env.extras["log"]["Metrics/wheel_slip_mean"] = torch.sum(
     slip_sq.sqrt() * in_contact
   ) / torch.clamp(in_contact.sum(), min=1)
@@ -202,3 +209,112 @@ def roll_leg_deviation(
   cost = torch.sum(torch.square(diff), dim=1)
   roll = ~step_mode_mask(env, command_name, scan_sensor_name, lateral_threshold)
   return cost * (roll & _moving(env, command_name, command_threshold)).float()
+
+
+# Standing still on velocity-controlled wheels (go2-blind's wheeled v5). A
+# wheel only damps toward its target, so a standing robot creeps: 2-6 cm per
+# 4 s before, which the squared standing terms charged almost nothing.
+
+
+class standing_position_hold:
+  """Drift from where the robot settled while commanded to stand.
+
+  The anchor (base position and heading) follows the base while the command
+  is non-zero or the base moves faster than `anchor_speed` or turns faster
+  than `anchor_yaw_rate`, so a push moves it and only the slow creep after
+  settling costs: min(distance, `max_distance`) + `yaw_weight` * |heading
+  change|.
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    del cfg
+    self.anchor_xy = torch.zeros(env.num_envs, 2, device=env.device)
+    self.anchor_yaw = torch.zeros(env.num_envs, device=env.device)
+    self.has_anchor = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.has_anchor[env_ids] = False
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    anchor_speed: float = 0.1,
+    anchor_yaw_rate: float = 0.2,
+    max_distance: float = 0.3,
+    yaw_weight: float = 0.3,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    xy = asset.data.root_link_pos_w[:, :2]
+    yaw = asset.data.heading_w
+    standing = _zero_command_mask(env, command_name, command_threshold)
+    moving = (torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1) > anchor_speed) | (
+      asset.data.root_link_ang_vel_b[:, 2].abs() > anchor_yaw_rate
+    )
+    follow = ~standing | moving | ~self.has_anchor
+    self.anchor_xy = torch.where(follow.unsqueeze(1), xy, self.anchor_xy)
+    self.anchor_yaw = torch.where(follow, yaw, self.anchor_yaw)
+    self.has_anchor[:] = True
+    dist = torch.norm(xy - self.anchor_xy, dim=1).clamp(max=max_distance)
+    turn = wrap_to_pi(yaw - self.anchor_yaw).abs()
+    return (dist + yaw_weight * turn) * standing.float()
+
+
+def standing_speed(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  yaw_weight: float = 0.3,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+  """Base speed (L1, each part capped at 1) while commanded to stand."""
+  asset: Entity = env.scene[asset_cfg.name]
+  speed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1).clamp(max=1.0)
+  turn = asset.data.root_link_ang_vel_b[:, 2].abs().clamp(max=1.0)
+  return (speed + yaw_weight * turn) * _zero_command_mask(
+    env, command_name, command_threshold
+  ).float()
+
+
+def standing_feet_air(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.1,
+  calm_std: float = 0.1,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+  """Fraction of wheels off the ground while commanded to stand, calm."""
+  contact: ContactSensor = env.scene[sensor_name]
+  assert contact.data.found is not None
+  in_air = (contact.data.found <= 0).float().mean(dim=1)
+  return in_air * _standing_scale(env, command_name, command_threshold, calm_std, asset_cfg)
+
+
+def standing_wheel_target(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  action_name: str = "wheel_vel",
+  command_threshold: float = 0.1,
+  calm_std: float = 0.1,
+  asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+  """Sum of |wheel velocity targets| (rad/s) the policy asks for while standing.
+
+  At a zero command the policies left opposing targets on the wheels of one
+  side, which is what crept. The targets are the policy's, before the
+  low-speed brake zeroes them.
+  """
+  term = env.action_manager.get_term(action_name)
+  if hasattr(term, "policy_targets"):
+    targets = term.policy_targets
+  else:
+    targets = term._processed_actions
+  return targets.abs().sum(dim=1) * _standing_scale(
+    env, command_name, command_threshold, calm_std, asset_cfg
+  )
+

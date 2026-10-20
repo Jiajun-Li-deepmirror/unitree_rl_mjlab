@@ -39,13 +39,14 @@ def get_spec() -> mujoco.MjSpec:
 # Actuator config.
 ##
 
+# Effort limits 60 / 60 / 90 Nm as go2-blind's wheeled v5 (50 / 50 / 75 before).
 As2W_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
   target_names_expr=(
     ".*hip_.*",
   ),
   stiffness=40.0,
   damping=2.0,
-  effort_limit=50,
+  effort_limit=60,
   armature=0.026,
 )
 As2W_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
@@ -54,7 +55,7 @@ As2W_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
   ),
   stiffness=40.0,
   damping=2.0,
-  effort_limit=50,
+  effort_limit=60,
   armature=0.026,
 )
 As2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
@@ -63,18 +64,18 @@ As2W_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
   ),
   stiffness=60.0,
   damping=3.0,
-  effort_limit=75,
+  effort_limit=90,
   armature=0.038,
 )
 # Velocity-controlled wheels (radius 0.086 m, +-15 Nm per unitree_ros' as2w
-# URDF). The damping gain is a brake too: under a load torque the wheel
-# creeps at torque / damping.
+# URDF). go2-blind's wheel gain and armature (its wheeled v5): at a zero
+# command the low-speed brake holds the robot, not a stiff wheel damping.
 As2W_ACTUATOR_WHEEL = WheelVelocityActuatorCfg(
   target_names_expr=(".*_wheel_joint",),
   velocity_limit=40.0,
-  damping=4.0,
+  damping=1.0,
   effort_limit=15.0,
-  armature=0.01,
+  armature=0.005,
 )
 # The wheels collide as spheres of this radius (*_foot_collision), not as
 # cylinders: on box seams and step edges the GJK/EPA cylinder contact could
@@ -89,7 +90,7 @@ As2W_WHEEL_RADIUS = 0.086
 
 
 INIT_STATE = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.45),
+  pos=(0.0, 0.0, 0.37),
   joint_pos={
     ".*thigh_joint": 0.9,
     ".*calf_joint": -1.8,

@@ -44,6 +44,7 @@ class BrakedWheelVelocityAction(JointVelocityAction):
   def __init__(self, cfg: BrakedWheelVelocityActionCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg, env)
     self.braking = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+    self.policy_targets = torch.zeros_like(self._processed_actions)
 
   def process_actions(self, actions: torch.Tensor) -> None:
     super().process_actions(actions)
@@ -54,6 +55,7 @@ class BrakedWheelVelocityAction(JointVelocityAction):
     wheel_vel = self._entity.data.joint_vel[:, self._target_ids]
     slow = torch.all(wheel_vel.abs() < self.cfg.brake_rad_s, dim=1)
     self.braking = still & slow
+    self.policy_targets = self._processed_actions.clone()
     self._processed_actions = torch.where(
       self.braking.unsqueeze(1), 0.0, self._processed_actions
     )
