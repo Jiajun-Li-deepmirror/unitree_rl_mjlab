@@ -51,41 +51,14 @@ stand) driven by an autopilot that steers back to each flight's centerline like 
 person with a joystick. B2W steps sideways on R1's top landing to turn around: it is
 longer than the 0.46 m from R1's centerline to the landing wall.
 
-### Go2
-
-https://github.com/user-attachments/assets/5e0eb2b3-dafd-455a-8dc4-497529ec5214
-
-https://github.com/user-attachments/assets/e9e70485-e859-45a3-92ed-e707ffb961bf
-
-### As2
-
-https://github.com/user-attachments/assets/4c27d9e6-c423-48e1-91da-bd708b813d7a
-
-https://github.com/user-attachments/assets/6e439e22-0a88-4013-9b13-7d3e97bd47c5
-
-### B2
-
-https://github.com/user-attachments/assets/cb721035-033f-488e-a566-54e69dea20d1
-
-https://github.com/user-attachments/assets/9dc66da2-b24f-4566-9f79-e9f2f39f5218
-
-### Go2W
-
-https://github.com/user-attachments/assets/21919298-5b1a-4872-91bc-7b39cfcf249c
-
-https://github.com/user-attachments/assets/a52a11b0-37ef-4274-9b4b-14ca375c1a69
-
-### As2W
-
-https://github.com/user-attachments/assets/5ab96eff-2a3b-4fb5-b627-c46100b92747
-
-https://github.com/user-attachments/assets/a7ac3924-ee03-450f-b6ab-e495f19d2f2b
-
-### B2W
-
-https://github.com/user-attachments/assets/7dad356c-0d05-4b23-914a-7fd552adef31
-
-https://github.com/user-attachments/assets/44b2d2e0-d613-4328-b160-0a61675e3e46
+| Robot | Flat ground (4x speed) | map3 stairwell tour (4x speed) |
+|---|---|---|
+| Go2 | <img src="doc/gif/blind/go2_flat.gif" width="400"> | <img src="doc/gif/blind/go2_map3_tour.gif" width="400"> |
+| As2 | <img src="doc/gif/blind/as2_flat.gif" width="400"> | <img src="doc/gif/blind/as2_map3_tour.gif" width="400"> |
+| B2 | <img src="doc/gif/blind/b2_flat.gif" width="400"> | <img src="doc/gif/blind/b2_map3_tour.gif" width="400"> |
+| Go2W | <img src="doc/gif/blind/go2w_flat.gif" width="400"> | <img src="doc/gif/blind/go2w_map3_tour.gif" width="400"> |
+| As2W | <img src="doc/gif/blind/as2w_flat.gif" width="400"> | <img src="doc/gif/blind/as2w_map3_tour.gif" width="400"> |
+| B2W | <img src="doc/gif/blind/b2w_flat.gif" width="400"> | <img src="doc/gif/blind/b2w_map3_tour.gif" width="400"> |
 
 
 ## 📦 Installation and Configuration

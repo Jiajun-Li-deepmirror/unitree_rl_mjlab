@@ -43,41 +43,14 @@ map3 楼梯：[map3](src/assets/terrains/map3) 楼梯间全部 18 段楼梯上�
 上 R1 → 掉头 → 下 R1 → 下 L0 → 站立），由一个像人用摇杆一样把机器人拉回每段楼梯中心线的
 自动驾驶控制。B2W 在 R1 顶部平台上先横移再掉头：它的机身比 R1 中心线到平台墙的 0.46 m 更长。
 
-### Go2
-
-https://github.com/user-attachments/assets/5e0eb2b3-dafd-455a-8dc4-497529ec5214
-
-https://github.com/user-attachments/assets/e9e70485-e859-45a3-92ed-e707ffb961bf
-
-### As2
-
-https://github.com/user-attachments/assets/4c27d9e6-c423-48e1-91da-bd708b813d7a
-
-https://github.com/user-attachments/assets/6e439e22-0a88-4013-9b13-7d3e97bd47c5
-
-### B2
-
-https://github.com/user-attachments/assets/cb721035-033f-488e-a566-54e69dea20d1
-
-https://github.com/user-attachments/assets/9dc66da2-b24f-4566-9f79-e9f2f39f5218
-
-### Go2W
-
-https://github.com/user-attachments/assets/21919298-5b1a-4872-91bc-7b39cfcf249c
-
-https://github.com/user-attachments/assets/a52a11b0-37ef-4274-9b4b-14ca375c1a69
-
-### As2W
-
-https://github.com/user-attachments/assets/5ab96eff-2a3b-4fb5-b627-c46100b92747
-
-https://github.com/user-attachments/assets/a7ac3924-ee03-450f-b6ab-e495f19d2f2b
-
-### B2W
-
-https://github.com/user-attachments/assets/7dad356c-0d05-4b23-914a-7fd552adef31
-
-https://github.com/user-attachments/assets/44b2d2e0-d613-4328-b160-0a61675e3e46
+| 机器人 | 平地（4 倍速） | map3 楼梯间巡游（4 倍速） |
+|---|---|---|
+| Go2 | <img src="doc/gif/blind/go2_flat.gif" width="400"> | <img src="doc/gif/blind/go2_map3_tour.gif" width="400"> |
+| As2 | <img src="doc/gif/blind/as2_flat.gif" width="400"> | <img src="doc/gif/blind/as2_map3_tour.gif" width="400"> |
+| B2 | <img src="doc/gif/blind/b2_flat.gif" width="400"> | <img src="doc/gif/blind/b2_map3_tour.gif" width="400"> |
+| Go2W | <img src="doc/gif/blind/go2w_flat.gif" width="400"> | <img src="doc/gif/blind/go2w_map3_tour.gif" width="400"> |
+| As2W | <img src="doc/gif/blind/as2w_flat.gif" width="400"> | <img src="doc/gif/blind/as2w_map3_tour.gif" width="400"> |
+| B2W | <img src="doc/gif/blind/b2w_flat.gif" width="400"> | <img src="doc/gif/blind/b2w_map3_tour.gif" width="400"> |
 
 
 ## 📦 安装配置
