@@ -835,7 +835,10 @@ class feet_foothold_height_gain:
   Being progress rewards, discounting pays more for collecting them sooner,
   which made the policy run down stairs well above the commanded speed. With
   `overspeed_range=(lo, hi)`, a record is paid in full while the base moves at
-  most `lo` m/s faster than commanded, fading to nothing at `hi`.
+  most `lo` m/s faster than commanded, fading to nothing at `hi`. With
+  `max_speed_ratio`, a record set while the base moves along the command faster
+  than that ratio of the commanded speed pays nothing; the record still moves,
+  so rushing loses it for good (go2-blind: 1.1).
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -861,6 +864,7 @@ class feet_foothold_height_gain:
     min_gain: float = 0.02,
     descend: bool = False,
     overspeed_range: tuple[float, float] | None = None,
+    max_speed_ratio: float | None = None,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
     contact: ContactSensor = env.scene[sensor_name]
@@ -892,6 +896,13 @@ class feet_foothold_height_gain:
         command[:, :2], dim=1
       )
       reward = reward * torch.clamp((hi - overspeed) / (hi - lo), 0.0, 1.0)
+    if max_speed_ratio is not None:
+      command = env.command_manager.get_command(command_name)
+      assert command is not None
+      cmd = command[:, :2]
+      speed = torch.norm(cmd, dim=1)
+      along = (asset.data.root_link_lin_vel_b[:, :2] * cmd).sum(dim=1) / speed.clamp(min=1e-6)
+      reward = torch.where(along > max_speed_ratio * speed, 0.0, reward)
     return reward / env.step_dt
 
 

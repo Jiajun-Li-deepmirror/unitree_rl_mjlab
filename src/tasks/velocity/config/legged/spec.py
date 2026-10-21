@@ -107,6 +107,10 @@ class LeggedTaskSpec:
   not at all from hi (v9 ran down map3 at 0.6 m/s for 0.4). None = no gate:
   the gate made v10 descend at 0.25-0.3 m/s for 0.4, and the gate-free v8 had
   the best descents."""
+  foothold_max_speed_ratio: float | None = None
+  """Foothold progress pays nothing while the base moves along the command
+  faster than this times the commanded speed (go2-blind's second stairs round:
+  1.1). Unlike the gate it leaves speeds near the command alone. None = off."""
 
   # Front depth camera on `base_body` (tinynav PIE intrinsics for all robots).
   camera_pos: tuple[float, float, float] = depth_mdp.DEPTH_CAMERA_POS

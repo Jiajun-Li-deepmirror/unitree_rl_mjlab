@@ -228,6 +228,7 @@ def make_depth_teacher_env_cfg(
       **standing,
       "asset_cfg": deepcopy(feet),
       "overspeed_range": spec.foothold_overspeed_range,
+      "max_speed_ratio": spec.foothold_max_speed_ratio,
     },
   )
   # The policy keeps itself off the walls; corridor commands only hold heading.
@@ -247,6 +248,7 @@ def make_depth_teacher_env_cfg(
       "asset_cfg": deepcopy(feet),
       "descend": True,
       "overspeed_range": spec.foothold_overspeed_range,
+      "max_speed_ratio": spec.foothold_max_speed_ratio,
     },
   )
 

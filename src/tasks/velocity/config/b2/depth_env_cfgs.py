@@ -40,6 +40,10 @@ B2_SPEC = LeggedTaskSpec(
   even_track_std=0.25,
   flat_slow_prob=0.3,
   foothold_overspeed_range=None,
+  # Seeing the steps, its heading teacher ran down map3 at 3-5x the command
+  # (go2-blind's blind ones ~1.2x): its second stairs round caps foothold
+  # progress at 1.1x.
+  foothold_max_speed_ratio=1.1,
 )
 
 
