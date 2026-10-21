@@ -65,3 +65,10 @@ observations:
     clip: null
     scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     history_length: 10
+  # Heading the command asks for minus the IMU heading (rad, clamped to
+  # +-max_error), as mdp.heading_error in training; after velocity_commands.
+  heading_error:
+    params: {max_error: 0.5}
+    clip: null
+    scale: [1.0]
+    history_length: 10
