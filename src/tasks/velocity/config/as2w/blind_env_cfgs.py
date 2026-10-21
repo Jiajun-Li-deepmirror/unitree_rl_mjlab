@@ -42,7 +42,8 @@ def unitree_as2w_blind_env_cfg(play: bool = False, stairs: bool = False) -> Mana
 # Stairs (2026-10-20), the recipe of the Go2W stairs runs: stance-leg tilt, map3
 # walled flights, straight walking without an operator, the heading-error input,
 # the mirror loss and the flat-ground anchor to the v5 flat model (flat_v5_gbrake model_5300).
-AS2W_BLIND_STAIRS = replace(AS2W_BLIND, stance_tilt_weight=-10.0)
+# Lifted wheels while driving straight on even ground cost 4x (see GO2W_BLIND_STAIRS).
+AS2W_BLIND_STAIRS = replace(AS2W_BLIND, stance_tilt_weight=-10.0, drivable_air_weight=-4.0)
 
 
 def unitree_as2w_blind_heading_env_cfg(

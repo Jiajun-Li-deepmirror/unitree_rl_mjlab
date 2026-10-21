@@ -19,10 +19,12 @@ class Go2WFlatAnchoredRunner(AnchoredMirrorVelocityOnPolicyRunner):
 
 class Go2WFlatAnchoredHeadingRunner(AnchoredMirrorVelocityOnPolicyRunner):
   """Anchored on flat ground to the v5 flat model widened for the heading input,
-  sideways commands included."""
+  sideways commands included, straight forward / backward ones at 0.3."""
 
   ANCHOR_CHECKPOINT = "logs/rsl_rl/go2w_blind/2026-10-19_22-15-36_flat_v5_gbrake/model_6997_widened.pt"
   ANCHOR_SKIP_SIDEWAYS = False
+  # Straight forward / backward too, lightly (see rl.anchor).
+  ANCHOR_STRAIGHT_COEFF = 0.3
 
 # Blind joystick policy (see make_wheeled_blind_env_cfg): flat ground first, then stairs.
 register_mjlab_task(

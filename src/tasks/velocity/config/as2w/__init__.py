@@ -8,10 +8,12 @@ from .blind_env_cfgs import unitree_as2w_blind_env_cfg, unitree_as2w_blind_headi
 
 class As2WFlatAnchoredHeadingRunner(AnchoredMirrorVelocityOnPolicyRunner):
   """Anchored on flat ground to the v5 flat model widened for the heading input,
-  sideways commands included."""
+  sideways commands included, straight forward / backward ones at 0.3."""
 
   ANCHOR_CHECKPOINT = "logs/rsl_rl/as2w_blind/2026-10-20_02-01-07_flat_v5_gbrake/model_5300_widened.pt"
   ANCHOR_SKIP_SIDEWAYS = False
+  # Straight forward / backward too, lightly (see rl.anchor).
+  ANCHOR_STRAIGHT_COEFF = 0.3
 
 
 # Blind joystick policy (see make_wheeled_blind_env_cfg): flat ground first, then stairs.

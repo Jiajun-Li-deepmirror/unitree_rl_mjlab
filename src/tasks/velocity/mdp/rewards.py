@@ -421,6 +421,11 @@ class wheel_riser_lift:
   the blind policy of the first Go2W stairs pilot (2026-10-18) stalled at the
   first riser. The contact trigger follows CTBC (arXiv 2509.02986). Requires a
   world-frame contact force.
+
+  With `max_speed_ratio`, a lift while the base moves along the command faster
+  than that times the commanded speed earns nothing (its fraction is used up):
+  paid per riser, the term made Go2W and As2W climb map3 at 1.46x and 1.24x the
+  command (2026-10-21).
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -460,6 +465,7 @@ class wheel_riser_lift:
     margin: float = 0.03,
     min_rise: float = 0.03,
     tolerance: float = 0.02,
+    max_speed_ratio: float | None = None,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
@@ -500,6 +506,13 @@ class wheel_riser_lift:
     fraction = torch.clamp((sole_z - self.start_z) / self.needed, min=0.0, max=1.0)
     gain = torch.where(lifting, torch.clamp(fraction - self.best, min=0.0), 0.0)
     self.best = self.best + gain
+    if max_speed_ratio is not None:
+      command = env.command_manager.get_command(command_name)
+      assert command is not None
+      cmd = command[:, :2]
+      speed = torch.norm(cmd, dim=1)
+      along = (asset.data.root_link_lin_vel_b[:, :2] * cmd).sum(dim=1) / speed.clamp(min=1e-6)
+      gain = torch.where((along > max_speed_ratio * speed)[:, None], 0.0, gain)
     env.extras["log"]["Metrics/wheel_riser_blocked"] = torch.mean(riser.float())
     return torch.sum(gain, dim=1) / env.step_dt
 

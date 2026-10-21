@@ -12,7 +12,14 @@ too (anchor_skip_straight): there the straight_drift reward should improve on th
 teacher, which drifted 3 deg (median) to 10-15 deg (p90) per 10 s at 0.5-1 m/s.
 With anchor_skip_sideways=False only those without a sideways part are: the Go2W
 run that also left out sideways commands lost 15-25% of its sideways speed
-between model_7500 and model_8000 (2026-10-20).
+between model_7500 and model_8000 (2026-10-20). With anchor_straight_coeff > 0
+the left-out samples are anchored too, at that weight. Go2W and As2W stepped (~1
+touchdown per second per foot) when driving straight on flat ground, which their
+flat models did on four wheels (2026-10-21); the stepping comes from the stairs
+training (lifting ahead of risers a blind policy cannot see), and anchoring the
+straight samples at 0.3 only delayed it (Go2W: still on four wheels at model_8100
+with it, stepping at model_8000 without it, stepping again from model_8400). The
+heavier lift penalty of the Go2W / As2W stairs configs stopped it.
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ class AnchoredPPO(PPO):
     anchor_command_slice: tuple[int, int] = (0, 0),
     anchor_skip_straight: bool = True,
     anchor_skip_sideways: bool = True,
+    anchor_straight_coeff: float = 0.0,
     **kwargs,
   ) -> None:
     super().__init__(actor, critic, storage, **kwargs)
@@ -57,6 +65,7 @@ class AnchoredPPO(PPO):
     self.anchor_command = slice(*anchor_command_slice)
     self.anchor_skip_straight = anchor_skip_straight
     self.anchor_skip_sideways = anchor_skip_sideways
+    self.anchor_straight_coeff = anchor_straight_coeff
 
   def update(self) -> dict[str, float]:
     anchor_loss, flat_share = self._anchor_pass()
@@ -71,20 +80,24 @@ class AnchoredPPO(PPO):
       obs = batch.observations
       # Flat ground: every ray of the critic's height scan hits the same height.
       flat = obs["critic"][:, self.anchor_scan].std(dim=1) < self.anchor_flat_std
+      weight = flat.float()
       if self.anchor_skip_straight:
         command = obs["critic"][:, self.anchor_command]
         straight = (command[:, 2].abs() <= 1e-6) & (command[:, :2].norm(dim=1) >= 0.1)
         if not self.anchor_skip_sideways:
           straight &= command[:, 1].abs() <= 1e-6
-        flat &= ~straight
-      flat_count += int(flat.sum())
-      count += flat.numel()
-      if not flat.any():
+        weight = torch.where(straight, weight * self.anchor_straight_coeff, weight)
+      selected = weight > 0
+      flat_count += int(selected.sum())
+      count += selected.numel()
+      if not selected.any():
         continue
-      sub = obs[flat]
+      sub = obs[selected]
+      w = weight[selected]
       with torch.no_grad():
         target = self.teacher(sub)
-      loss = self.anchor_coeff * (self.actor(sub) - target).pow(2).mean()
+      err = (self.actor(sub) - target).pow(2).mean(dim=1)
+      loss = self.anchor_coeff * (w * err).sum() / w.sum()
       self.optimizer.zero_grad()
       loss.backward()
       nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
@@ -101,6 +114,7 @@ class AnchoredMirrorVelocityOnPolicyRunner(MirrorVelocityOnPolicyRunner):
   ANCHOR_CHECKPOINT = ""
   ANCHOR_COEFF = 1.0
   ANCHOR_SKIP_SIDEWAYS = True
+  ANCHOR_STRAIGHT_COEFF = 0.0
 
   def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu"):
     if not self.ANCHOR_CHECKPOINT:
@@ -121,6 +135,7 @@ class AnchoredMirrorVelocityOnPolicyRunner(MirrorVelocityOnPolicyRunner):
       "anchor_checkpoint": self.ANCHOR_CHECKPOINT,
       "anchor_coeff": self.ANCHOR_COEFF,
       "anchor_skip_sideways": self.ANCHOR_SKIP_SIDEWAYS,
+      "anchor_straight_coeff": self.ANCHOR_STRAIGHT_COEFF,
       "anchor_scan_slice": slices["height_scan"],
       "anchor_command_slice": slices["command"],
     }

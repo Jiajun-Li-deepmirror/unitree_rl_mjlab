@@ -42,7 +42,13 @@ def unitree_go2w_blind_env_cfg(play: bool = False, stairs: bool = False) -> Mana
 
 # Stairs (2026-10-20): the stairs task plus the stance-leg tilt term of the legged
 # stairs runs, fine-tuned from the v5 flat model (flat_v5_gbrake model_6997).
-GO2W_BLIND_STAIRS = replace(GO2W_BLIND, stance_tilt_weight=-10.0)
+# Lifted wheels while driving straight on even ground cost 4x: blind, the Go2W and
+# As2W stairs fine-tunes lifted wheels ahead of risers they could not see, and at
+# the default weight -1 went on to step on flat ground at 0.5-1.5 m/s (all four
+# wheels down 1-3% of the time 700 iterations into the first map3 run; 2026-10-21),
+# which their flat models and B2W drove on four wheels. Near risers (uneven ground
+# within 0.45 m of the base) lifting stays free.
+GO2W_BLIND_STAIRS = replace(GO2W_BLIND, stance_tilt_weight=-10.0, drivable_air_weight=-4.0)
 
 
 def unitree_go2w_blind_map3_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:

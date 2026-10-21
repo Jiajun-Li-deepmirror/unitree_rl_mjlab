@@ -582,6 +582,9 @@ class WheeledBlindRobotCfg(BlindRobotCfg):
   """Radius of the wheel collision sphere (m)."""
   wheel_action_scale: float = 5.0
   """Wheel velocity target per unit of action (rad/s)."""
+  drivable_air_weight: float = -1.0
+  """Weight of wheel_air_drivable (lifted wheels while driving straight; on the
+  stairs tasks on even ground only)."""
 
 
 def make_wheeled_blind_env_cfg(
@@ -700,6 +703,7 @@ def make_wheeled_blind_env_cfg(
         "command_name": "twist",
         "command_threshold": 0.1,
         "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES),
+        "max_speed_ratio": 1.1,
       },
     )
   # For the flat shuffle this cost ~0.04 per second, but dragging all wheels
@@ -738,7 +742,7 @@ def make_wheeled_blind_env_cfg(
   if stairs:
     drivable_params["scan_sensor_name"] = "terrain_scan"
   rewards["wheel_air_drivable"] = RewardTermCfg(
-    func=mdp.wheel_air_drivable, weight=-1.0, params=drivable_params
+    func=mdp.wheel_air_drivable, weight=robot.drivable_air_weight, params=drivable_params
   )
   # Turning while driving takes steps. At std 0.45 not turning at 0.15 rad/s
   # cost 0.1 per second, and the fine-tunes often turned at under 40% of
