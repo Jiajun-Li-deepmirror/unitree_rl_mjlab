@@ -33,6 +33,7 @@ from mjlab.entity import Entity
 from src.tasks.velocity.config.legged.blind import blind_collision
 
 SPECS = {
+  "go2": ("src.tasks.velocity.config.go2.blind_env_cfgs", "GO2_SPEC"),
   "go2w": ("src.tasks.velocity.config.go2w.depth_env_cfgs", "GO2W_SPEC"),
   "as2": ("src.tasks.velocity.config.as2.depth_env_cfgs", "AS2_SPEC"),
   "as2w": ("src.tasks.velocity.config.as2w.depth_env_cfgs", "AS2W_SPEC"),
