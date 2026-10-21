@@ -112,6 +112,27 @@ GOAL_SHARE = 0.85
 """Share of the flight's rise that counts as done."""
 TIME_SLACK = 1.25
 """Walking time = this x (approach + goal share of the flight) / commanded speed."""
+BACK_CLEARANCE = 0.65
+"""Room kept behind a spawn, m. F1_entry_X_down's top landing leaves 0.51 m to
+the outer rail: the B2's tail spawned inside it and was thrown down the flight
+(go2-blind found this; 14-19% reached -> 98-100% moved forward)."""
+
+
+def _room_behind(boxes, x: float, y: float, z: float, yaw_deg: float, reach: float) -> float:
+  """Free distance behind (x, y) at body height above the surface z, up to `reach`."""
+  bx, by = -math.cos(math.radians(yaw_deg)), -math.sin(math.radians(yaw_deg))
+  for i in range(1, int(round(reach / 0.01)) + 1):
+    px, py = x + bx * i * 0.01, y + by * i * 0.01
+    for name, s, p in boxes:
+      if (
+        not name.startswith("roof")
+        and abs(px - p[0]) <= s[0]
+        and abs(py - p[1]) <= s[1]
+        and p[2] + s[2] > z + 0.1
+        and p[2] - s[2] < z + 0.6
+      ):
+        return i * 0.01
+  return reach
 
 
 def _surface_z(boxes, x: float, y: float, below: float | None = None, above: float | None = None) -> float:
@@ -161,6 +182,8 @@ def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Sc
       ("up", bottom, z_bottom, yaw_up, up_vx, "climb"),
       ("down", top, z_top, yaw_up + 180.0, down_vx, "descend"),
     ):
+      shift = BACK_CLEARANCE - _room_behind(boxes, x, y, z, yaw, BACK_CLEARANCE)
+      x, y = x + shift * math.cos(math.radians(yaw)), y + shift * math.sin(math.radians(yaw))
       walk = round(float(TIME_SLACK * (APPROACH + GOAL_SHARE * length) / vx), 1)
       scenarios.append(
         Scenario(
