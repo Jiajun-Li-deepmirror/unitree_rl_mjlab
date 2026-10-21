@@ -373,7 +373,10 @@ def run_scenario(args, scenario: Scenario, boxes) -> dict:
         pos = np.array([pos[0], pos[1], 0.5 * (hi_z + lo_z)])
       clipped.append((n, size, pos))
     boxes = clipped
-  env = ManagerBasedRlEnv(cfg=make_env_cfg(task, scenario, boxes, args.num_envs), device="cuda:0")
+  cfg = make_env_cfg(task, scenario, boxes, args.num_envs)
+  if args.wheel_hold_gain is not None:
+    cfg.actions["wheel_vel"].hold_gain = args.wheel_hold_gain
+  env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
   obs, _ = env.reset()
   obs = TensorDict(obs, batch_size=[env.num_envs])
   policy = load_policy(args.policy, args.checkpoint, obs, env.device)
@@ -560,6 +563,10 @@ def main() -> None:
     help="Policy from a heading task (go2-blind d9ed8ba recipe, heading-error input).",
   )
   parser.add_argument("--solid-gaps", action="store_true")
+  parser.add_argument(
+    "--wheel-hold-gain", type=float, default=None,
+    help="Wheeled: hold the wheel angles while braking, velocity target per rad of drift (1/s).",
+  )
   parser.add_argument("--trace", action="store_true", help="Print progress along the flight every second.")
   parser.add_argument(
     "--drop-overhead", action="store_true",

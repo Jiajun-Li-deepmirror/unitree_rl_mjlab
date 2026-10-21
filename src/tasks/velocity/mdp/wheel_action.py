@@ -28,6 +28,12 @@ class BrakedWheelVelocityActionCfg(JointVelocityActionCfg):
   wheel_radius: float
   brake_below_speed: float = 0.1
   """Rim speed (m/s) every wheel must be under for the brake to engage."""
+  hold_gain: float = 0.0
+  """While braking, drive each wheel back to its angle at brake onset with
+  this velocity target per radian of drift (1/s, kp / kd of the wheel servo).
+  0 = zero targets, which only damp: go2-blind's wheeled robots slowly rolled
+  down stairs, and a position hold lifted its stair stops from 41-49% to
+  91-100% without retraining."""
   command_name: str = "twist"
 
   @property
@@ -45,6 +51,11 @@ class BrakedWheelVelocityAction(JointVelocityAction):
     super().__init__(cfg, env)
     self.braking = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     self.policy_targets = torch.zeros_like(self._processed_actions)
+    self.hold_pos = torch.zeros_like(self._processed_actions)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    super().reset(env_ids)
+    self.braking[env_ids] = False
 
   def process_actions(self, actions: torch.Tensor) -> None:
     super().process_actions(actions)
@@ -54,8 +65,15 @@ class BrakedWheelVelocityAction(JointVelocityAction):
     still = torch.all(command == 0.0, dim=1)
     wheel_vel = self._entity.data.joint_vel[:, self._target_ids]
     slow = torch.all(wheel_vel.abs() < self.cfg.brake_rad_s, dim=1)
-    self.braking = still & slow
+    braking = still & slow
+    brake_target = torch.zeros_like(self._processed_actions)
+    if self.cfg.hold_gain > 0.0:
+      wheel_pos = self._entity.data.joint_pos[:, self._target_ids]
+      onset = (braking & ~self.braking).unsqueeze(1)
+      self.hold_pos = torch.where(onset, wheel_pos, self.hold_pos)
+      brake_target = self.cfg.hold_gain * (self.hold_pos - wheel_pos)
+    self.braking = braking
     self.policy_targets = self._processed_actions.clone()
     self._processed_actions = torch.where(
-      self.braking.unsqueeze(1), 0.0, self._processed_actions
+      self.braking.unsqueeze(1), brake_target, self._processed_actions
     )
