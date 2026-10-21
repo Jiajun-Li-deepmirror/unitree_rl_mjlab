@@ -836,9 +836,13 @@ class feet_foothold_height_gain:
   which made the policy run down stairs well above the commanded speed. With
   `overspeed_range=(lo, hi)`, a record is paid in full while the base moves at
   most `lo` m/s faster than commanded, fading to nothing at `hi`. With
-  `max_speed_ratio`, a record set while the base moves along the command faster
-  than that ratio of the commanded speed pays nothing; the record still moves,
-  so rushing loses it for good (go2-blind: 1.1).
+  `max_speed_ratio`, a record pays nothing if the base averaged more than that
+  ratio of the commanded speed along the command since the foot's previous
+  record (its last step); the record still moves, so rushing loses it for good.
+  Averaged because the base speeds up as a foot drops onto the next step:
+  go2-blind's cap on the instantaneous speed (1.1) slowed its Go2 and As2
+  descents from 1.1-1.24x to 0.65-0.67x the command, as the instantaneous gate
+  did to v10.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
@@ -846,11 +850,19 @@ class feet_foothold_height_gain:
     shape = (env.num_envs, num_feet)
     self.best_z = torch.zeros(shape, device=env.device)
     self.has_best = torch.zeros(shape, dtype=torch.bool, device=env.device)
+    # Distance along the command and time since reset, and both at each foot's
+    # last record (`max_speed_ratio`).
+    self.odometer = torch.zeros(env.num_envs, device=env.device)
+    self.clock = torch.zeros(env.num_envs, device=env.device)
+    self.best_odometer = torch.zeros(shape, device=env.device)
+    self.best_clock = torch.zeros(shape, device=env.device)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     if env_ids is None:
       env_ids = slice(None)
     self.has_best[env_ids] = False
+    self.odometer[env_ids] = 0.0
+    self.clock[env_ids] = 0.0
 
   def __call__(
     self,
@@ -886,8 +898,23 @@ class feet_foothold_height_gain:
     gain = torch.where(stable & ~first, foot_z - self.best_z, 0.0)
     record = gain > min_gain
     self.best_z = torch.where(record, foot_z, self.best_z)
+    paid = record
+    if max_speed_ratio is not None:
+      command = env.command_manager.get_command(command_name)
+      assert command is not None
+      cmd = command[:, :2]
+      speed = torch.norm(cmd, dim=1)
+      along = (asset.data.root_link_lin_vel_b[:, :2] * cmd).sum(dim=1) / speed.clamp(min=1e-6)
+      self.odometer += along * env.step_dt
+      self.clock += env.step_dt
+      odometer, clock = self.odometer.unsqueeze(1), self.clock.unsqueeze(1)
+      average = (odometer - self.best_odometer) / (clock - self.best_clock).clamp(min=env.step_dt)
+      paid = record & (average <= max_speed_ratio * speed.unsqueeze(1))
+      mark = first | record
+      self.best_odometer = torch.where(mark, odometer, self.best_odometer)
+      self.best_clock = torch.where(mark, clock, self.best_clock)
     active = ~_zero_command_mask(env, command_name, command_threshold)
-    reward = torch.where(record, gain, 0.0).sum(dim=1) * active.float()
+    reward = torch.where(paid, gain, 0.0).sum(dim=1) * active.float()
     if overspeed_range is not None:
       lo, hi = overspeed_range
       command = env.command_manager.get_command(command_name)
@@ -896,13 +923,6 @@ class feet_foothold_height_gain:
         command[:, :2], dim=1
       )
       reward = reward * torch.clamp((hi - overspeed) / (hi - lo), 0.0, 1.0)
-    if max_speed_ratio is not None:
-      command = env.command_manager.get_command(command_name)
-      assert command is not None
-      cmd = command[:, :2]
-      speed = torch.norm(cmd, dim=1)
-      along = (asset.data.root_link_lin_vel_b[:, :2] * cmd).sum(dim=1) / speed.clamp(min=1e-6)
-      reward = torch.where(along > max_speed_ratio * speed, 0.0, reward)
     return reward / env.step_dt
 
 
