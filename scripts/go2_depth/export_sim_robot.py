@@ -42,6 +42,28 @@ SPECS = {
 }
 
 
+def _wheel_velocity_servos(cfg, xml: str) -> str:
+  """IdealPdActuatorCfg computes its torque in mjlab and leaves a bare torque
+  motor in the MJCF; with zero stiffness (the wheels) it is a velocity servo,
+  torque = damping * (target - velocity), written here as MuJoCo's affine
+  servo so tinynav-sim's control is the velocity target, as for the robots
+  whose wheels were BuiltinVelocityActuatorCfg."""
+  for actuator in cfg.articulation.actuators:
+    base = getattr(actuator, "base_cfg", actuator)
+    if type(base).__name__ != "IdealPdActuatorCfg" or base.stiffness != 0.0:
+      continue
+    kd, effort = float(base.damping), float(base.effort_limit)
+    for pattern in base.target_names_expr:
+      def servo(m: re.Match) -> str:
+        if not re.fullmatch(pattern, m.group(1)):
+          return m.group(0)
+        return (f'<general name="{m.group(1)}" joint="{m.group(1)}" ctrllimited="false" '
+                f'forcelimited="true" forcerange="{-effort:g} {effort:g}" biastype="affine" '
+                f'gainprm="{kd:g}" biasprm="0 0 {-kd:g}"/>')
+      xml = re.sub(r'<general name="([^"]+)" joint="[^"]+"[^>]*/>', servo, xml)
+  return xml
+
+
 def export(robot: str, out: Path) -> None:
   module, attr = SPECS[robot]
   spec = getattr(importlib.import_module(module), attr)
@@ -54,6 +76,7 @@ def export(robot: str, out: Path) -> None:
   xml = re.sub(r' content_type="[^"]*"', "", xml)
   meshes = re.findall(r'<mesh [^>]*file="([^"]+)"', xml)
   xml = re.sub(r'file="([^"]+)\.(obj|stl|STL)"', r'file="\1.msh"', xml)
+  xml = _wheel_velocity_servos(cfg, xml)
 
   commit = subprocess.run(
     ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
