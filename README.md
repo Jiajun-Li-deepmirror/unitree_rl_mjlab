@@ -27,6 +27,8 @@ that walk in every direction on flat ground and go up and down stairs (risers up
 18 cm) without any terrain sensing. The actor sees only the IMU, joint states, the
 command and a heading error (the heading integrated from the commanded yaw rate minus
 the IMU heading), so it walks straight under a forward command with nobody steering.
+The wheel-legged robots drive forward and backward on all four wheels and step only to
+turn, move sideways or climb.
 Training tasks are `Unitree-<Robot>-Blind-Map3-Heading`
 (`src/tasks/velocity/blind_env_cfg.py`).
 
@@ -35,8 +37,8 @@ Training tasks are `Unitree-<Robot>-Blind-Map3-Heading`
 | Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
 | As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
 | B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
-| Go2W | `go2w_blind` stairs_v8_deficit model_9700 | 87.2% / 99.7% | 38 / 44 |
-| As2W | `as2w_blind` stairs_v2_deficit model_6600 | 82.7% / 99.7% | 37 / 44 |
+| Go2W | `go2w_blind` stairs_v10_air model_9497 | 86.8% / 99.0% | 39 / 44 |
+| As2W | `as2w_blind` stairs_v4_air model_8200 | 81.0% / 100.0% | 36 / 44 |
 | B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
 
 map3 flights: share of runs that reach the goal over all 18 flights of the

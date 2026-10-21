@@ -24,6 +24,7 @@ Mjlab 结合了 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 的成熟高�
 Go2、As2、B2 以及轮足 Go2W、As2W、B2W 的摇杆速度策略：在平地上全向行走，能上下楼梯
 （台阶最高 18 cm），不使用任何地形感知。actor 只看 IMU、关节状态、指令和朝向误差
 （指令角速度积分出的目标朝向减去 IMU 朝向），所以只给前进指令、没人修正方向时也能走直。
+轮足机器人前进、后退时四个轮子都着地行驶，只在转弯、横移和上下楼梯时抬腿迈步。
 训练任务是 `Unitree-<机器人>-Blind-Map3-Heading`（`src/tasks/velocity/blind_env_cfg.py`）。
 
 | 机器人 | 最终模型 | map3 楼梯（无 / 有操作员） | 平地指令误差 20% 以内 |
@@ -31,8 +32,8 @@ Go2、As2、B2 以及轮足 Go2W、As2W、B2W 的摇杆速度策略：在平地�
 | Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
 | As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
 | B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
-| Go2W | `go2w_blind` stairs_v8_deficit model_9700 | 87.2% / 99.7% | 38 / 44 |
-| As2W | `as2w_blind` stairs_v2_deficit model_6600 | 82.7% / 99.7% | 37 / 44 |
+| Go2W | `go2w_blind` stairs_v10_air model_9497 | 86.8% / 99.0% | 39 / 44 |
+| As2W | `as2w_blind` stairs_v4_air model_8200 | 81.0% / 100.0% | 36 / 44 |
 | B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
 
 map3 楼梯：[map3](src/assets/terrains/map3) 楼梯间全部 18 段楼梯上下（每段 64 台机器人、
