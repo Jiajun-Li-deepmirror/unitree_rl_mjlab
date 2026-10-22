@@ -38,9 +38,10 @@ AS2_SPEC = LeggedTaskSpec(
   flat_slow_prob=0.3,
   foothold_overspeed_range=None,
   # Seeing the steps, its heading teacher ran down map3 at 3-5x the command
-  # (go2-blind's blind ones ~1.2x): foothold progress capped at 1.1x, on the
-  # speed averaged over each step.
-  foothold_max_speed_ratio=1.1,
+  # (go2-blind's blind ones ~1.2x): foothold progress capped on the speed
+  # averaged over each step. At 1.1x the teacher settled at 0.8x down and
+  # 0.9x up, too slow for map3's time slack; 1.4x aims at the command.
+  foothold_max_speed_ratio=1.4,
 )
 
 

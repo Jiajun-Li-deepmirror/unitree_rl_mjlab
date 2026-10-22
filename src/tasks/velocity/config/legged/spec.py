@@ -111,7 +111,8 @@ class LeggedTaskSpec:
   """A foothold record pays nothing if the base averaged more than this times
   the commanded speed along the command since the foot's previous record
   (mdp.feet_foothold_height_gain). Unlike the gate it leaves speeds near the
-  command alone. None = off."""
+  command alone, but the step averages scatter: policies settle near 0.75x
+  the cap (As2 / B2 at 1.1: 0.78-0.84x down, 0.87-0.94x up). None = off."""
 
   # Front depth camera on `base_body` (tinynav PIE intrinsics for all robots).
   camera_pos: tuple[float, float, float] = depth_mdp.DEPTH_CAMERA_POS
