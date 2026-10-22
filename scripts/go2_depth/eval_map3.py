@@ -147,7 +147,9 @@ def _surface_z(boxes, x: float, y: float, below: float | None = None, above: flo
   return min(t for t in tops if t >= above)
 
 
-def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Scenario]:
+def flight_scenarios(
+  boxes, up_vx: float = 0.5, down_vx: float = 0.4, time_slack: float = TIME_SLACK
+) -> list[Scenario]:
   """Up and down every map3 flight, spawned on its landings (go2-blind's set)."""
   flights: dict[str, list] = {}
   for name, size, pos in boxes:
@@ -184,7 +186,7 @@ def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Sc
     ):
       shift = BACK_CLEARANCE - _room_behind(boxes, x, y, z, yaw, BACK_CLEARANCE)
       x, y = x + shift * math.cos(math.radians(yaw)), y + shift * math.sin(math.radians(yaw))
-      walk = round(float(TIME_SLACK * (APPROACH + GOAL_SHARE * length) / vx), 1)
+      walk = round(float(time_slack * (APPROACH + GOAL_SHARE * length) / vx), 1)
       scenarios.append(
         Scenario(
           f"{flight}_{direction}",
@@ -556,6 +558,10 @@ def main() -> None:
   )
   parser.add_argument("--up-vx", type=float, default=0.5, help="--set flights: climbing command (m/s).")
   parser.add_argument("--down-vx", type=float, default=0.4, help="--set flights: descending command (m/s).")
+  parser.add_argument(
+    "--time-slack", type=float, default=TIME_SLACK,
+    help="--set flights: walking time over the time at the commanded speed.",
+  )
   parser.add_argument("--scenarios", nargs="*", default=None, help="Names to run (default: the whole set).")
   parser.add_argument("--list", action="store_true", help="Print the scenarios and exit.")
   parser.add_argument(
@@ -582,7 +588,7 @@ def main() -> None:
   import src.tasks  # noqa: F401
 
   boxes = _load_map3_boxes(args.map3_dir.expanduser())
-  scenarios = SCENARIOS if args.set == "default" else flight_scenarios(boxes, args.up_vx, args.down_vx)
+  scenarios = SCENARIOS if args.set == "default" else flight_scenarios(boxes, args.up_vx, args.down_vx, args.time_slack)
   if args.list:
     for s in scenarios:
       print(f"{s.name:16s} spawn ({s.spawn[0]:7.2f}, {s.spawn[1]:5.2f}, {s.spawn[2]:6.3f}) "
