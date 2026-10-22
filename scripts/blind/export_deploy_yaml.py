@@ -73,6 +73,12 @@ def main() -> None:
   parser.add_argument("task")
   parser.add_argument("--robot", required=True, choices=sorted(SDK_JOINT_NAMES))
   parser.add_argument("--out", required=True)
+  parser.add_argument(
+    "--gait-march",
+    action="store_true",
+    help="the policy was trained to march in place at the zero command (fifth-round legged "
+    "tasks; detected from a training task's march_prob): writes gait_march: true",
+  )
   args = parser.parse_args()
 
   cfg = load_env_cfg(args.task, play=True)
@@ -145,6 +151,15 @@ def main() -> None:
       # turns slower than brake_below_speed (rad/s), as in training.
       actions[key]["zero_when_command_zero"] = True
       actions[key]["brake_below_speed"] = rnd(term.brake_speed)
+      if term.hold_stiffness > 0.0:
+        # A braked wheel holds its angle with this kp (Nm/rad).
+        actions[key]["brake_hold_kp"] = rnd(term.hold_stiffness)
+      if term.brake_after_s is not None:
+        # Also brake once the command has been zero this long (s).
+        actions[key]["brake_after_s"] = rnd(term.brake_after_s)
+      if term.release_speed_ratio is not None:
+        # A braked wheel lets go only above this times brake_below_speed.
+        actions[key]["brake_release_ratio"] = rnd(term.release_speed_ratio)
 
   observations = {}
   for name, term in actor.terms.items():
@@ -196,6 +211,11 @@ def main() -> None:
     "actions": actions,
     "observations": observations,
   }
+  if args.gait_march or getattr(twist, "march_prob", 0.0) > 0.0:
+    # The controller may run the gait clock at the zero command to march in place
+    # (FSM/ThermalGuard.h march_temp / march_idle_s).
+    assert "phase" in actor.terms, "marching needs the gait clock observation"
+    out["gait_march"] = True
   path = Path(args.out)
   path.parent.mkdir(parents=True, exist_ok=True)
   header = (

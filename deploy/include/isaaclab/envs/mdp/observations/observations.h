@@ -122,13 +122,15 @@ REGISTER_OBSERVATION(velocity_commands)
 
     const float stick[3] = {joystick->ly(), -joystick->lx(), -joystick->rx()};
     const char* keys[3] = {"lin_vel_x", "lin_vel_y", "ang_vel_z"};
+    // A safety guard may scale the command down (see command_scale).
+    const float guard_scale = env->command_scale.load();
     for(int i = 0; i < 3; ++i)
     {
         const float lo = cfg[keys[i]][0].as<float>();
         const float hi = cfg[keys[i]][1].as<float>();
         float v = stick[i];
         if(scale_to_range) v = v >= 0.0f ? v * hi : v * -lo;
-        obs[i] = std::clamp(v, lo, hi);
+        obs[i] = std::clamp(v * guard_scale, lo, hi);
     }
 
     if(scale_to_range)
@@ -187,7 +189,8 @@ REGISTER_OBSERVATION(gait_phase)
     obs[0] = std::sin(env->global_phase * 2 * M_PI);
     obs[1] = std::cos(env->global_phase * 2 * M_PI);
 
-    if (cmd_norm < 0.1f)
+    // Zero while standing; still running while marching in place (env->march).
+    if (cmd_norm < 0.1f && !env->march.load())
     {
         obs[0] = 0.0f;
         obs[1] = 0.0f;

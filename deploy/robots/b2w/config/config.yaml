@@ -33,3 +33,18 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
     policy_dir: config/policy/velocity/blind_v0
+
+# Leg motor thermal guard while the policy runs (include/FSM/ThermalGuard.h):
+# speed scaled by warn_speed_scale at warn_temp, zero command (stand, wheels
+# braked) at stop_temp, Passive (lie down) at critical_temp; each level clears
+# `hysteresis` below its threshold. Unitree's firmware cuts a motor at ~84-85
+# deg C. Logs thermal_<date>_<time>.csv (temperatures, hip angles and torques)
+# to log_dir every log_period s; an empty log_dir turns the log off.
+ThermalGuard:
+  warn_temp: 65
+  stop_temp: 75
+  critical_temp: 80
+  hysteresis: 5
+  warn_speed_scale: 0.5
+  log_period: 0.5
+  log_dir: "."

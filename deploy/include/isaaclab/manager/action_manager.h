@@ -94,6 +94,17 @@ public:
         return std::accumulate(dims.begin(), dims.end(), 0);
     }
 
+    // The first term of type T, or nullptr.
+    template<class T>
+    T* find_term()
+    {
+        for(auto & term : _terms)
+        {
+            if(auto found = dynamic_cast<T*>(term.get())) return found;
+        }
+        return nullptr;
+    }
+
     std::vector<int> action_dim()
     {
         std::vector<int> dims;

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <eigen3/Eigen/Dense>
 #include <yaml-cpp/yaml.h>
 #include "isaaclab/envs/manager_based_rl_env.h"
@@ -111,27 +112,82 @@ public:
         // Optional parking brake (wheels): zero velocity targets while the
         // velocity command (after its deadzone) is zero and every joint of this
         // term turns slower than brake_below_speed (rad/s), as in training.
+        // With brake_hold_kp > 0 a braked joint also holds the angle it had when
+        // the brake engaged: the robot's State_RLBase sends that angle as the
+        // position target with this kp, as hold_stiffness does in training
+        // (BrakedJointVelocityAction). Damping alone lets wheels roll away on
+        // stairs and slopes. Optional, as in training: with brake_release_ratio
+        // the speed limit is that times brake_below_speed once braked (a braked
+        // joint lets go only when pushed) and, with brake_after_s, also once the
+        // command has been zero that long (a policy holding its wheels just above
+        // brake_below_speed on a riser otherwise keeps releasing the brake).
         _zero_when_command_zero = cfg["zero_when_command_zero"].as<bool>(false);
         _brake_below_speed = cfg["brake_below_speed"].as<float>(std::numeric_limits<float>::infinity());
+        _brake_hold_kp = cfg["brake_hold_kp"].as<float>(0.0f);
+        _brake_after_s = cfg["brake_after_s"].as<float>(std::numeric_limits<float>::infinity());
+        _brake_release_ratio = cfg["brake_release_ratio"].as<float>(1.0f);
+        _hold_pos.resize(_action_dim, 0.0f);
     }
 
     void process_actions(std::vector<float> actions) override
     {
         JointAction::process_actions(actions);
-        if(!_zero_when_command_zero) return;
+        const bool brake = _brake_engaged();
+        if(brake) {
+            std::fill(_processed_actions.begin(), _processed_actions.end(), 0.0f);
+            if(!_braked) {
+                const auto & joint_pos = env->robot->data.joint_pos;
+                for(int i(0); i<_action_dim; ++i) {
+                    _hold_pos[i] = joint_pos[_joint_ids.empty() ? i : _joint_ids[i]];
+                }
+            }
+        }
+        // Set after the hold angles: the control thread reads braked() first.
+        _braked = brake;
+    }
+
+    void reset() override
+    {
+        JointAction::reset();
+        _braked = false;
+        _zero_time = 0.0f;
+    }
+
+    // Brake state for the motor commands (read by the control thread).
+    bool braked() const { return _braked; }
+    float brake_hold_kp() const { return _brake_hold_kp; }
+    float hold_pos(int i) const { return _hold_pos[i]; }
+
+private:
+    // Called once per policy step (process_actions).
+    bool _brake_engaged()
+    {
+        if(!_zero_when_command_zero) return false;
         const auto & cmd = env->velocity_command;
-        if(!std::all_of(cmd.begin(), cmd.end(), [](float v) { return v == 0.0f; })) return;
+        if(!std::all_of(cmd.begin(), cmd.end(), [](float v) { return v == 0.0f; })) {
+            _zero_time = 0.0f;
+            return false;
+        }
+        _zero_time += env->step_dt;
+        // Half a step of slack: summed float steps fall just short of whole seconds.
+        const bool wide = _braked || _zero_time >= _brake_after_s - 0.5f * env->step_dt;
+        const float limit = wide ? _brake_release_ratio * _brake_below_speed : _brake_below_speed;
         const auto & joint_vel = env->robot->data.joint_vel;
         for(int i(0); i<_action_dim; ++i) {
             const int id = _joint_ids.empty() ? i : _joint_ids[i];
-            if(std::abs(joint_vel[id]) >= _brake_below_speed) return;
+            if(std::abs(joint_vel[id]) >= limit) return false;
         }
-        std::fill(_processed_actions.begin(), _processed_actions.end(), 0.0f);
+        return true;
     }
 
-private:
     bool _zero_when_command_zero = false;
     float _brake_below_speed = std::numeric_limits<float>::infinity();
+    float _brake_hold_kp = 0.0f;
+    float _brake_after_s = std::numeric_limits<float>::infinity();
+    float _brake_release_ratio = 1.0f;
+    float _zero_time = 0.0f;
+    std::atomic<bool> _braked{false};
+    std::vector<float> _hold_pos;
 };
 
 REGISTER_ACTION(JointPositionAction);
