@@ -967,3 +967,496 @@ def apply_blind_heading(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
     func=mdp.heading_error, params=dict(params)
   )
   return cfg
+
+
+##
+# Second fix round (2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindFixCfg:
+  """Per-robot changes of the second fix round; the defaults change nothing.
+
+  From the diagnostics of the six final models (2026-10-22):
+  - Stopped mid-flight on stairs, the Go2W and B2W rolled away on their wheels
+    (damping-only brake; see BrakedJointVelocityAction.hold_stiffness).
+  - Small commands were under-tracked by the wheeled robots (Go2W turned 56% of
+    (1.0, 0, 0.1), went sideways 77% of (0, 0.15, 0)): at the 0.2 std floor that
+    shortfall costs ~5% of the tracking reward.
+  - Sideways and diagonal commands: As2W 67-80%, Go2 and As2 diagonals 74-80%.
+  - Descents ran at 0.76-0.80x the command (Go2W, As2W) and 1.21-1.24x (As2, B2).
+  - Go2 hit the first riser of the four map3 flights that start with a 20 cm one
+    (18 cm at most in training) with its body: 72-84% with the operator.
+  """
+
+  brake_hold_stiffness: float = 0.0
+  """Wheel brake hold (Nm/rad; see BrakedJointVelocityAction); wheeled only."""
+  min_std: float | None = None
+  """Floor of the speed-scaled linear and yaw tracking std where the task has one
+  (wheeled stairs tasks: 0.2)."""
+  stair_deficit_weight: float | None = None
+  """Weight of stair_speed_deficit (wheeled map3 tasks: -1)."""
+  descent_max_speed_ratio: float | None = None
+  """max_speed_ratio of foothold_height_drop (legged map3 tasks: none)."""
+  vy_mode_boost: float = 0.0
+  """Share of flat commands moved from the combined to the sideways-only mode."""
+  diag_prob: float = 0.0
+  """Share of diagonal flat commands (TerrainAwareVelocityCommandCfg.diag_prob)."""
+  max_step_height: float | None = None
+  """Highest mean rise of the pyramid and walled stairs (0.18 m)."""
+
+
+def apply_blind_fix(
+  cfg: ManagerBasedRlEnvCfg, fix: BlindFixCfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `fix` to a blind config. Without `training` (evaluation tasks of the
+  same policy) only the wheel brake changes: it is part of the controller, also
+  on the robot, while the other changes only shape training."""
+  if fix.brake_hold_stiffness > 0.0:
+    wheel_vel = cfg.actions["wheel_vel"]
+    assert isinstance(wheel_vel, mdp.BrakedJointVelocityActionCfg)
+    wheel_vel.hold_stiffness = fix.brake_hold_stiffness
+  if not training:
+    return cfg
+  rewards = cfg.rewards
+  if fix.min_std is not None:
+    for name in ("track_linear_velocity", "track_angular_velocity"):
+      if rewards[name].params.get("min_std") is not None:
+        rewards[name].params["min_std"] = fix.min_std
+  if fix.stair_deficit_weight is not None:
+    rewards["stair_speed_deficit"].weight = fix.stair_deficit_weight
+  if fix.descent_max_speed_ratio is not None:
+    rewards["foothold_height_drop"].params["max_speed_ratio"] = fix.descent_max_speed_ratio
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, TerrainAwareVelocityCommandCfg)
+  if fix.vy_mode_boost > 0.0:
+    stand, vx, vy, wz, combined = twist.flat_mode_probs
+    twist.flat_mode_probs = (stand, vx, vy + fix.vy_mode_boost, wz, combined - fix.vy_mode_boost)
+  if fix.diag_prob > 0.0:
+    twist.diag_prob = fix.diag_prob
+  if fix.max_step_height is not None:
+    assert cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None
+    for sub in cfg.scene.terrain.terrain_generator.sub_terrains.values():
+      if hasattr(sub, "step_height_range"):
+        sub.step_height_range = (sub.step_height_range[0], fix.max_step_height)
+  return cfg
+
+
+##
+# Hip load (third round, 2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindHipCfg:
+  """Hip-load changes of the third round (user 2026-10-22); see apply_blind_hip.
+
+  Standing and driving on wheels load the hip abduction motors without a break:
+  the feet sit outboard of the hip axes, so the body weight keeps a moment on
+  them, and Unitree's Go2-W controller overheated them to a thermal shutdown
+  (arXiv 2606.21387; the user saw the same on its other robots). Statically
+  (2026-10-22) the hip torque falls about linearly as the hips close in, to near
+  zero with the feet under the hip axes, while the lateral support (half the
+  foot spread over the base height) narrows.
+  """
+
+  hip_default: float
+  """Outward-positive hip angle of the default stance (rad, mirrored left/right):
+  the most closed stance whose static half spread / base height stays >= 0.35
+  (0.42 for the narrowest stance in use, Go2 and B2W)."""
+  torque_ref: float
+  """Static hip torque of the previous default stance (Nm); the torque penalty is
+  (tau / torque_ref)^2 averaged over the hips."""
+  torque_weight: float = -0.2
+  splay_weight: float = -20.0
+  splay_deadband: float = 0.05
+  """Outward hip abduction (rad) beyond the default stance that costs nothing."""
+  splay_inward_deadband: float | None = None
+  """Inward hip adduction (rad) inside the default stance that costs nothing;
+  beyond it the splay penalty applies too (None: tucking in is free)."""
+  wheel_free_splay: float | None = None
+  """Wheeled: lifting a wheel is free while its hip is splayed this far (rad)."""
+  reset_splay_prob: float = 0.0
+  """Share of resets that start with the hips splayed by reset_splay_range (rad)."""
+  reset_splay_range: tuple[float, float] = (0.04, 0.15)
+
+
+def apply_blind_hip(
+  cfg: ManagerBasedRlEnvCfg, hip: BlindHipCfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `hip` to a blind config. The default stance changes for evaluation too:
+  it sets the policy's joint coordinates (observation, action offset) and the
+  deploy default pose; terms keyed to the default stance follow it, e.g.
+  stance_leg_tilt, whose stairs target is the default hip angle. The penalties,
+  the wheel-lift waiver and the splayed resets only shape training."""
+  robot = cfg.scene.entities["robot"]
+  joint_pos = {k: v for k, v in robot.init_state.joint_pos.items() if "hip_joint" not in k}
+  joint_pos[".*L_hip_joint"] = hip.hip_default
+  joint_pos[".*R_hip_joint"] = -hip.hip_default
+  robot.init_state = replace(robot.init_state, joint_pos=joint_pos)
+  if not training:
+    return cfg
+  def hips() -> SceneEntityCfg:  # one per term: a resolved config cannot be reused
+    return SceneEntityCfg("robot", joint_names=(".*_hip_joint",))
+
+  rewards = cfg.rewards
+  rewards["hip_torque"] = RewardTermCfg(
+    func=mdp.hip_torque_sq,
+    weight=hip.torque_weight,
+    params={"actuator_names": (".*_hip_joint",), "torque_ref": hip.torque_ref},
+  )
+  rewards["hip_splay"] = RewardTermCfg(
+    func=mdp.hip_splay,
+    weight=hip.splay_weight,
+    params={"command_name": "twist", "hip_cfg": hips(), "deadband": hip.splay_deadband},
+  )
+  if hip.splay_inward_deadband is not None:
+    rewards["hip_splay"].params["inward_deadband"] = hip.splay_inward_deadband
+  if hip.wheel_free_splay is not None:
+    rewards["wheel_air_drivable"].params |= {"free_splay": hip.wheel_free_splay, "hip_cfg": hips()}
+  if hip.reset_splay_prob > 0.0:
+    # After reset_robot_joints (reset events run in insertion order).
+    cfg.events["reset_hip_splay"] = EventTermCfg(
+      mode="reset",
+      func=mdp.reset_hip_splay,
+      params={"prob": hip.reset_splay_prob, "splay_range": hip.reset_splay_range, "asset_cfg": hips()},
+    )
+  return cfg
+
+
+##
+# Fourth round (2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindR4Cfg:
+  """Fourth-round changes (user 2026-10-22 ~07:30, on the third round's results);
+  see apply_blind_r4. With the stance and splay changes in the robots' BlindHipCfg.
+
+  - Descents: the 1.1 cap of the second round, judged on the base speed at the
+    instant a foot lands (it lurches forward on every step down), slowed Go2 and
+    As2 to 0.63-0.67x the command; judged on each foot's mean speed since its
+    previous record instead (feet_foothold_height_gain `step_average`).
+  - Wheel brake: a policy holding its wheels just above the brake speed on a riser
+    kept releasing the hold (B2W, see BrakedJointVelocityAction).
+  """
+
+  descent_step_average: bool = False
+  """Legged map3 tasks with a descent cap: judge it on the per-foot step mean."""
+  descent_min_gain: float = 0.02
+  """With descent_step_average: least drop (m) that makes a new foothold record."""
+  brake_after_s: float | None = None
+  """Wheeled: BrakedJointVelocityActionCfg.brake_after_s."""
+  brake_release_ratio: float | None = None
+  """Wheeled: BrakedJointVelocityActionCfg.release_speed_ratio."""
+
+
+def apply_blind_r4(
+  cfg: ManagerBasedRlEnvCfg, r4: BlindR4Cfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `r4` to a blind config. The brake changes for evaluation too (it is part
+  of the controller, also on the robot); the descent change only shapes training."""
+  if r4.brake_after_s is not None or r4.brake_release_ratio is not None:
+    wheel_vel = cfg.actions["wheel_vel"]
+    assert isinstance(wheel_vel, mdp.BrakedJointVelocityActionCfg)
+    wheel_vel.brake_after_s = r4.brake_after_s
+    wheel_vel.release_speed_ratio = r4.brake_release_ratio
+  if training and r4.descent_step_average:
+    drop = cfg.rewards["foothold_height_drop"]
+    assert drop.params.get("max_speed_ratio") is not None, "no descent cap to judge"
+    drop.params |= {"step_average": True, "min_gain": r4.descent_min_gain}
+  return cfg
+
+
+##
+# Fifth round (2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindR5Cfg:
+  """Fifth-round changes (user 2026-10-22 ~13:30: the hip motors overheat to a
+  collapse mostly while the robot stands): a rest stance; see apply_blind_r5.
+
+  Standing, the hip torque falls about linearly as the feet come in under the hip
+  axes (step1 stance sweep), and the hip motors cannot be relaxed instead: with
+  their stiffness at zero the body weight pushes the feet apart (Go2W 0.18 rad in
+  5 s). Walking and driving need the wider stance of the fourth round (narrower,
+  As2 and B2 drifted without an operator and the Go2W rolled over backward), but
+  standing still does not: on even ground the robot stands with its hips at
+  `hip_rest`, the stance whose static half foot spread / base height is 0.30 (the
+  walking stances 0.35-0.44), which statically halves the standing hip torque
+  again, and the hip torque costs `standing_torque_scale` times more while the
+  command is zero.
+  """
+
+  hip_rest: float
+  """Outward-positive hip angle of the rest stance (rad, mirrored left/right)."""
+  standing_torque_scale: float = 3.0
+  march_prob: float = 0.0
+  """Legged (gait clock): share of zero commands off the stairs that march in place
+  instead (user 2026-10-22 ~13:35: step in place when idle or the motors run hot,
+  as the Go2-W of arXiv 2606.21387 resets its splayed hips by lifting its feet);
+  the robot's controller decides when to march by running the clock."""
+
+
+def apply_blind_r5(
+  cfg: ManagerBasedRlEnvCfg, r5: BlindR5Cfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `r5` to a blind config with the hip-load terms (apply_blind_hip). Only
+  shapes training: the policy takes the rest stance itself (the default stance,
+  the policy's joint coordinates and the deploy pose stay the walking stance)."""
+  if not training:
+    return cfg
+  rewards = cfg.rewards
+  rewards["pose"].params["rest_hip"] = r5.hip_rest
+  rewards["stand_still_even"].params["rest_hip"] = r5.hip_rest
+  rewards["hip_torque"].params |= {"command_name": "twist", "standing_scale": r5.standing_torque_scale}
+  if r5.march_prob > 0.0:
+    assert "phase" in cfg.observations["actor"].terms, "marching needs the gait clock"
+    cfg.commands["twist"].march_prob = r5.march_prob
+  return cfg
+
+
+##
+# Sixth round (2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindR6Cfg:
+  """Sixth-round changes of the legged robots (user 2026-10-22 ~17:30, on the fifth
+  round's results); see apply_blind_r6. The wheeled robots' change is their stance:
+  the fifth round's rest stance becomes their default (the robots' *_HIP6).
+
+  - Marching in place, the fifth-round policies drifted 41-56 cm in 20 s (Go2,
+    As2, B2; the fourth-round ones as much): a position hold while marching.
+  - Descents: the step-average cap of 1.1 settled Go2 and As2 at 0.69-0.74x the
+    command; go2-depth's As2 / B2 teachers with the same cap at 1.4 descend at
+    0.9-1.0x.
+  """
+
+  descent_max_speed_ratio: float | None = None
+  """New max_speed_ratio of foothold_height_drop (legged map3 tasks with a cap)."""
+  march_hold_weight: float = 0.0
+  """Weight of march_position_hold (standing_position_hold with `march`)."""
+  march_moving_speed: float = 0.25
+  """Its moving_speed (m/s): above the sway of the base marching in place (fifth
+  round: at most 0.15-0.16 m/s, Go2 and As2; B2 0.09)."""
+  march_moving_yaw_rate: float = 0.3
+  """Its moving_yaw_rate (rad/s): above the yaw sway marching in place (at most
+  0.12-0.14 rad/s)."""
+
+
+def apply_blind_r6(
+  cfg: ManagerBasedRlEnvCfg, r6: BlindR6Cfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `r6` to a blind config with the fifth round's terms (apply_blind_r5).
+  Only shapes training."""
+  if not training:
+    return cfg
+  rewards = cfg.rewards
+  if r6.descent_max_speed_ratio is not None:
+    drop = rewards["foothold_height_drop"]
+    assert drop.params.get("max_speed_ratio") is not None, "no descent cap to change"
+    drop.params["max_speed_ratio"] = r6.descent_max_speed_ratio
+  if r6.march_hold_weight != 0.0:
+    assert cfg.commands["twist"].march_prob > 0.0, "no marching to hold"
+    rewards["march_position_hold"] = RewardTermCfg(
+      func=mdp.standing_position_hold,
+      weight=r6.march_hold_weight,
+      params={
+        "command_name": "twist",
+        "march": True,
+        "moving_speed": r6.march_moving_speed,
+        "moving_yaw_rate": r6.march_moving_yaw_rate,
+      },
+    )
+  return cfg
+
+
+##
+# Seventh round (2026-10-22).
+##
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlindR7Cfg:
+  """Seventh-round changes (user 2026-10-22 ~20:40 "六项全做", on the sixth round's
+  results); see apply_blind_r7.
+
+  - Marching in place drifted as much as before (41-62 cm per 20 s): the sixth
+    round's position hold cost ~0.01-0.03 per episode beside ~0.67 for tracking,
+    in 2-5 s march commands that drift only a few cm. Five times the weight, and
+    march commands held 10-20 s.
+  - Standing mid-flight loads the hips about twice as much as on flat ground
+    (B2 49-51 Nm front facing down): more zero commands on the stairs and the
+    standing hip torque cost doubled there.
+  - Descents (Go2, As2) still at 0.77-0.84x the command with the cap at 1.4.
+  - Wheeled robots march in place too (user ~20:35 "把轮式踏步列进第七轮"): the
+    gait clock appended to their observations (widen the checkpoint, see
+    scripts/blind/widen_obs.py), lifting one wheel at a time while told to march,
+    and walking sideways costs heading change like walking straight (Go2W and B2W
+    turned up to 15-16 deg per 10 s sideways, p90).
+  """
+
+  march_hold_weight: float = -50.0
+  march_resampling_time_range: tuple[float, float] = (10.0, 20.0)
+  stair_standing_prob: float = 0.4
+  stairs_torque_scale: float = 2.0
+  """hip_torque_sq uneven_scale: standing on uneven ground costs this much more."""
+  descent_max_speed_ratio: float | None = None
+  wheel_march: bool = False
+  """Wheeled: gait clock observation, march_prob 0.5 and a march-only gait reward."""
+  wheel_gait_period: float = 1.0
+  wheel_gait_offset: tuple[float, ...] = (0.0, 0.5, 0.25, 0.75)
+  """One wheel up at a time (a four-beat walk, 25% swing)."""
+  wheel_gait_threshold: float = 0.75
+  wheel_gait_weight: float = 0.5
+  side_drift_weight: float = 0.0
+  """Wheeled: straight_drift's heading term for pure sideways commands."""
+
+
+def apply_blind_r7(
+  cfg: ManagerBasedRlEnvCfg, r7: BlindR7Cfg, training: bool = True
+) -> ManagerBasedRlEnvCfg:
+  """Apply `r7` to a blind config with the fifth round's terms (apply_blind_r5; the
+  sixth round's for the legged robots). The wheeled gait clock changes the
+  policy's observations, so it applies for evaluation too; the rest only shapes
+  training."""
+  if r7.wheel_march:
+    for group in ("actor", "critic"):
+      terms = cfg.observations[group].terms
+      assert "phase" not in terms, "the legged robots have their gait clock already"
+      terms["phase"] = ObservationTermCfg(
+        func=mdp.phase, params={"period": r7.wheel_gait_period, "command_name": "twist"}
+      )
+  if not training:
+    return cfg
+  rewards = cfg.rewards
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, TerrainAwareVelocityCommandCfg)
+  if r7.wheel_march:
+    twist.march_prob = 0.5
+    rewards["foot_gait"] = RewardTermCfg(
+      func=mdp.feet_gait,
+      weight=r7.wheel_gait_weight,
+      params={
+        "period": r7.wheel_gait_period,
+        "offset": list(r7.wheel_gait_offset),
+        "threshold": r7.wheel_gait_threshold,
+        "command_threshold": 0.1,
+        "command_name": "twist",
+        "sensor_name": "feet_ground_contact",
+        "march_only": True,
+      },
+    )
+  assert twist.march_prob > 0.0, "no marching to hold"
+  twist.march_resampling_time_range = r7.march_resampling_time_range
+  rewards["march_position_hold"] = RewardTermCfg(
+    func=mdp.standing_position_hold,
+    weight=r7.march_hold_weight,
+    params={"command_name": "twist", "march": True, "moving_speed": 0.25, "moving_yaw_rate": 0.3},
+  )
+  twist.stair_standing_prob = r7.stair_standing_prob
+  rewards["hip_torque"].params |= {"uneven_scale": r7.stairs_torque_scale, "sensor_name": "terrain_scan"}
+  if r7.descent_max_speed_ratio is not None:
+    drop = rewards["foothold_height_drop"]
+    assert drop.params.get("max_speed_ratio") is not None, "no descent cap to change"
+    drop.params["max_speed_ratio"] = r7.descent_max_speed_ratio
+  if r7.side_drift_weight != 0.0:
+    rewards["side_drift"] = RewardTermCfg(
+      func=mdp.straight_drift,
+      weight=r7.side_drift_weight,
+      params={"command_name": "twist", "lateral_scale": None, "sideways_only": True},
+    )
+  return cfg
+
+
+##
+# Staged training from scratch (2026-10-22).
+##
+
+
+def apply_blind_staged(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
+  """Train the seventh round's recipe from scratch, the same way for every robot
+  (user 2026-10-22 ~21:10: the fine-tune chains started from different models; stages
+  by weights, every term there from the first step; stairs always there, fewer
+  at first; no map3 in training, which it never had: the walled flights are
+  generated with map3-like parameters and map3 itself is only evaluated).
+
+  Ramps (iterations): stairs 15% of the robots -> the terrain's 65% over 0-6000;
+  drift costs 30% -> 100% and hip torque / splay costs 10% -> 100% over 2000-8000;
+  the rest stance (default -> rest hip angle) and the standing hip torque scale
+  (1 -> x3) over 4000-10000 (no extra cost standing on stairs); marching 5% -> 50% of
+  zero commands off the stairs, its position hold 10% -> 100%, over 6000-12000.
+  Inputs, the default stance and the controller (brake, mirror loss) are final
+  from the start. Training task only: evaluation uses the seventh round's tasks.
+  """
+  rewards = cfg.rewards
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, TerrainAwareVelocityCommandCfg)
+  it = lambda i: i * NUM_STEPS_PER_ENV  # noqa: E731
+  ramps: list[dict] = []
+
+  def weight(name: str, frac: float, a: int, b: int) -> None:
+    w = rewards[name].weight
+    ramps.append({"kind": "reward_weight", "name": name, "start": frac * w, "end": w, "start_step": it(a), "end_step": it(b)})
+
+  def param(name: str, key: str, start: float, a: int, b: int) -> None:
+    end = rewards[name].params[key]
+    ramps.append({"kind": "reward_param", "name": name, "key": key, "start": start, "end": end, "start_step": it(a), "end_step": it(b)})
+
+  for name in ("straight_drift", "side_drift"):
+    if name in rewards:
+      weight(name, 0.3, 2000, 8000)
+  weight("hip_torque", 0.1, 2000, 8000)
+  weight("hip_splay", 0.1, 2000, 8000)
+  param("hip_torque", "standing_scale", 1.0, 4000, 10000)
+  # No extra hip torque cost standing on stairs (user 2026-10-22 ~21:35: robots do not
+  # stand long on stairs); stopping mid-flight stays (stair_standing_prob).
+  rewards["hip_torque"].params["uneven_scale"] = 1.0
+  hip_default = cfg.scene.entities["robot"].init_state.joint_pos[".*L_hip_joint"]
+  for name in ("pose", "stand_still_even"):
+    if rewards[name].params.get("rest_hip") is not None:
+      param(name, "rest_hip", hip_default, 4000, 10000)
+  ramps.append({"kind": "command", "name": "twist", "key": "march_prob", "start": 0.05, "end": twist.march_prob,
+                "start_step": it(6000), "end_step": it(12000)})
+  weight("march_position_hold", 0.1, 6000, 12000)
+  cfg.curriculum["ramps"] = CurriculumTermCfg(func=mdp.ramp_terms, params={"ramps": ramps})
+  # After terrain_levels (it judges the last episode on the old origins).
+  cfg.curriculum["stairs_share"] = CurriculumTermCfg(
+    func=mdp.stairs_share,
+    params={"stair_terrain_names": MAP3_STAIR_TERRAIN_NAMES, "start": 0.15, "end": 0.65, "start_step": 0, "end_step": it(6000)},
+  )
+  return cfg
+
+
+def apply_wheel_stepping_clock(cfg: ManagerBasedRlEnvCfg, training: bool = True) -> ManagerBasedRlEnvCfg:
+  """Wheeled robots of the staged run step to the gait clock wherever they step on
+  flat ground (user 2026-10-22 ~21:30: turning in place and other lifts in the clock's
+  rhythm): the clock runs at the legged robots' 0.6 s, and the gait reward is the
+  legged trot (diagonal pairs, half a period apart left to right) gated to marching
+  and to commands the wheels cannot drive (feet_gait stepping_only), on even ground;
+  stair edges are still lifted over freely. The seventh round's four-beat 1 s march
+  could not step sideways at 0.6 m/s (the stance legs would sweep ~0.45 m)."""
+  for group in ("actor", "critic"):
+    cfg.observations[group].terms["phase"].params["period"] = 0.6
+  if not training:
+    return cfg
+  gait = cfg.rewards["foot_gait"]
+  drivable = cfg.rewards["wheel_air_drivable"].params
+  gait.params = {
+    **gait.params,
+    "period": 0.6,
+    "offset": [0.0, 0.5, 0.5, 0.0],
+    "threshold": 0.56,
+    "march_only": False,
+    "stepping_only": True,
+    "max_lin_vel_y": drivable.get("max_lin_vel_y", 0.1),
+    "max_ang_vel_z": drivable.get("max_ang_vel_z", 0.1),
+    "scan_sensor_name": "terrain_scan",
+  }
+  return cfg

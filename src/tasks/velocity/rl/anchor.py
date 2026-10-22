@@ -20,6 +20,10 @@ training (lifting ahead of risers a blind policy cannot see), and anchoring the
 straight samples at 0.3 only delayed it (Go2W: still on four wheels at model_8100
 with it, stepping at model_8000 without it, stepping again from model_8400). The
 heavier lift penalty of the Go2W / As2W stairs configs stopped it.
+
+With a gait clock in the critic observation (anchor_phase_slice; wheeled robots
+from the seventh round) samples marching in place (zero command, clock running)
+are left out: the flat teacher stands still there, which marching must not.
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ class AnchoredPPO(PPO):
     anchor_skip_straight: bool = True,
     anchor_skip_sideways: bool = True,
     anchor_straight_coeff: float = 0.0,
+    anchor_phase_slice: tuple[int, int] = (0, 0),
     **kwargs,
   ) -> None:
     super().__init__(actor, critic, storage, **kwargs)
@@ -66,6 +71,7 @@ class AnchoredPPO(PPO):
     self.anchor_skip_straight = anchor_skip_straight
     self.anchor_skip_sideways = anchor_skip_sideways
     self.anchor_straight_coeff = anchor_straight_coeff
+    self.anchor_phase = slice(*anchor_phase_slice) if anchor_phase_slice[1] > anchor_phase_slice[0] else None
 
   def update(self) -> dict[str, float]:
     anchor_loss, flat_share = self._anchor_pass()
@@ -87,6 +93,10 @@ class AnchoredPPO(PPO):
         if not self.anchor_skip_sideways:
           straight &= command[:, 1].abs() <= 1e-6
         weight = torch.where(straight, weight * self.anchor_straight_coeff, weight)
+      if self.anchor_phase is not None:
+        command = obs["critic"][:, self.anchor_command]
+        marching = (command.norm(dim=1) <= 1e-6) & (obs["critic"][:, self.anchor_phase].norm(dim=1) > 1e-6)
+        weight = torch.where(marching, 0.0, weight)
       selected = weight > 0
       flat_count += int(selected.sum())
       count += selected.numel()
@@ -138,5 +148,6 @@ class AnchoredMirrorVelocityOnPolicyRunner(MirrorVelocityOnPolicyRunner):
       "anchor_straight_coeff": self.ANCHOR_STRAIGHT_COEFF,
       "anchor_scan_slice": slices["height_scan"],
       "anchor_command_slice": slices["command"],
+      "anchor_phase_slice": slices.get("phase", (0, 0)),
     }
     super().__init__(env, {**train_cfg, "algorithm": algorithm}, log_dir, device)

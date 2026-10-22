@@ -313,6 +313,8 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     self.corridor_offset = torch.zeros(self.num_envs, 2, device=self.device)
     # Commanded planar distance accumulated over the episode (for curricula).
     self.cmd_distance = torch.zeros(self.num_envs, device=self.device)
+    # Zero commands that march in place (see march_prob).
+    self.march = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
   @property
   def is_stair_env(self) -> torch.Tensor:
@@ -342,6 +344,12 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       self.time_left[stair_env_ids] = self.time_left[stair_env_ids].uniform_(
         *self.cfg.stair_resampling_time_range
       )
+    if self.cfg.march_resampling_time_range is not None:
+      march_env_ids = env_ids[self.march[env_ids]]
+      if len(march_env_ids) > 0:
+        self.time_left[march_env_ids] = self.time_left[march_env_ids].uniform_(
+          *self.cfg.march_resampling_time_range
+        )
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     n = len(env_ids)
@@ -390,6 +398,25 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
         [torch.where(back, back_vx, fwd_vx), torch.zeros_like(wz), wz], dim=1
       )
       flat_cmd = torch.where(steer.unsqueeze(1), steer_cmd, flat_cmd)
+    if self.cfg.diag_prob > 0.0:
+      # Diagonal walking (vx and vy, no turn) replaces some moving commands:
+      # the combined mode draws wz as well, so it rarely walks a straight diagonal.
+      p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
+      diag = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.diag_prob / p_moving)
+      back = uniform((0.0, 1.0)) < self.cfg.diag_back_prob
+      lo, hi = self.cfg.diag_vx_range
+      fwd_max, back_max = ranges.lin_vel_x[1], -ranges.lin_vel_x[0]
+      fwd_vx = uniform((min(lo, fwd_max), min(hi, fwd_max)))
+      back_vx = -uniform((min(lo, back_max), min(hi, back_max)))
+      lo, hi = self.cfg.diag_vy_range
+      vy_max = min(ranges.lin_vel_y[1], -ranges.lin_vel_y[0])
+      diag_vy = uniform((min(lo, vy_max), min(hi, vy_max))) * torch.where(
+        uniform((0.0, 1.0)) < 0.5, -1.0, 1.0
+      )
+      diag_cmd = torch.stack(
+        [torch.where(back, back_vx, fwd_vx), diag_vy, torch.zeros_like(diag_vy)], dim=1
+      )
+      flat_cmd = torch.where(diag.unsqueeze(1), diag_cmd, flat_cmd)
 
     # Stair terrain: forward-biased, with extra standing.
     stair_ranges = self.cfg.stair_ranges
@@ -410,6 +437,9 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     cmd = torch.where(is_stair, stair_cmd, flat_cmd)
     # Treat tiny commands as zero; matches the deploy-side stick deadzone.
     cmd *= (torch.norm(cmd, dim=1) > self.cfg.zero_threshold).unsqueeze(1)
+    if self.cfg.march_prob > 0.0:
+      zero = (cmd == 0.0).all(dim=1) & ~is_stair.squeeze(1)
+      self.march[env_ids] = zero & (uniform((0.0, 1.0)) < self.cfg.march_prob)
 
     if not self.cfg.corridor_terrain_names:
       self.vel_command_b[env_ids] = cmd
@@ -490,6 +520,14 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   steer_vx_range: tuple[float, float] = (0.3, 1.5)
   steer_back_prob: float = 0.25
   steer_wz_range: tuple[float, float] = (0.05, 0.4)
+  diag_prob: float = 0.0
+  """Share of flat commands that walk diagonally (vx, vy, 0), taken from the
+  moving modes after the steering ones. |vx| from `diag_vx_range` (backwards with
+  `diag_back_prob`), |vy| from `diag_vy_range` with a random sign, both within
+  `ranges`."""
+  diag_vx_range: tuple[float, float] = (0.3, 1.0)
+  diag_vy_range: tuple[float, float] = (0.2, 0.6)
+  diag_back_prob: float = 0.25
   corridor_terrain_names: tuple[str, ...] = ()
   """Sub-terrain names whose moving commands hold the corridor (see the term)."""
   corridor_heading_gain: float = 1.0
@@ -500,6 +538,14 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   corridor_vy_max: float = 0.2
   stair_resampling_time_range: tuple[float, float] = (1.5, 4.0)
   zero_threshold: float = 0.1
+  march_prob: float = 0.0
+  """Share of zero commands off the stairs that march in place: the gait clock
+  observation keeps running (mdp.phase) and the gait terms apply instead of the
+  standing ones (rewards._command_activity). Deployed, the clock runs at the zero
+  command when the controller asks for marching (e.g. hot hip motors)."""
+  march_resampling_time_range: tuple[float, float] | None = None
+  """How long a march command holds (s); None: like other flat commands (2-5 s,
+  in which the sixth round's position hold saw only a few cm of drift)."""
 
   def build(self, env: ManagerBasedRlEnv) -> TerrainAwareVelocityCommand:
     return TerrainAwareVelocityCommand(self, env)

@@ -12,9 +12,20 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 
 from src.assets.robots import get_b2_robot_cfg
 from src.tasks.velocity.blind_env_cfg import (
+  BlindHipCfg,
+  BlindR4Cfg,
+  BlindR5Cfg,
+  BlindR6Cfg,
+  BlindR7Cfg,
   BlindRobotCfg,
   apply_blind_heading,
+  apply_blind_hip,
   apply_blind_map3,
+  apply_blind_r4,
+  apply_blind_r5,
+  apply_blind_r6,
+  apply_blind_r7,
+  apply_blind_staged,
   apply_blind_straight,
   blind_collision_cfg,
   make_blind_env_cfg,
@@ -125,3 +136,80 @@ def unitree_b2_blind_heading_env_cfg(
   else:
     cfg = unitree_b2_blind_env_cfg(play=play, stairs=terrain == "stairs", robot=B2_BLIND_R1_STAIRS)
   return apply_blind_heading(cfg)
+
+
+# Hip load (third round, user 2026-10-22; see BlindHipCfg): default hips -0.04 rad
+# outward (was +0.10), torque penalty against 30.0 Nm (the static hip torque of the
+# old stance) and the splay penalty.
+B2_HIP = BlindHipCfg(hip_default=-0.04, torque_ref=30.0)
+
+
+def unitree_b2_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """The heading tasks (see unitree_b2_blind_heading_env_cfg) with the hip-load
+  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
+  and "flat" the evaluation tasks of the same policy."""
+  cfg = unitree_b2_blind_heading_env_cfg(play=play, terrain=terrain)
+  return apply_blind_hip(cfg, B2_HIP, training=terrain == "map3")
+
+
+# Fourth round (user 2026-10-22 ~07:30, "减半"): half the third round's stance change
+# (+0.03 rad instead of -0.04; +0.10 before): at -0.04 map3's flights without an
+# operator fell from 98% to 85% (robots drifting into the rails) while the hip
+# torque fell 41-63%. B2 has no descent cap.
+B2_HIP2 = BlindHipCfg(hip_default=0.03, torque_ref=30.0)
+B2_R4 = BlindR4Cfg()
+
+
+def unitree_b2_blind_hip2_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """The fourth round: the heading tasks (see unitree_b2_blind_heading_env_cfg)
+  with B2_HIP2 and B2_R4 (see apply_blind_hip, apply_blind_r4): `terrain` "map3"
+  is the training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+  training = terrain == "map3"
+  cfg = unitree_b2_blind_heading_env_cfg(play=play, terrain=terrain)
+  return apply_blind_r4(apply_blind_hip(cfg, B2_HIP2, training=training), B2_R4, training=training)
+
+
+# Fifth round (user 2026-10-22 ~13:30): standing still on even ground, the rest
+# stance (see BlindR5Cfg; static half foot spread / base height 0.30), and half
+# the zero commands off the stairs march in place.
+B2_R5 = BlindR5Cfg(hip_rest=-0.08, march_prob=0.5)
+
+
+def unitree_b2_blind_rest_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """unitree_b2_blind_hip2_env_cfg with B2_R5 (see apply_blind_r5): `terrain` "map3"
+  is the training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+  cfg = unitree_b2_blind_hip2_env_cfg(play=play, terrain=terrain)
+  return apply_blind_r5(cfg, B2_R5, training=terrain == "map3")
+
+
+# Sixth round (user 2026-10-22 ~17:30, "都做"): a position hold while marching in place
+# (the fifth round drifted 49-56 cm per 20 s); B2 has no descent cap.
+B2_R6 = BlindR6Cfg(march_hold_weight=-10.0)
+
+
+def unitree_b2_blind_rest2_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """unitree_b2_blind_rest_env_cfg with B2_R6 (see apply_blind_r6): `terrain` "map3"
+  is the training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+  cfg = unitree_b2_blind_rest_env_cfg(play=play, terrain=terrain)
+  return apply_blind_r6(cfg, B2_R6, training=terrain == "map3")
+
+
+# Seventh round (user 2026-10-22 ~20:40, "六项全做"; see BlindR7Cfg): march position hold x5 in
+# 10-20 s march commands, more stops on stairs with their standing hip torque cost
+# doubled; no descent cap.
+B2_R7 = BlindR7Cfg()
+
+
+def unitree_b2_blind_rest3_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """unitree_b2_blind_rest2_env_cfg with B2_R7 (see apply_blind_r7): `terrain` "map3"
+  is the training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+  cfg = unitree_b2_blind_rest2_env_cfg(play=play, terrain=terrain)
+  return apply_blind_r7(cfg, B2_R7, training=terrain == "map3")
+
+
+def unitree_b2_blind_scratch_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """unitree_b2_blind_rest3_env_cfg trained from scratch with ramped weights (see
+  apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
+  training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+  cfg = unitree_b2_blind_rest3_env_cfg(play=play, terrain=terrain)
+  return apply_blind_staged(cfg) if terrain == "map3" else cfg

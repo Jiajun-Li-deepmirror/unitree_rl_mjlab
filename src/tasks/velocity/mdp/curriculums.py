@@ -157,3 +157,85 @@ def reward_params(
       reward_term_cfg.params.update(stage["params"])
   staged_keys = {key for stage in param_stages for key in stage["params"]}
   return {key: torch.tensor(reward_term_cfg.params[key]) for key in staged_keys}
+
+
+def _ramp(step: int, start: float, end: float, start_step: int, end_step: int) -> float:
+  """`start` until `start_step`, then linearly to `end` at `end_step`."""
+  if end_step <= start_step:
+    return end if step >= end_step else start
+  t = min(max((step - start_step) / (end_step - start_step), 0.0), 1.0)
+  return start + t * (end - start)
+
+
+def ramp_terms(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  ramps: list[dict],
+) -> dict[str, torch.Tensor]:
+  """Set reward weights, reward params and command settings by training step.
+
+  Every term is in the task from the first step; this only moves its strength
+  (user 2026-10-22: stages by weights, not recipes that appear at some
+  iteration). Each ramp is {"kind": "reward_weight" | "reward_param" | "command",
+  "name": reward term or command term, "key": param or attribute (not for
+  reward_weight), "start", "end", "start_step", "end_step"}; values go linearly
+  from start to end between the two steps (env steps: iterations x
+  steps per env).
+  """
+  del env_ids  # Unused.
+  step = env.common_step_counter
+  out = {}
+  for r in ramps:
+    value = _ramp(step, r["start"], r["end"], r["start_step"], r["end_step"])
+    if r["kind"] == "reward_weight":
+      env.reward_manager.get_term_cfg(r["name"]).weight = value
+      label = f"{r['name']}.weight"
+    elif r["kind"] == "reward_param":
+      env.reward_manager.get_term_cfg(r["name"]).params[r["key"]] = value
+      label = f"{r['name']}.{r['key']}"
+    elif r["kind"] == "command":
+      setattr(env.command_manager.get_term(r["name"]).cfg, r["key"], value)
+      label = f"{r['name']}.{r['key']}"
+    else:
+      raise ValueError(f"ramp kind {r['kind']!r}")
+    out[label] = torch.tensor(value)
+  return out
+
+
+def stairs_share(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  stair_terrain_names: tuple[str, ...],
+  start: float,
+  end: float,
+  start_step: int,
+  end_step: int,
+) -> dict[str, torch.Tensor]:
+  """Move resetting robots between stair and other terrain columns so that a
+  share of them, ramped by training step, trains on stairs.
+
+  The stairs are there from the first step, at `start` of the robots (user
+  2026-10-22: never without stairs, fewer at first), rising to `end`. Each
+  resetting robot draws stairs with that probability and a random column of its
+  kind; its difficulty row stays (terrain_levels runs first and has set it).
+  """
+  from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
+
+  terrain = env.scene.terrain
+  assert terrain is not None and terrain.terrain_origins is not None
+  mask = sub_terrain_column_mask(env, stair_terrain_names)
+  assert mask is not None and mask.any() and (~mask).any(), "need stair and other columns"
+  p = _ramp(env.common_step_counter, start, end, start_step, end_step)
+  if len(env_ids) > 0:
+    stair_cols = mask.nonzero().flatten()
+    other_cols = (~mask).nonzero().flatten()
+    n = len(env_ids)
+    on_stairs = torch.rand(n, device=env.device) < p
+    pick_s = stair_cols[torch.randint(len(stair_cols), (n,), device=env.device)]
+    pick_o = other_cols[torch.randint(len(other_cols), (n,), device=env.device)]
+    terrain.terrain_types[env_ids] = torch.where(on_stairs, pick_s, pick_o)
+    terrain.env_origins[env_ids] = terrain.terrain_origins[
+      terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]
+    ]
+  share = mask[terrain.terrain_types].float().mean()
+  return {"target": torch.tensor(p), "share": share}

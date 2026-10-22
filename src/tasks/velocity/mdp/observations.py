@@ -50,6 +50,11 @@ def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Ten
     phase[:, 0] = torch.sin(global_phase * torch.pi * 2.0)
     phase[:, 1] = torch.cos(global_phase * torch.pi * 2.0)
     stand_mask = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) < 0.1
+    # The clock also runs for a robot told to march in place (zero command; see
+    # TerrainAwareVelocityCommandCfg.march_prob): the deploy side runs it to step.
+    march = getattr(env.command_manager.get_term(command_name), "march", None)
+    if march is not None:
+        stand_mask = stand_mask & ~march
     phase = torch.where(stand_mask.unsqueeze(1), torch.zeros_like(phase), phase)
     return phase
 

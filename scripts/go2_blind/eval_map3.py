@@ -126,6 +126,29 @@ GOAL_SHARE = 0.85
 """Share of the flight's rise that counts as done."""
 TIME_SLACK = 1.25
 """Walking time = this x (approach + goal share of the flight) / commanded speed."""
+BACK_CLEARANCE = 0.65
+"""Least distance from a spawn back to a rail (m). The F1 entry's top landing left
+0.51 m: the B2 (its rear 0.55-0.6 m behind the base) spawned into the west rail,
+was thrown down the flight and reached 16%; moved 0.10-0.15 m forward, 98-100%
+(2026-10-22). Spawns closer than this move forward."""
+
+
+def _rail_behind(boxes, x: float, y: float, z: float, yaw_deg: float, reach: float = 1.0) -> float:
+  """Distance (m) back from (x, y) to the nearest rail between z + 0.1 and
+  z + 0.9 m (body height), checked along three lines across a 0.5 m wide body;
+  `reach` if none."""
+  back = np.array((-math.cos(math.radians(yaw_deg)), -math.sin(math.radians(yaw_deg))))
+  left = np.array((-back[1], back[0]))
+  rails = [
+    (s, p) for name, s, p in boxes
+    if name.startswith("rail") and p[2] + s[2] > z + 0.1 and p[2] - s[2] < z + 0.9
+  ]
+  for d in np.arange(0.0, reach, 0.01):
+    for w in (-0.25, 0.0, 0.25):
+      px, py = np.array((x, y)) + back * d + left * w
+      if any(abs(px - p[0]) <= s[0] and abs(py - p[1]) <= s[1] for s, p in rails):
+        return float(d)
+  return reach
 
 
 def _surface_z(boxes, x: float, y: float, below: float | None = None, above: float | None = None) -> float:
@@ -175,6 +198,10 @@ def flight_scenarios(boxes, up_vx: float = 0.5, down_vx: float = 0.4) -> list[Sc
       ("up", bottom, z_bottom, yaw_up, up_vx, "climb"),
       ("down", top, z_top, yaw_up + 180.0, down_vx, "descend"),
     ):
+      gap = _rail_behind(boxes, x, y, z, yaw)
+      if gap < BACK_CLEARANCE:
+        x += math.cos(math.radians(yaw)) * (BACK_CLEARANCE - gap)
+        y += math.sin(math.radians(yaw)) * (BACK_CLEARANCE - gap)
       walk = round(float(TIME_SLACK * (APPROACH + GOAL_SHARE * length) / vx), 1)
       scenarios.append(
         Scenario(

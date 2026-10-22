@@ -89,3 +89,30 @@ def reset_root_state_terrain_aware(
     torch.cat([positions, orientations], dim=-1), env_ids=env_ids
   )
   asset.write_root_link_velocity_to_sim(velocities, env_ids=env_ids)
+
+
+def reset_hip_splay(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  prob: float,
+  splay_range: tuple[float, float],
+  asset_cfg: SceneEntityCfg,
+) -> None:
+  """Open the hips of a `prob` share of the reset robots outward by the same angle
+  from `splay_range` (rad; asset_cfg holds the hip joints). Run after the joint
+  reset. Rolling on, wheeled legs splay out over minutes (2026-10-22), far longer
+  than an episode: this starts robots splayed so the policy learns to return.
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+  asset: Entity = env.scene[asset_cfg.name]
+  ids = asset_cfg.joint_ids
+  names = [asset.joint_names[i] for i in ids]
+  side = torch.tensor([1.0 if n[1] == "L" else -1.0 for n in names], device=env.device)
+  n = len(env_ids)
+  pick = (torch.rand(n, device=env.device) < prob).float().unsqueeze(1)
+  splay = sample_uniform(*splay_range, (n, 1), env.device) * pick * side
+  joint_ids = torch.tensor(ids, device=env.device) if isinstance(ids, list) else ids
+  joint_pos = asset.data.joint_pos[env_ids][:, ids] + splay
+  joint_vel = asset.data.joint_vel[env_ids][:, ids]
+  asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids)
