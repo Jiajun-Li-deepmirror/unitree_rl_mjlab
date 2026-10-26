@@ -24,7 +24,6 @@ def reset_root_state_terrain_aware(
   stair_terrain_names: tuple[str, ...],
   stair_yaw_noise: float = math.radians(15.0),
   velocity_range: dict[str, tuple[float, float]] | None = None,
-  fixed_yaw_terrain_names: tuple[str, ...] = (),
   narrow_terrain_names: tuple[str, ...] = (),
   narrow_xy_range: float = 0.1,
   narrow_yaw_noise: float | None = None,
@@ -33,12 +32,10 @@ def reset_root_state_terrain_aware(
   """Like reset_root_state_uniform, but faces stair envs toward a staircase side.
 
   Pyramid stairs are axis-aligned, so stair envs get yaw = k * 90 deg plus
-  noise; other envs use `pose_range["yaw"]`. Envs on `fixed_yaw_terrain_names`
-  get yaw 0 plus noise (single-direction stairwells). Envs on
-  `narrow_terrain_names` (walled corridors) get x/y noise of only
-  +-`narrow_xy_range`, and with `narrow_yaw_noise` that yaw noise instead of
-  `stair_yaw_noise` (lined up with the flight, as an operator would start a
-  robot that must walk it uncorrected; go2-blind 2026-10-20).
+  noise; other envs use `pose_range["yaw"]`. Envs on `narrow_terrain_names`
+  (walled corridors) get x/y noise of only +-`narrow_xy_range`, and with
+  `narrow_yaw_noise` that yaw noise instead of `stair_yaw_noise` (lined up with
+  the flight, as an operator would start a robot that must walk it uncorrected).
   """
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
@@ -56,14 +53,10 @@ def reset_root_state_terrain_aware(
 
   on_stairs = spawned_on_sub_terrain(env, stair_terrain_names)[env_ids.long()]
   side = torch.randint(0, 4, (len(env_ids),), device=env.device).float()
-  stair_base = side * (math.pi / 2)
-  stair_noise = sample_uniform(
+  stair_yaw = side * (math.pi / 2) + sample_uniform(
     -stair_yaw_noise, stair_yaw_noise, (len(env_ids),), device=env.device
   )
-  if fixed_yaw_terrain_names:
-    fixed_yaw = spawned_on_sub_terrain(env, fixed_yaw_terrain_names)[env_ids.long()]
-    stair_base = torch.where(fixed_yaw, 0.0, stair_base)
-  pose_samples[:, 5] = torch.where(on_stairs, stair_base + stair_noise, pose_samples[:, 5])
+  pose_samples[:, 5] = torch.where(on_stairs, stair_yaw, pose_samples[:, 5])
   if narrow_terrain_names:
     narrow = spawned_on_sub_terrain(env, narrow_terrain_names)[env_ids.long()]
     pose_samples[:, 0:2] = torch.where(
@@ -73,7 +66,8 @@ def reset_root_state_terrain_aware(
     )
     if narrow_yaw_noise is not None:
       # The same draw, scaled: no extra random numbers.
-      narrow_yaw = stair_base + stair_noise * (narrow_yaw_noise / stair_yaw_noise)
+      base = side * (math.pi / 2)
+      narrow_yaw = base + (stair_yaw - base) * (narrow_yaw_noise / stair_yaw_noise)
       pose_samples[:, 5] = torch.where(narrow, narrow_yaw, pose_samples[:, 5])
 
   positions = root_states[:, 0:3] + pose_samples[:, 0:3] + env.scene.env_origins[env_ids]
@@ -95,3 +89,61 @@ def reset_root_state_terrain_aware(
     torch.cat([positions, orientations], dim=-1), env_ids=env_ids
   )
   asset.write_root_link_velocity_to_sim(velocities, env_ids=env_ids)
+
+
+def reset_hip_splay(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  prob: float,
+  splay_range: tuple[float, float],
+  asset_cfg: SceneEntityCfg,
+) -> None:
+  """Open the hips of a `prob` share of the reset robots outward by the same angle
+  from `splay_range` (rad; asset_cfg holds the hip joints). Run after the joint
+  reset. Rolling on, wheeled legs splay out over minutes (2026-10-22), far longer
+  than an episode: this starts robots splayed so the policy learns to return.
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+  asset: Entity = env.scene[asset_cfg.name]
+  ids = asset_cfg.joint_ids
+  names = [asset.joint_names[i] for i in ids]
+  side = torch.tensor([1.0 if n[1] == "L" else -1.0 for n in names], device=env.device)
+  n = len(env_ids)
+  pick = (torch.rand(n, device=env.device) < prob).float().unsqueeze(1)
+  splay = sample_uniform(*splay_range, (n, 1), env.device) * pick * side
+  joint_ids = torch.tensor(ids, device=env.device) if isinstance(ids, list) else ids
+  joint_pos = asset.data.joint_pos[env_ids][:, ids] + splay
+  joint_vel = asset.data.joint_vel[env_ids][:, ids]
+  asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids)
+
+
+def push_by_setting_velocity_marked(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  velocity_range: dict[str, tuple[float, float]],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  march_skip_prob: float = 0.0,
+  command_name: str = "twist",
+) -> None:
+  """mjlab's push_by_setting_velocity that also stamps each pushed env with the
+  step counter (env._push_step) for terms that excuse a pushed robot
+  (standing_position_hold with `push_window`). With `march_skip_prob`, a robot
+  marching in place (the command term's march flag) skips each push with that
+  probability, so its march hold often charges a whole march undisturbed, as the
+  20 s march acceptance measures."""
+  from mjlab.envs.mdp.events import push_by_setting_velocity
+
+  if march_skip_prob > 0.0:
+    march = getattr(env.command_manager.get_term(command_name), "march", None)
+    if march is not None:
+      skip = march[env_ids] & (torch.rand(len(env_ids), device=env.device) < march_skip_prob)
+      env_ids = env_ids[~skip]
+      if len(env_ids) == 0:
+        return
+  push_by_setting_velocity(env, env_ids, velocity_range, asset_cfg)
+  stamp = getattr(env, "_push_step", None)
+  if stamp is None:
+    stamp = torch.full((env.num_envs,), -(10**9), dtype=torch.long, device=env.device)
+    env._push_step = stamp
+  stamp[env_ids] = env.common_step_counter

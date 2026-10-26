@@ -6,8 +6,6 @@ from mjlab.rl import (
   RslRlPpoAlgorithmCfg,
 )
 
-from src.tasks.velocity.config.legged.rl_cfg import depth_student_runner_cfg
-
 
 def unitree_go2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree Go2 velocity task."""
@@ -48,22 +46,37 @@ def unitree_go2_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   )
 
 
-def unitree_go2_blind_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
-  """Create RL runner configuration for the Unitree Go2 blind velocity tasks."""
+def unitree_go2_blind_ppo_runner_cfg(
+  max_iterations: int, entropy_coef: float = 0.01
+) -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for the Unitree Go2 blind velocity tasks.
+
+  The map3 fine-tune halves `entropy_coef`: the end of the stage 2 run (from
+  ~19100 iterations) diverged with the action std growing 0.50 -> 0.62.
+  """
   cfg = unitree_go2_ppo_runner_cfg()
   cfg.experiment_name = "go2_blind"
   cfg.logger = "tensorboard"
   cfg.max_iterations = max_iterations
-  return cfg
-
-
-def unitree_go2_depth_teacher_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunnerCfg:
-  """PPO for the depth task's privileged teacher (go2-blind + height scan)."""
-  cfg = unitree_go2_blind_ppo_runner_cfg(max_iterations)
-  cfg.experiment_name = "go2_depth_teacher"
+  cfg.algorithm.entropy_coef = entropy_coef
   return cfg
 
 
 def unitree_go2_depth_student_runner_cfg():
-  """DAgger distillation of the depth student from the teacher."""
-  return depth_student_runner_cfg("go2", "go2_depth_v2")
+  """DAgger distillation of the depth student from the depth teacher's actor
+  (go2-depth's depth_student_runner_cfg; contract go2_depth_v2_heading: the
+  proprio carries the heading error last)."""
+  from src.tasks.velocity.rl.distillation import DepthDistillationRunnerCfg
+
+  return DepthDistillationRunnerCfg(
+    experiment_name="go2_depth_student",
+    logger="tensorboard",
+    num_steps_per_env=24,
+    max_iterations=8000,
+    save_interval=100,
+    obs_groups={
+      "student": ("proprio", "proprio_history", "depth"),
+      "teacher": ("actor",),
+    },
+    onnx_contract="go2_depth_v2_heading",
+  )
