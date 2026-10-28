@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 #include <limits>
+#include <string>
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/envs/mdp/terminations.h"
 
@@ -18,8 +19,10 @@ public:
         running = false;
         if (thread.joinable()) thread.join();
     }
+    // guard: after each step, a reason to stop the policy (the state then goes to Passive), or "".
     void start(isaaclab::ManagerBasedRLEnv* env, std::function<void()> before_step = {},
-               std::function<void(double)> after_step = {}, long max_steps = std::numeric_limits<long>::max()) {
+               std::function<void(double)> after_step = {}, long max_steps = std::numeric_limits<long>::max(),
+               std::function<std::string()> guard = {}) {
         stop();
         fault = false;
         steps = 0;
@@ -30,7 +33,7 @@ public:
                            env->robot->data.joint_pos.data() + env->robot->data.joint_pos.size());
         }
         running = true;
-        thread = std::thread([this, env, before_step, after_step, max_steps] {
+        thread = std::thread([this, env, before_step, after_step, max_steps, guard] {
             const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<double>(env->step_dt));
             auto next = std::chrono::steady_clock::now();
@@ -48,6 +51,13 @@ public:
                         command = std::move(action);
                     }
                     if (isaaclab::mdp::bad_orientation(env, 1.0)) fault = true;
+                    if (guard) {
+                        auto reason = guard();
+                        if (!reason.empty()) {
+                            spdlog::warn("Fall guard: {} at step {}; damping", reason, env->episode_length);
+                            fault = true;
+                        }
+                    }
                     last_update = now();
                     if (after_step) after_step(std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
                     next += period;

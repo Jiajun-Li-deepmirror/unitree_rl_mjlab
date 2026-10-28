@@ -101,6 +101,7 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
     motion = motion_;
     window = std::make_unique<MotionWindow>(
         cfg["time_start"].as<float>(0.0f), cfg["time_end"].as<float>(motion_->duration), motion_->duration);
+    guard = FallGuard(cfg["fall_guard"]);
     std::string end_state = "Velocity";
     if (cfg["end_state"]) {
         end_state = cfg["end_state"].as<std::string>();
@@ -133,6 +134,7 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
 
 void State_Mimic::enter()
 {
+    guard.reset();
     motion = motion_;
     motion->update_frame(window->first_frame);
     env->reset();
@@ -179,7 +181,10 @@ void State_Mimic::enter()
             for (float o : env->last_observation.at("obs")) trace << ',' << o;
             trace << "\n";
         }
-    }, window->frame_count);
+    }, window->frame_count, [this] {
+        return guard.check(robot_quat_w(env.get()), motion_anchor_quat_w(motion), env->robot->data.root_quat_w,
+                           env->robot->data.joint_pos, motion->joint_pos(), env->robot->data.joint_vel);
+    });
 }
 
 void State_Mimic::run()

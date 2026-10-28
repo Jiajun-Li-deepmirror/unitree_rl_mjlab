@@ -15,9 +15,17 @@ Usage:
 foot friction) so several envs give a robustness spread instead of identical runs.
 Reference time and initial joints remain fixed in both modes. The first policy
 step is evaluated, including any real termination on that step.
+
+Robustness checks before hardware can add what training already sees or what
+the real robot adds:
+  --pushes      keep the training task's interval pushes (play mode drops them)
+  --obs-noise   keep the training task's actor observation noise
+  --latency-ms  hold every joint target back by this delay, quantized to physics
+                steps, as a fixed control-loop latency
 """
 import argparse
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -80,7 +88,9 @@ def video_legend(frame, t, cmd):
   return np.asarray(image)
 
 
-def prepare_eval_cfg(cfg, motion, num_envs, randomize, seed):
+def prepare_eval_cfg(cfg, motion, num_envs, randomize, seed, push=None, obs_noise=False,
+                     latency_steps=0):
+  """push: the training task's push event to keep (play configs drop it)."""
   cfg.seed = seed
   cfg.scene.num_envs = num_envs
   cfg.episode_length_s = int(1e9)
@@ -90,12 +100,39 @@ def prepare_eval_cfg(cfg, motion, num_envs, randomize, seed):
   cmd.pose_range = {}
   cmd.velocity_range = {}
   cmd.joint_position_range = (0.0, 0.0)
-  cfg.observations["actor"].enable_corruption = False
+  cfg.observations["actor"].enable_corruption = obs_noise
   cfg.events.pop("push_robot", None)
   if not randomize:
     cfg.events = {}
+  if push is not None:
+    cfg.events["push_robot"] = copy.deepcopy(push)
+  if latency_steps:
+    delay_actuators(cfg, latency_steps)
   return cfg
 
+
+def delay_actuators(cfg, steps):
+  """Apply each joint target `steps` physics steps late, like a slow control loop."""
+  from mjlab.actuator import DelayedActuatorCfg
+  robot = cfg.scene.entities["robot"]
+  # Replace, not edit: the articulation config can be shared with other task configs.
+  robot.articulation = dataclasses.replace(robot.articulation, actuators=tuple(
+    DelayedActuatorCfg(base_cfg=a, delay_target="position", delay_min_lag=steps, delay_max_lag=steps)
+    for a in robot.articulation.actuators))
+
+
+
+def restart_delays(env):
+  """Start each delayed actuator's history from the first real joint target.
+
+  Resetting writes a zero joint target, and a delay buffer would replay it for
+  the whole delay, pulling every joint toward 0 rad at the start. A real robot
+  keeps holding its previous command instead.
+  """
+  from mjlab.actuator import DelayedActuator
+  for actuator in env.scene["robot"].actuators:
+    if isinstance(actuator, DelayedActuator):
+      actuator.reset()
 
 
 def rollout(venv, policy, on_step=None):
@@ -107,6 +144,7 @@ def rollout(venv, policy, on_step=None):
   terminations, samples = [], []
 
   venv.reset()
+  restart_delays(env)
   initialize_reference_targets(cmd)
   obs = venv.get_observations()
   if on_step:
@@ -214,9 +252,15 @@ def main():
   ap.add_argument("--trajectory", help="save synchronized joint/foot/force samples to NPZ plus a leg tracking plot")
   ap.add_argument("--reference-overlay", action=argparse.BooleanOptionalAction, default=True,
                   help="overlay the current reference in translucent light blue (default: enabled)")
+  ap.add_argument("--pushes", action="store_true", help="keep the training task's interval pushes")
+  ap.add_argument("--obs-noise", action="store_true", help="keep the training task's actor observation noise")
+  ap.add_argument("--latency-ms", type=float, default=0.0,
+                  help="fixed delay of every joint target, quantized to physics steps")
   args = ap.parse_args()
   if args.num_envs < 1 or not np.isfinite(args.bin) or args.bin <= 0:
     ap.error("--num-envs and --bin must be positive")
+  if not np.isfinite(args.latency_ms) or args.latency_ms < 0:
+    ap.error("--latency-ms must be zero or positive")
   if args.video:
     os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -226,8 +270,16 @@ def main():
   from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
   device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
-  cfg = prepare_eval_cfg(load_env_cfg(args.task, play=True), args.motion,
-                         args.num_envs, args.randomize, args.seed)
+  cfg = load_env_cfg(args.task, play=True)
+  physics_dt = cfg.sim.mujoco.timestep
+  latency_steps = int(round(args.latency_ms / 1000 / physics_dt))
+  push = None
+  if args.pushes:
+    push = load_env_cfg(args.task).events.get("push_robot")
+    if push is None:
+      ap.error(f"{args.task} has no push_robot event to keep")
+  cfg = prepare_eval_cfg(cfg, args.motion, args.num_envs, args.randomize, args.seed,
+                         push=push, obs_noise=args.obs_noise, latency_steps=latency_steps)
   with np.load(args.motion, allow_pickle=False) as motion:
     motion_fps = np.asarray(motion["fps"]).reshape(-1)
     expected_fps = 1.0 / (cfg.sim.mujoco.timestep * cfg.decimation)
@@ -270,6 +322,10 @@ def main():
     "checkpoint_sha256": hashlib.sha256(pathlib.Path(args.checkpoint).read_bytes()).hexdigest(),
     "motion_sha256": hashlib.sha256(pathlib.Path(args.motion).read_bytes()).hexdigest(),
     "randomize": args.randomize, "seed": args.seed, "motion_duration_s": duration,
+    "perturbations": {"pushes": args.pushes, "obs_noise": args.obs_noise,
+                      "latency_physics_steps": latency_steps,
+                      "latency_ms": latency_steps * physics_dt * 1000,
+                      "push_velocity_range": push.params["velocity_range"] if push else None},
     "completed_envs": completed,
     "physical_diagnostics": artifacts.report(),
     "limb_diagnostics": summarize(diagnostics.data()),

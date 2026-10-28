@@ -2,6 +2,7 @@
 #include "FSM/State_RLBase.h"
 #include "MotionClip.h"
 #include "PolicyWorker.h"
+#include "FallGuard.h"
 #include <fstream>
 
 class State_Mimic : public FSMState {
@@ -17,6 +18,7 @@ private:
     std::shared_ptr<MotionLoader_> motion_;
     std::unique_ptr<MotionWindow> window;
     PolicyWorker worker;
+    FallGuard guard;
     std::ofstream trace;
 };
 REGISTER_FSM(State_Mimic)

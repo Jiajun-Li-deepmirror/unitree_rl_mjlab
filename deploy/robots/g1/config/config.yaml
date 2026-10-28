@@ -13,6 +13,15 @@ FSM:
     Jojo:
       id: 5
       type: Mimic
+    Dance1:
+      id: 6
+      type: Mimic
+    Dance2:
+      id: 7
+      type: Mimic
+    Dance3:
+      id: 8
+      type: Mimic
 
 
 
@@ -71,6 +80,9 @@ FSM:
       Passive: LT + B.on_pressed
       HandShake: RB + A.on_pressed
       Jojo: RB + Y.on_pressed
+      Dance1: RB + up.on_pressed
+      Dance2: RB + left.on_pressed
+      Dance3: RB + right.on_pressed
 
     policy_dir: config/policy/velocity
 
@@ -89,5 +101,32 @@ FSM:
       Velocity: RB + X.on_pressed
     policy_dir: ../../../../../output/jojo/deploy/jojo
     motion_file: ../../../../../output/jojo/deploy/jojo/params/jojo.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance1:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance1/deploy/dance1
+    motion_file: ../../../../../output/dance1/deploy/dance1/params/dance1.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance2:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance2/deploy/dance2
+    motion_file: ../../../../../output/dance2/deploy/dance2/params/dance2.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance3:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance3/deploy/dance3
+    motion_file: ../../../../../output/dance3/deploy/dance3/params/dance3.npz
     time_start: 0.0
     end_state: Velocity

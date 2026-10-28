@@ -173,3 +173,41 @@ def unitree_g1_step_tracking_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
             "body_names": ("left_ankle_roll_link", "right_ankle_roll_link"), "swing_height": .05})
   cfg.rewards["measured_foot_contact_slip"].weight = -3.0
   return cfg
+
+
+def unitree_g1_tight_leg_tracking_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Fourth experiment: Step-Rewards policies shrink the legs' motion.
+
+  On the video-fit references (2026-10-28) the legs were the worst-tracked group,
+  4.6 deg mean in dance2-3: the ankles rolled 64-71% as far as the reference and
+  the hips pitched 71-81% as far. The leg joint term's 0.25 rad std still pays 85%
+  at a 0.1 rad error, so closing it earns little. The tight term pays 37% there
+  and 78% at 0.05 rad.
+  """
+  from mjlab.managers.reward_manager import RewardTermCfg
+  from src.tasks.tracking import mdp
+  cfg = unitree_g1_step_tracking_env_cfg(play=play)
+  cfg.rewards["motion_leg_joint_pos_tight"] = RewardTermCfg(
+    func=mdp.motion_joint_position_error_exp, weight=1.0,
+    params={"command_name": "motion", "std": .10,
+            "joint_names": cfg.rewards["motion_leg_joint_pos"].params["joint_names"]})
+  return cfg
+
+
+def unitree_g1_tight_leg_latency_tracking_env_cfg(max_latency_ms: float, play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Tight-Legs with one control latency per episode, as Step-Rewards-Latency."""
+  from src.tasks.tracking.latency import with_episode_latency
+  cfg = unitree_g1_tight_leg_tracking_env_cfg(play=play)
+  return cfg if play else with_episode_latency(cfg, max_latency_ms)
+
+
+def unitree_g1_step_latency_tracking_env_cfg(max_latency_ms: float, play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Step-Rewards trained with one control latency per episode, drawn from [0, max_latency_ms].
+
+  Step-Rewards policies tracked well without delay but fell at 20-40 ms in the
+  pre-hardware robustness sweep (2026-10-22). Play mode stays undelayed: the
+  evaluation adds its own fixed latency.
+  """
+  from src.tasks.tracking.latency import with_episode_latency
+  cfg = unitree_g1_step_tracking_env_cfg(play=play)
+  return cfg if play else with_episode_latency(cfg, max_latency_ms)

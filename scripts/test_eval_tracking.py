@@ -17,7 +17,7 @@ class RolloutTests(unittest.TestCase):
   def wrapper(self, fail_first=False):
     cmd = SimpleNamespace(motion=SimpleNamespace(joint_pos=torch.zeros(4, 29)),
                           metrics={"error_body_pos": torch.zeros(1)}, _update_metrics=lambda: None)
-    env = SimpleNamespace(num_envs=1, step_dt=0.02,
+    env = SimpleNamespace(num_envs=1, step_dt=0.02, scene={"robot": SimpleNamespace(actuators=[])},
                           command_manager=SimpleNamespace(get_term=lambda _: cmd),
                           termination_manager=SimpleNamespace(
                             active_terms=["ee_body_pos"],
@@ -92,6 +92,81 @@ class ConfigTests(unittest.TestCase):
       if randomize:
         self.assertTrue(all(event.mode == "startup" for event in cfg.events.values()))
 
+  def test_robustness_options_keep_pushes_and_noise_and_delay_every_actuator(self):
+    import src.tasks  # noqa: F401
+    from mjlab.actuator import DelayedActuatorCfg
+    from mjlab.tasks.registry import load_env_cfg
+    plain = ev.prepare_eval_cfg(load_env_cfg(ev.TASK, play=True), "motion.npz", 2, True, 17)
+    self.assertFalse(plain.observations["actor"].enable_corruption)
+    self.assertFalse(any(isinstance(a, DelayedActuatorCfg)
+                         for a in plain.scene.entities["robot"].articulation.actuators))
+    push = load_env_cfg(ev.TASK).events["push_robot"]
+    cfg = ev.prepare_eval_cfg(load_env_cfg(ev.TASK, play=True), "motion.npz", 2, False, 17,
+                              push=push, obs_noise=True, latency_steps=4)
+    self.assertEqual(list(cfg.events), ["push_robot"])
+    self.assertEqual(cfg.events["push_robot"].mode, "interval")
+    self.assertTrue(cfg.observations["actor"].enable_corruption)
+    actuators = cfg.scene.entities["robot"].articulation.actuators
+    self.assertTrue(actuators)
+    for a in actuators:
+      self.assertIsInstance(a, DelayedActuatorCfg)
+      self.assertEqual((a.delay_min_lag, a.delay_max_lag), (4, 4))
+
+
+def standing_motion(directory):
+  """A standing fixture from forward kinematics; no historical dance data or policy needed."""
+  import mujoco
+  import numpy as np
+  sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motion_extraction"))
+  from g1_defaults import DEFAULT_DOF, DEFAULT_ROOT_Z
+  from validate_motion import DEFAULT_XML
+  model = mujoco.MjModel.from_xml_path(str(DEFAULT_XML))
+  data = mujoco.MjData(model)
+  data.qpos[:7] = [0, 0, DEFAULT_ROOT_Z, 1, 0, 0, 0]
+  data.qpos[7:] = DEFAULT_DOF
+  mujoco.mj_forward(model, data)
+  motion = Path(directory) / "standing.npz"
+  n, b = 50, model.nbody - 1
+  np.savez(motion, fps=np.array([50.0]),
+           joint_pos=np.tile(data.qpos[7:], (n, 1)), joint_vel=np.zeros((n, model.nv - 6)),
+           body_pos_w=np.tile(data.xpos[1:], (n, 1, 1)),
+           body_quat_w=np.tile(data.xquat[1:], (n, 1, 1)),
+           body_lin_vel_w=np.zeros((n, b, 3)), body_ang_vel_w=np.zeros((n, b, 3)))
+  return str(motion)
+
+
+class CpuLatencyTests(unittest.TestCase):
+  def test_delayed_targets_reach_the_actuators_one_control_step_late(self):
+    import src.tasks  # noqa: F401
+    from mjlab.envs import ManagerBasedRlEnv
+    from mjlab.rl import RslRlVecEnvWrapper
+    from mjlab.tasks.registry import load_env_cfg
+    tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(tmp.cleanup)
+    motion = standing_motion(tmp.name)
+    ctrl = {}
+    for steps in (0, 4):  # 4 physics steps = one 20 ms control step
+      env = ManagerBasedRlEnv(cfg=ev.prepare_eval_cfg(load_env_cfg(ev.TASK, play=True), motion, 1,
+                                                      False, 42, latency_steps=steps), device="cpu")
+      try:
+        venv = RslRlVecEnvWrapper(env)
+        venv.reset()
+        ev.restart_delays(env)
+        ev.initialize_reference_targets(env.command_manager.get_term("motion"))
+        venv.step(torch.zeros((1, 29)))
+        before = env.sim.data.ctrl.clone()
+        venv.step(torch.full((1, 29), 0.5))
+        ctrl[steps] = (before, env.sim.data.ctrl.clone())
+      finally:
+        env.close()
+    undelayed_before, undelayed_after = ctrl[0]
+    delayed_before, delayed_after = ctrl[4]
+    self.assertGreater((undelayed_after - undelayed_before).abs().max().item(), 1e-3)
+    # The first target is held from the start (not the zero target written while resetting).
+    torch.testing.assert_close(delayed_before, undelayed_before)
+    # The new target was sent, but the delayed actuators still apply the previous one.
+    torch.testing.assert_close(delayed_after, delayed_before)
+
 
 class CpuResetTests(unittest.TestCase):
   @classmethod
@@ -100,28 +175,10 @@ class CpuResetTests(unittest.TestCase):
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import RslRlVecEnvWrapper
     from mjlab.tasks.registry import load_env_cfg
-    # Build a standing fixture from forward kinematics; no historical dance
-    # data or downloaded policy is needed for these regression tests.
-    import mujoco
-    import numpy as np
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "motion_extraction"))
-    from g1_defaults import DEFAULT_DOF, DEFAULT_ROOT_Z
-    from validate_motion import DEFAULT_XML
-    model = mujoco.MjModel.from_xml_path(str(DEFAULT_XML))
-    data = mujoco.MjData(model)
-    data.qpos[:7] = [0, 0, DEFAULT_ROOT_Z, 1, 0, 0, 0]
-    data.qpos[7:] = DEFAULT_DOF
-    mujoco.mj_forward(model, data)
     tmp = tempfile.TemporaryDirectory()
     cls.addClassCleanup(tmp.cleanup)
-    motion = Path(tmp.name) / "standing.npz"
-    n, b = 50, model.nbody - 1
-    np.savez(motion, fps=np.array([50.0]),
-             joint_pos=np.tile(data.qpos[7:], (n, 1)), joint_vel=np.zeros((n, model.nv - 6)),
-             body_pos_w=np.tile(data.xpos[1:], (n, 1, 1)),
-             body_quat_w=np.tile(data.xquat[1:], (n, 1, 1)),
-             body_lin_vel_w=np.zeros((n, b, 3)), body_ang_vel_w=np.zeros((n, b, 3)))
-    cfg = ev.prepare_eval_cfg(load_env_cfg(ev.TASK, play=True), str(motion), 2, False, 42)
+    motion = standing_motion(tmp.name)
+    cfg = ev.prepare_eval_cfg(load_env_cfg(ev.TASK, play=True), motion, 2, False, 42)
     cls.env = ManagerBasedRlEnv(cfg=cfg, device="cpu")
     cls.venv = RslRlVecEnvWrapper(cls.env)
     cls.cmd = cls.env.command_manager.get_term("motion")
