@@ -167,6 +167,100 @@ def _ramp(step: int, start: float, end: float, start_step: int, end_step: int) -
   return start + t * (end - start)
 
 
+class _GatedClock:
+  """Schedule clock that follows the env step counter while training goes well and
+  stops while it does not (user 2026-10-23: ramp by iteration, but pause when a
+  robot falls behind): the share of episodes ending in a fall (EMA over resets)
+  above `max_fall_rate`, or the mean terrain level dropping more than
+  `level_drop` below its slow average (robots demoted on the stairs). Paused, it
+  still runs at `min_rate` so a robot that never gets there is not stuck for good.
+  Created at the current step (a resumed run continues its schedule there).
+
+  With a walk gate it stands still until the robots walk (see staged_clock); a
+  resumed run has walked already and starts walking."""
+
+  def __init__(self, step: int):
+    self.value = step
+    self.last_step = step
+    self.fall_rate = 0.0
+    self.level_fast = None
+    self.level_slow = None
+    self.paused = False
+    self.track_ratio = None
+    self.walking = step > 0
+
+
+def _clock(env: ManagerBasedRlEnv) -> int:
+  """The schedule's step: the gated clock if staged_clock runs, else the env step."""
+  clock = getattr(env, "_staged_clock", None)
+  return env.common_step_counter if clock is None else clock.value
+
+
+def staged_clock(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  max_fall_rate: float = 0.1,
+  level_drop: float | None = 0.2,
+  fall_alpha: float = 0.02,
+  fast_alpha: float = 0.05,
+  slow_alpha: float = 0.005,
+  min_rate: float = 0.25,
+  walk_ratio: float | None = None,
+  walk_alpha: float = 0.05,
+  command_name: str = "twist",
+) -> dict[str, torch.Tensor]:
+  """Advance the gated schedule clock (see _GatedClock); put it before the terms
+  that read it (ramp_terms, stairs_share) and after terrain_levels. With
+  `level_drop` None only falls pause it (while the stairs share rises, robots moved
+  from high flat rows onto stairs are demoted as they should be).
+
+  With `walk_ratio` the clock does not move until the robots walk (2026-10-23: the
+  phased B2 teacher never started; its schedule raised the swing, hip and drift
+  costs from iteration 500, B2 first walks at ~550 with them light): the planar
+  tracking error over the commanded distance of the episodes that end (EMA) has
+  once come down to `walk_ratio` (standing still: ~1; walking legged robots
+  0.5-0.6, wheeled 0.7)."""
+  clock = getattr(env, "_staged_clock", None)
+  # The first call comes from the env's first reset, before a resumed run loads its
+  # step counter; the counter then jumps by thousands of iterations (a fresh run's
+  # calls are at most an episode apart), so start the clock again there.
+  if clock is None or env.common_step_counter - clock.last_step > 24 * 1000:
+    clock = env._staged_clock = _GatedClock(env.common_step_counter)  # type: ignore[attr-defined]
+  if len(env_ids) > 0:
+    tm = env.termination_manager
+    fell = (tm.terminated[env_ids] & ~tm.time_outs[env_ids]).float().mean().item()
+    clock.fall_rate += fall_alpha * (fell - clock.fall_rate)
+  if walk_ratio is not None and not clock.walking and len(env_ids) > 0:
+    cmd = env.command_manager.get_term(command_name)
+    commanded = cmd.cmd_distance[env_ids].sum().item()
+    if commanded > 0.0:
+      # error_vel_xy sums the planar error per step over the longest command (steps).
+      err = cmd.metrics["error_vel_xy"][env_ids].sum().item() * cmd.cfg.resampling_time_range[1]
+      ratio = err / commanded
+      clock.track_ratio = ratio if clock.track_ratio is None else clock.track_ratio + walk_alpha * (ratio - clock.track_ratio)
+      clock.walking = clock.track_ratio <= walk_ratio
+  terrain = env.scene.terrain
+  level = float(terrain.terrain_levels.float().mean()) if terrain is not None and terrain.terrain_levels is not None else 0.0
+  clock.level_fast = level if clock.level_fast is None else clock.level_fast + fast_alpha * (level - clock.level_fast)
+  clock.level_slow = level if clock.level_slow is None else clock.level_slow + slow_alpha * (level - clock.level_slow)
+  demoted = level_drop is not None and clock.level_fast < clock.level_slow - level_drop
+  clock.paused = clock.fall_rate > max_fall_rate or demoted
+  step = env.common_step_counter
+  rate = 0.0 if walk_ratio is not None and not clock.walking else min_rate if clock.paused else 1.0
+  clock.value += rate * (step - clock.last_step)
+  clock.last_step = step
+  out = {
+    "iteration": torch.tensor(clock.value / 24.0),
+    "paused": torch.tensor(float(clock.paused)),
+    "fall_rate": torch.tensor(clock.fall_rate),
+    "level": torch.tensor(clock.level_fast),
+  }
+  if walk_ratio is not None:
+    out["walking"] = torch.tensor(float(clock.walking))
+    out["track_ratio"] = torch.tensor(clock.track_ratio if clock.track_ratio is not None else float("nan"))
+  return out
+
+
 def ramp_terms(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -183,7 +277,7 @@ def ramp_terms(
   steps per env).
   """
   del env_ids  # Unused.
-  step = env.common_step_counter
+  step = _clock(env)
   out = {}
   for r in ramps:
     value = _ramp(step, r["start"], r["end"], r["start_step"], r["end_step"])
@@ -225,7 +319,7 @@ def stairs_share(
   assert terrain is not None and terrain.terrain_origins is not None
   mask = sub_terrain_column_mask(env, stair_terrain_names)
   assert mask is not None and mask.any() and (~mask).any(), "need stair and other columns"
-  p = _ramp(env.common_step_counter, start, end, start_step, end_step)
+  p = _ramp(_clock(env), start, end, start_step, end_step)
   if len(env_ids) > 0:
     stair_cols = mask.nonzero().flatten()
     other_cols = (~mask).nonzero().flatten()

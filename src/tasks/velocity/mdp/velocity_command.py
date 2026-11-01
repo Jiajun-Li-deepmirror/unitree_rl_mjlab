@@ -284,6 +284,17 @@ class UniformVelocityCommandCfg(CommandTermCfg):
       )
 
 
+def _range_share(cmd: torch.Tensor, ranges: UniformVelocityCommandCfg.Ranges) -> torch.Tensor:
+  """Largest share of a (vx, vy, wz) command's parts of their range limits on
+  their side (a negative part over the lower limit)."""
+  share = torch.zeros(len(cmd), device=cmd.device)
+  for k, (lo, hi) in enumerate((ranges.lin_vel_x, ranges.lin_vel_y, ranges.ang_vel_z)):
+    v = cmd[:, k]
+    part = torch.where(v >= 0.0, v / max(hi, 1e-6), v / min(lo, -1e-6))
+    share = torch.maximum(share, part)
+  return share
+
+
 class TerrainAwareVelocityCommand(UniformVelocityCommand):
   """Joystick-style velocity command with a separate distribution on stairs.
 
@@ -329,6 +340,9 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     )
 
   def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+    if self.cfg.stop_after_fast_prob > 0.0:
+      # A new episode's first command does not follow the last episode's.
+      self.vel_command_b[env_ids] = 0.0
     extras = super().reset(env_ids)
     self.cmd_distance[env_ids] = 0.0
     return extras
@@ -350,11 +364,19 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
         self.time_left[march_env_ids] = self.time_left[march_env_ids].uniform_(
           *self.cfg.march_resampling_time_range
         )
+    if self.cfg.stand_resampling_time_range is not None:
+      stand = (self.vel_command_b[env_ids] == 0.0).all(dim=1) & ~self.march[env_ids]
+      stand_env_ids = env_ids[stand & ~self.is_stair_env[env_ids]]
+      if len(stand_env_ids) > 0:
+        self.time_left[stand_env_ids] = self.time_left[stand_env_ids].uniform_(
+          *self.cfg.stand_resampling_time_range
+        )
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     n = len(env_ids)
     if n == 0:
       return
+    previous = self.vel_command_b[env_ids].clone()
 
     def uniform(bounds: tuple[float, float]) -> torch.Tensor:
       return torch.empty(n, device=self.device).uniform_(*bounds)
@@ -393,6 +415,11 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       fwd_max, back_max = ranges.lin_vel_x[1], -ranges.lin_vel_x[0]
       fwd_vx = uniform((min(lo, fwd_max), min(hi, fwd_max)))
       back_vx = -uniform((min(lo, back_max), min(hi, back_max)))
+      if self.cfg.steer_slow_prob > 0.0:
+        slow = uniform((0.0, 1.0)) < self.cfg.steer_slow_prob
+        slo, shi = self.cfg.steer_slow_vx_range
+        fwd_vx = torch.where(slow, uniform((slo, shi)), fwd_vx)
+        back_vx = torch.where(slow, -uniform((slo, shi)), back_vx)
       wz = uniform(self.cfg.steer_wz_range) * torch.where(uniform((0.0, 1.0)) < 0.5, -1.0, 1.0)
       steer_cmd = torch.stack(
         [torch.where(back, back_vx, fwd_vx), torch.zeros_like(wz), wz], dim=1
@@ -417,6 +444,29 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
         [torch.where(back, back_vx, fwd_vx), diag_vy, torch.zeros_like(diag_vy)], dim=1
       )
       flat_cmd = torch.where(diag.unsqueeze(1), diag_cmd, flat_cmd)
+    if self.cfg.fast_side_prob > 0.0:
+      # Fast sideways walking (vy only, near its limit, either way) replaces some
+      # moving commands, so the stand that stop_after_fast puts after it is seen
+      # more often (see fast_side_prob).
+      p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
+      side = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.fast_side_prob / p_moving)
+      share = uniform(self.cfg.fast_side_share)
+      side_vy = torch.where(
+        uniform((0.0, 1.0)) < 0.5, share * ranges.lin_vel_y[1], share * ranges.lin_vel_y[0]
+      )
+      side_cmd = torch.stack([torch.zeros_like(side_vy), side_vy, torch.zeros_like(side_vy)], dim=1)
+      flat_cmd = torch.where(side.unsqueeze(1), side_cmd, flat_cmd)
+    if self.cfg.fast_spin_prob > 0.0:
+      # Turning in place near the wz limit (either way) right after a stand (see
+      # fast_spin_prob).
+      still = (previous == 0.0).all(dim=1)
+      spin = still & (uniform((0.0, 1.0)) < self.cfg.fast_spin_prob)
+      share = uniform(self.cfg.fast_spin_share)
+      spin_wz = torch.where(
+        uniform((0.0, 1.0)) < 0.5, share * ranges.ang_vel_z[1], share * ranges.ang_vel_z[0]
+      )
+      spin_cmd = torch.stack([torch.zeros_like(spin_wz), torch.zeros_like(spin_wz), spin_wz], dim=1)
+      flat_cmd = torch.where(spin.unsqueeze(1), spin_cmd, flat_cmd)
 
     # Stair terrain: forward-biased, with extra standing.
     stair_ranges = self.cfg.stair_ranges
@@ -440,6 +490,12 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     if self.cfg.march_prob > 0.0:
       zero = (cmd == 0.0).all(dim=1) & ~is_stair.squeeze(1)
       self.march[env_ids] = zero & (uniform((0.0, 1.0)) < self.cfg.march_prob)
+    if self.cfg.stop_after_fast_prob > 0.0:
+      # A fast flat command ends in a stand more often (see stop_after_fast_prob).
+      fast = _range_share(previous, ranges) >= self.cfg.stop_after_fast_share
+      stop = fast & ~is_stair.squeeze(1) & (uniform((0.0, 1.0)) < self.cfg.stop_after_fast_prob)
+      cmd[stop] = 0.0
+      self.march[env_ids[stop]] = False
 
     if not self.cfg.corridor_terrain_names:
       self.vel_command_b[env_ids] = cmd
@@ -520,6 +576,10 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   steer_vx_range: tuple[float, float] = (0.3, 1.5)
   steer_back_prob: float = 0.25
   steer_wz_range: tuple[float, float] = (0.05, 0.4)
+  steer_slow_prob: float = 0.0
+  """Share of the steering commands whose |vx| comes from `steer_slow_vx_range`
+  instead (slow arcs, which a wheeled robot walks rather than drives)."""
+  steer_slow_vx_range: tuple[float, float] = (0.1, 0.3)
   diag_prob: float = 0.0
   """Share of flat commands that walk diagonally (vx, vy, 0), taken from the
   moving modes after the steering ones. |vx| from `diag_vx_range` (backwards with
@@ -546,6 +606,36 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   march_resampling_time_range: tuple[float, float] | None = None
   """How long a march command holds (s); None: like other flat commands (2-5 s,
   in which the sixth round's position hold saw only a few cm of drift)."""
+  stop_after_fast_prob: float = 0.0
+  """Probability that a flat command following a fast one (see
+  `stop_after_fast_share`) is a stand instead (no march). Stopping from the top
+  of the range is otherwise rare: B2 v8g (2026-10-26) fell after stopping from
+  0.6 m/s sideways at some gait phases (8-11 of 96 robots there, 0 from 0.45),
+  where about 1 flat command in 300 is a sideways one above 0.5 m/s followed by
+  a stand."""
+  stop_after_fast_share: float = 0.75
+  """A command is fast when one of its parts is at least this share of its
+  `ranges` limit on that side."""
+  fast_side_prob: float = 0.0
+  """Share of flat commands that walk sideways only at `fast_side_share` of the vy
+  limit (either way), taken from the moving modes after the diagonal ones. B2
+  feetedge (2026-10-31) fell after stopping from 0.6 m/s to its left at one gait
+  phase (6-11 of 512; none to its right): stuck on its two left feet with both
+  right feet up, it rolled over 1-2 s later. With stop_after_fast_prob 0.5 about
+  1 flat command in 60 was a stand after fast sideways walking (either way)."""
+  fast_side_share: tuple[float, float] = (0.75, 1.0)
+  fast_spin_prob: float = 0.0
+  """Probability that a flat command after a stand turns in place at
+  `fast_spin_share` of the wz limit (either way). B2 feetedge (2026-10-31) fell
+  1-2 of 256 spinning up to 1.5 rad/s from a standstill in most checks from 9000 on
+  (spin_diag.py: 1 of 512 at 1.72 s, illegal contact, foot friction 0.31), where
+  about 1 flat command in 90 was such a spin-up."""
+  fast_spin_share: tuple[float, float] = (0.75, 1.0)
+  stand_resampling_time_range: tuple[float, float] | None = None
+  """How long a zero command off the stairs that does not march holds (s); None:
+  like other flat commands. The stop acceptance watches 6 s at zero after a
+  command; the position hold's charge for a slow creep grows with the time
+  standing, which 2-5 s cut short."""
 
   def build(self, env: ManagerBasedRlEnv) -> TerrainAwareVelocityCommand:
     return TerrainAwareVelocityCommand(self, env)

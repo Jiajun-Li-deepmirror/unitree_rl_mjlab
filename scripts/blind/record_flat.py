@@ -10,7 +10,7 @@ ground, its current clearance and the peak height of its last lift, and at the z
 command the time to stop and the drift since 2 s after the release (wheeled robots:
 also the parking brake state).
 
-  python scripts/blind/record_flat.py --task Unitree-As2-Blind-Flat --foot-radius 0.028 \
+  python scripts/blind/record_flat.py --task Unitree-As2-Blind-Flat-Scratch --foot-radius 0.028 \
     logs/rsl_rl/as2_blind/<run>/model_N.pt --out flat.mp4 --title "As2 model_N"
 
 --foot-radius (alias --wheel-radius) is the radius of the foot sphere / wheel, so
@@ -55,6 +55,18 @@ SEGMENTS = [
   ("后退 1.0 m/s", (-1.0, 0.0, 0.0), 3.0),
   ("松杆：从后退 1.0 m/s 停下（零指令）", (0.0, 0.0, 0.0), 6.0),
 ]
+# The posture reset (v8, user 2026-10-24 ~23:20: marching in place puts a stance that drifted in or out back to
+# the default): the hips are turned 8 deg out, later in, while standing, and a 5 s march sets the feet back.
+# Prepended with --reset-demo.
+SPLAY = math.radians(8.0)
+RESET_SEGMENTS = [
+  ("髋瞬间向外撇 8°，站着（模拟站久后外撇）", (0.0, 0.0, 0.0), 3.0, {"splay": SPLAY}),
+  ("原地踏步 5 s：复位", (0.0, 0.0, 0.0), 5.0, {"march": True}),
+  ("站立", (0.0, 0.0, 0.0), 3.0, {}),
+  ("髋瞬间向内收 8°，站着（模拟站久后内收）", (0.0, 0.0, 0.0), 3.0, {"splay": -SPLAY}),
+  ("原地踏步 5 s：复位", (0.0, 0.0, 0.0), 5.0, {"march": True}),
+  ("站立", (0.0, 0.0, 0.0), 3.0, {}),
+]
 FPS = 25
 VIEW_W, VIEW_H, BAR_H = 640, 480, 216
 STEADY_AFTER = 1.0  # s into a segment before the steady-state mean starts
@@ -71,6 +83,7 @@ p.add_argument("--title", default="")
 p.add_argument("--frames-only", default=None, help="write a few PNG frames here instead")
 p.add_argument("--distance", type=float, default=1.8)
 p.add_argument("--lookat-z", type=float, default=0.22, help="wide view target height (m)")
+p.add_argument("--reset-demo", action="store_true", help="start with the posture reset (RESET_SEGMENTS)")
 args = p.parse_args()
 
 cfg = load_env_cfg(args.task, play=True)
@@ -118,6 +131,14 @@ if wheeled:
   brake_speed = float(getattr(wheel_term.cfg, "brake_speed", 0.0))
   print(f"wheel brake speed {brake_speed:.3f} rad/s ({brake_speed * r:.3f} m/s at the rim)")
 DRIFT = "溜车" if wheeled else "漂移"
+hip_ids, hip_names = robot.find_joints(".*_hip_joint")
+hip_side = torch.tensor([1.0 if n[1] == "L" else -1.0 for n in hip_names], device=env.device)  # outward +
+segments = (RESET_SEGMENTS if args.reset_demo else []) + [(*seg, {}) for seg in SEGMENTS]
+
+
+def hip_text():
+  dev = torch.rad2deg((robot.data.joint_pos[0, hip_ids] - robot.data.default_joint_pos[0, hip_ids]) * hip_side)
+  return "髋离默认（外撇为正）  " + "   ".join(f"{n[:2]} {v:+4.1f}°" for n, v in zip(hip_names, dev.tolist()))
 
 model.stat.extent = 3.0  # local to this process: sharper shadows, sane clipping
 model.vis.global_.offwidth = VIEW_W
@@ -250,10 +271,15 @@ t = 0.0
 step = 0
 saved = set()
 summary = []
-for si, (label, c, seconds) in enumerate(SEGMENTS):
+for si, (label, c, seconds, opts) in enumerate(segments):
   C = torch.tensor([c], device=env.device, dtype=torch.float32)
   n = int(round(seconds / dt))
-  title = f"{args.title}  {si + 1}/{len(SEGMENTS)}  {label}"
+  title = f"{args.title}  {si + 1}/{len(segments)}  {label}"
+  march = bool(opts.get("march", False))
+  if "splay" in opts:
+    q = robot.data.joint_pos.clone()
+    q[0, hip_ids] = robot.data.default_joint_pos[0, hip_ids] + opts["splay"] * hip_side
+    robot.write_joint_state_to_sim(q, torch.zeros_like(robot.data.joint_vel))
   zero = all(x == 0.0 for x in c)
   steady = []  # base velocity samples after STEADY_AFTER s
   stop_k = None  # zero command: base speed < 0.05 m/s from this step on
@@ -263,6 +289,8 @@ for si, (label, c, seconds) in enumerate(SEGMENTS):
   for k in range(n):
     cmd.vel_command_b[:] = C
     cmd.time_left[:] = 1e9
+    if hasattr(cmd, "march"):
+      cmd.march[:] = march
     with torch.no_grad():
       obs, _, dones, _ = venv.step(policy(obs))
     if bool(dones[0]):
@@ -293,8 +321,11 @@ for si, (label, c, seconds) in enumerate(SEGMENTS):
         tail = f"{CREEP_AFTER:.0f} s 后的{DRIFT} {torch.norm(pos - creep_pos).item() * 100:5.2f} cm"
       line1 = f"{head}   {tail}"
       line1_color = (120, 220, 120) if stop_k is not None else (255, 200, 90)
+      if march:
+        line1 = f"原地踏步：离本段起点 {torch.norm(pos - pos_release).item() * 100:5.1f} cm"
+        line1_color = (150, 200, 255)
       if not wheeled:
-        line2 = ""
+        line2 = hip_text()
       elif brake_speed > 0:
         line2 = f"轮子刹车：{'锁住' if braking else '松开'}（四个轮速都 < {brake_speed * r:.2f} m/s 且零指令时锁住）"
       else:
@@ -354,7 +385,7 @@ for si, (label, c, seconds) in enumerate(SEGMENTS):
     creep = torch.norm(robot.data.root_link_pos_w[0, :2] - creep_pos).item() * 100 if creep_pos is not None else float("nan")
     stop_s = (stop_k + 1) * dt if stop_k is not None else float("nan")
     brake = f", brake held {brake_steps * dt:.2f} s" if wheeled else ""
-    summary.append(f"{label}: stop {stop_s:.2f} s, drift from {CREEP_AFTER:.0f} s to {seconds:.0f} s {creep:.2f} cm{brake}")
+    summary.append(f"{label}: stop {stop_s:.2f} s, drift from {CREEP_AFTER:.0f} s to {seconds:.0f} s {creep:.2f} cm{brake}; {hip_text()}")
   else:
     m = np.mean(steady, axis=0)
     ratios = [f"{name} {m[j] / ci * 100:.0f}%" for name, ci, j in (("vx", c[0], 0), ("vy", c[1], 1), ("wz", c[2], 2)) if ci != 0.0]

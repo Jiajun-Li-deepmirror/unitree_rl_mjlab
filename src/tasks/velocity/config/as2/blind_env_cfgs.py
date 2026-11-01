@@ -24,7 +24,10 @@ from src.tasks.velocity.blind_env_cfg import (
   apply_blind_r5,
   apply_blind_r6,
   apply_blind_r7,
-  apply_blind_staged,
+  apply_blind_phased,
+  apply_grip,
+  apply_no_hip_load,
+  apply_speed_clock,
   apply_blind_straight,
   blind_collision_cfg,
   make_blind_env_cfg,
@@ -87,20 +90,6 @@ def unitree_as2_blind_heading_env_cfg(
   return apply_blind_heading(apply_blind_fix(cfg, AS2_FIX, training=terrain == "map3"))
 
 
-# Hip load (third round, user 2026-10-22; see BlindHipCfg): default hips -0.23 rad
-# outward (was -0.10), torque penalty against 2.97 Nm (the static hip torque of the
-# old stance) and the splay penalty.
-AS2_HIP = BlindHipCfg(hip_default=-0.23, torque_ref=2.97)
-
-
-def unitree_as2_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks (see unitree_as2_blind_heading_env_cfg) with the hip-load
-  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
-  and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_as2_blind_heading_env_cfg(play=play, terrain=terrain)
-  return apply_blind_hip(cfg, AS2_HIP, training=terrain == "map3")
-
-
 # Fourth round (user 2026-10-22 ~07:30, "减半"): half the third round's stance change
 # (-0.165 rad instead of -0.23; -0.10 before): at -0.23 map3's flights without an
 # operator fell from 85% to 75-76% while the hip torque fell 50-69%. The descent
@@ -158,9 +147,23 @@ def unitree_as2_blind_rest3_env_cfg(play: bool = False, terrain: str = "map3") -
   return apply_blind_r7(cfg, AS2_R7, training=terrain == "map3")
 
 
-def unitree_as2_blind_scratch_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """unitree_as2_blind_rest3_env_cfg trained from scratch with ramped weights (see
-  apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
-  training task, "stairs" and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_as2_blind_rest3_env_cfg(play=play, terrain=terrain)
-  return apply_blind_staged(cfg) if terrain == "map3" else cfg
+# Thigh plus calf (as2.xml: thigh 0.212 + calf 0.213), for apply_speed_clock.
+AS2_LEG_LENGTH = 0.425
+# Feet (FL, FR, RL, RR) in the base frame at the model's own default stance (m), for the gait clock's
+# fastest-foot speed on arcs (apply_speed_clock with "arcclock").
+AS2_FOOT_XY = ((0.213, 0.138), (0.213, -0.138), (-0.211, 0.138), (-0.211, -0.138))
+# The same with every hip at 0 ("hipzero"; see apply_no_hip_load).
+AS2_FOOT_XY_HIP0 = ((0.213, 0.165), (0.213, -0.165), (-0.211, 0.165), (-0.211, -0.165))
+
+
+def unitree_as2_blind_scratch_env_cfg(
+  play: bool = False, terrain: str = "map3", phase: str = "teacher"
+) -> ManagerBasedRlEnvCfg:
+  """unitree_as2_blind_rest3_env_cfg, the speed-dependent gait clock, the grip and the robot's own default
+  stance (apply_speed_clock, apply_grip, apply_no_hip_load): `terrain` "map3" (generated
+  map3-like flights, not map3) trains `phase` of apply_blind_phased, "stairs" and "flat"
+  are the evaluation tasks of the same policies."""
+  cfg = apply_no_hip_load(apply_grip(apply_speed_clock(unitree_as2_blind_rest3_env_cfg(play=play, terrain=terrain), AS2_LEG_LENGTH, AS2_FOOT_XY, AS2_FOOT_XY_HIP0)), get_as2_robot_cfg())
+  if terrain != "map3":
+    return cfg
+  return apply_blind_phased(cfg, phase)

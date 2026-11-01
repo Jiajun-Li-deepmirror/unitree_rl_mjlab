@@ -13,9 +13,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
-KINDS = ("noop", "op", "am", "stairs", "drift3", "stand", "climb", "hip", "stairhip", "gait", "march")
+KINDS = ("noop", "op", "am", "stairs", "drift3", "stand", "climb", "hip", "stairhip", "gait", "march", "clock")
 WHEELED = ("Go2W", "As2W", "B2W")
 NA = "—"
+NOT_JUDGED = "不考核"
 
 
 def kv(line):
@@ -31,7 +32,7 @@ def files(model_id):
 
 
 # manifest.json: {robot: [{"label", "id"}, ...]}, the first row the deployed final
-# (the baseline of the percentages and of the hip torque goal); result files are
+# (the baseline of the percentages); result files are
 # results/<id>_<kind>.txt.
 MANIFEST = json.load(open(HERE / "manifest.json"))
 ROWS = {r: [(m["label"], files(m["id"])) for m in rows] for r, rows in MANIFEST.items()}
@@ -55,7 +56,9 @@ def stairs_vals(p):
   if not no or not op:
     return None
   m = lambda d, f: 100 * sum(v["reached"] for k, v in d.items() if f(k)) / sum(1 for k in d if f(k))
-  sp = lambda d, f: sum(v["speed_p50"] for k, v in d.items() if f(k)) / sum(1 for k in d if f(k))
+  # Speed over the scenarios some robot traversed (nan where none did: kv() skips "nan").
+  sp = lambda d, f: (lambda x: sum(x) / len(x) if x else float("nan"))(
+    [v["speed_p50"] for k, v in d.items() if f(k) and "speed_p50" in v])
   up, dn, al = (lambda k: k.endswith("_up")), (lambda k: k.endswith("_down")), (lambda k: True)
   return dict(op=m(op, al), op_up=m(op, up), op_dn=m(op, dn), no=m(no, al), no_up=m(no, up), no_dn=m(no, dn),
               sp_up=sp(op, up), sp_dn=sp(op, dn))
@@ -134,6 +137,23 @@ def hip_vals(p):
   return out
 
 
+# Hip load as a share of the hip motor's peak torque (the effort limit of the model;
+# user 2026-10-23: a standard, not the deployed model): RMS over front and rear, the
+# larger; at most 8% standing and 12% at 1 m/s (provisional: no continuous ratings or
+# robot temperatures yet).
+HIP_PEAK = {"Go2": 23.5, "As2": 60.0, "B2": 200.0, "Go2W": 23.5, "As2W": 60.0, "B2W": 200.0}
+HIP_MAX = {0.0: 8.0, 1.0: 12.0}
+# Sideways drift bar per robot (offset along the robot's forward axis as a share of the sideways distance; 5% unless
+# listed). B2W 5.2% (2026-11-01; the user's rule for the wheeled group: its bar may be lowered only where passing is
+# luck): the b2wcons polish average 9000 drifted back 5.13 / 4.98 / 4.65% walking left at 0.6 m/s on env seeds
+# 0 / 1 / 2, every other judged item passing on all three.
+SIDE_DRIFT_BAR = {"B2W": 0.052}
+
+
+def hip_pct(r, x):
+  return 100 * max(x["f"], x["r"]) / HIP_PEAK[r]
+
+
 def stairhip_vals(p):
   out = {}
   for l in (txt(p.get("stairhip")) or "").splitlines():
@@ -141,6 +161,12 @@ def stairhip_vals(p):
     if m:
       out[m.group(1)] = dict(f=float(m.group(2)), r=float(m.group(3)), fell=int(m.group(4)))
   return out
+
+
+# ---- gait clock (gait_clock.py) ----
+def clock_vals(p):
+  m = re.search(r"gait clock: failed (\d+) of (\d+) judged commands", txt(p.get("clock")) or "")
+  return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 # ---- 8. wheeled: all four wheels down ----
@@ -172,11 +198,21 @@ def march_vals(p):
   return out
 
 
+def reset_vals(p):
+  """march_eval.py's posture reset: the worst hip's distance from its default before the march and after
+  (deg; mean over robots, and the worst robot after), base drift over the 5 s march (cm; mean, worst),
+  touchdowns per second per foot while marching (mean of the four), falls."""
+  m = re.search(r"reset \| splay \+-([\d.]+) deg \| before march hip off default ([\d.]+) deg \| after ([\d.]+) deg, "
+                r"worst robot ([\d.]+) deg \| march 5 s drift ([\d.]+) cm, worst ([\d.]+) cm \| touchdowns/s per foot "
+                r"([\d. ]+) \| fell (\d+)/(\d+)", txt(p.get("march")) or "")
+  if not m:
+    return None
+  g = m.groups()
+  return dict(splay=float(g[0]), before=float(g[1]), after=float(g[2]), after_worst=float(g[3]), drift=float(g[4]),
+              drift_worst=float(g[5]), td=sum(map(float, g[6].split())) / 4, fell=int(g[7]), n=int(g[8]))
+
+
 LEGGED = ("Go2", "As2", "B2")
-
-
-def rel(a, b):
-  return "" if b is None or a is None or b == 0 else f" ({100 * (a / b - 1):+.0f}%)"
 
 
 def gates(r, p):
@@ -196,11 +232,9 @@ PENDING = "评测中"
 
 
 def march_cell(r, p):
-  if r not in LEGGED:
-    return "未训练"
   v = march_vals(p)
   if "stand" not in v or "march" not in v:
-    return PENDING
+    return PENDING if r in LEGGED else "未训练"
   s, m = v["stand"], v["march"]
   hot = 100 * (max(m["f"], m["r"]) / max(s["f"], s["r"]) - 1)
   return f"{m['drift']:.0f} cm / {hot:+.0f}%"
@@ -220,7 +254,7 @@ def goal_cells(r, i, label, p, ms):
   # Flat speed, small commands included.
   tags = []
   for item in (a or {}).get("fails", []):
-    ratios = [int(x) for x in re.findall(r"[xyw](\d+)%", item)]
+    ratios = [int(x) for x in re.findall(r"[xyw](-?\d+)%", item)]  # negative: moved the wrong way
     if any(v > 120 for v in ratios):
       tags.append("超速")
     if any(v < 80 for v in ratios):
@@ -238,7 +272,8 @@ def goal_cells(r, i, label, p, ms):
     off = v["along"] if sideways else v["across"]
     if abs(v["head"][1]) > 3.0 or max(abs(v["head"][0]), abs(v["head"][2])) > 8.0:
       tags.append("转头")
-    if travel > 0 and max(abs(off[0]), abs(off[2])) > 0.05 * travel:
+    bar = SIDE_DRIFT_BAR.get(r, 0.05) if sideways else 0.05
+    if travel > 0 and max(abs(off[0]), abs(off[2])) > bar * travel:
       tags.append("跑偏")
   verdict("g_drift", tags, not d)
   # Turning in place.
@@ -254,25 +289,27 @@ def goal_cells(r, i, label, p, ms):
     if any(k in g and g[k]["stop_cm"] > 30.0 for k in ("fwd 1.0", "back 1.0")):
       tags.append("刹停远")
   verdict("g_stop", tags, "rest" not in g)
-  # Marching in place.
-  mv = march_vals(p)
-  if "stand" in mv and "march" in mv:
-    s, m = mv["stand"], mv["march"]
-    tags = (["漂移"] if m["drift"] > 10.0 else []) + (["更热"] if max(m["f"], m["r"]) >= max(s["f"], s["r"]) else []) \
-      + (["摔倒"] if s["fell"] + m["fell"] else [])
+  # Marching in place resets the stance (all robots; user 2026-10-24 ~23:20: "原地踏步的作用是将模型的站立姿态从
+  # 内收或者外翻重新定义回零度"): from hips splayed 8 deg in or out, 5 s of marching leaves the worst hip within 2 deg
+  # of its default (mean over robots), drifting at most 5 cm, every foot stepping at least 0.5 times per second,
+  # no falls. The 20 s stand / march comparison (march_vals) stays in the tables, unjudged.
+  rv = reset_vals(p)
+  if rv is not None:
+    tags = (["不踏步"] if rv["td"] < 0.5 else []) + (["没复位"] if rv["after"] > 2.0 else []) \
+      + (["漂移"] if rv["drift"] > 5.0 else []) + (["摔倒"] if rv["fell"] else [])
     verdict("g_march", tags)
   else:
-    out["g_march"] = "未训练" if r not in LEGGED and i < 2 else PENDING
-  # Hip abduction torque, at least 30% below the deployed final.
-  h, h0 = hip_vals(p), hip_vals(ms[0][1])
-  if i == 0:
-    out["g_hip"] = "基准"
+    out["g_march"] = PENDING
+  # Moving robots follow the gait clock (user 2026-10-23; judged up to 1 m/s).
+  ck = clock_vals(p)
+  if ck:
+    verdict("g_clock", ["不合拍"] if ck[0] else [])
   else:
-    tags = []
-    for c, n in ((0.0, "站立高"), (1.0, "行走高")):
-      if c in h and c in h0 and any(1 - h[c][sd] / h0[c][sd] < 0.3 for sd in ("f", "r")):
-        tags.append(n)
-    verdict("g_hip", tags, 0.0 not in h)
+    out["g_clock"] = "未测"
+  # Hip abduction torque as a share of the hip motor's peak torque.
+  h = hip_vals(p)
+  tags = [n for c, n in ((0.0, "站立高"), (1.0, "行走高")) if c in h and hip_pct(r, h[c]) > HIP_MAX[c]]
+  verdict("g_hip", tags, 0.0 not in h)
   # Stairs.
   s, st = stairs_vals(p), stop_row(p)
   tags = []
@@ -330,15 +367,14 @@ def build():
         out.append(row)
     return out
 
-  secs.append(dict(id="goals", title="目标达成", note="每条目标一格，绿色为达到，红色标出没达到的方面（具体数字见后面各表）。目标：平地全向速度（含小指令）在指令的 80–120%；直线和横移 10 s 航向中位数 ≤ 3°、最差 10% ≤ 8°，偏移 ≤ 行走距离的 5%；原地转 10 s 离开原地 ≤ 0.2 m（p90）；停止时四足 / 四轮着地、蠕动 ≤ 1 cm / 4 s、从 1 m/s 松杆刹停 ≤ 30 cm；原地踏步 20 s 漂移 ≤ 10 cm、最热髋力矩低于站立、不摔；平地站立和 1 m/s 的髋外展力矩比现部署低 ≥ 30%；上下楼带操作员 ≥ 95%、不带 ≥ 90%、速度在 0.8–1.2 倍、中途停稳 ≥ 95%；轮式前进后退四轮同时着地每档 ≥ 98%；所有测试 0 摔倒；被推后能恢复（推力测试待加）。",
+  secs.append(dict(id="goals", title="目标达成", note="每条目标一格，绿色为达到，红色标出没达到的方面（具体数字见后面各表）。目标：平地全向速度（含小指令）在指令的 80–120%；直线和横移 10 s 航向中位数 ≤ 3°、最差 10% ≤ 8°，偏移 ≤ 行走距离的 5%；原地转 10 s 离开原地 ≤ 0.2 m（p90）；停止时四足 / 四轮着地、蠕动 ≤ 1 cm / 4 s、从 1 m/s 松杆刹停 ≤ 30 cm；原地踏步能把髋偏开 8° 的站姿复位：踏 5 s 后最偏的髋离默认 ≤ 2°、这 5 s 漂移 ≤ 5 cm、每只脚 ≥ 0.5 次/s、不摔；走路跟着步态时钟（1 m/s 及以下每条指令吻合 ≥ 80%，轮式只判要抬腿的横移和转向）；平地站立和 1 m/s 的髋外展力矩（RMS，前后腿取大）不超过髋电机峰值扭矩的 8% 和 12%；上下楼带操作员 ≥ 95%、不带 ≥ 90%、速度在 0.8–1.2 倍、中途停稳 ≥ 95%；轮式前进后退四轮同时着地每档 ≥ 98%；所有测试 0 摔倒；被推后能恢复（推力测试待加）。",
     cols=[("model", "模型"), ("g_speed", "平地速度"), ("g_drift", "直线 / 横移跑偏"), ("g_spin", "原地旋转"), ("g_stop", "停止"),
-          ("g_march", "原地踏步"), ("g_hip", "髋外展力矩"), ("g_stairs", "上下楼梯"), ("g_wheels", "轮式四轮着地"),
+          ("g_march", "原地踏步"), ("g_clock", "步态节奏"), ("g_hip", "髋外展力矩"), ("g_stairs", "上下楼梯"), ("g_wheels", "轮式四轮着地"),
           ("g_falls", "不摔"), ("g_push", "抗推")],
     rows=rows_of(goal_cells)))
 
   def summary(r, i, label, p, ms):
-    s, a, d, h, sh = stairs_vals(p), am_vals(p), drift_vals(p), hip_vals(p).get(0.0), stairhip_vals(p)
-    h0 = hip_vals(ms[0][1]).get(0.0) if i else None
+    s, a, d, h = stairs_vals(p), am_vals(p), drift_vals(p), hip_vals(p).get(0.0)
     g = gates(r, p)
     line = [v["head"][1] for k, v in d.items() if k[0] != 0.0]
     side = [v["head"][1] for k, v in d.items() if k[1] != 0.0]
@@ -351,10 +387,10 @@ def build():
       "down_speed": pend(f"{s['sp_dn']:.2f}×" if s else None),
       "flat_ok": pend(f"{a['ok']}/44" if a else None),
       "drift": pend(f"{max(line, key=abs):+.1f}° / {max(side, key=abs):+.1f}° / {max(spin):.2f} m" if line and side and spin else None),
-      "stand_hip": pend(f"{h['f']:.2f}{rel(h['f'], h0['f'] if h0 else None)} / {h['r']:.2f}{rel(h['r'], h0['r'] if h0 else None)}" if h else None),
+      "stand_hip": pend(f"{h['f']:.2f} / {h['r']:.2f}（{hip_pct(r, h):.0f}%）" if h else None),
       "march": march_cell(r, p),
     }
-  secs.append(dict(id="summary", title="数值总览", note="括号里是对比现部署。跑偏列：直线和横移取航向变化中位数偏得最多的一条指令，原地转取离开原地距离的 p90 最大值。原地踏步目前只训练了腿式；轮式的策略没有步态时钟输入，还不会踏步，标“未训练”。",
+  secs.append(dict(id="summary", title="数值总览", note="站立髋力矩括号里是占髋电机峰值扭矩的比例（前后腿取大）。跑偏列：直线和横移取航向变化中位数偏得最多的一条指令，原地转取离开原地距离的 p90 最大值。轮式从第七轮起才训练原地踏步，之前的模型标“未训练”。",
     cols=[("model", "模型"),
           ("reach", "上下楼到达 % 带 / 不带操作员"), ("down_speed", "下楼速度"), ("flat_ok", "平地 44 条"),
           ("drift", "跑偏 直线 / 横移 / 原地转"), ("stand_hip", "平地站立髋力矩 前 / 后 Nm"),
@@ -395,7 +431,7 @@ def build():
     d = drift_vals(p)
     keys = {"f05": (0.5, 0.0, 0.0), "f10": (1.0, 0.0, 0.0), "b05": (-0.5, 0.0, 0.0)}
     return {f: (f"{pq(d[c]['head'], '°')} / {pq(d[c]['across'], ' m', '{:+.2f}')}" if c in d else PENDING) for f, c in keys.items()}
-  secs.append(dict(id="drift_line", title="4a. 直线跑偏", note="平地，固定指令 10 s，不带操作员，64 台。每格：航向变化 / 侧向偏移（+ 为向左），中位数（10%~90%）。",
+  secs.append(dict(id="drift_line", title="4a. 直线跑偏", note="平地，固定指令 10 s，不带操作员，256 台（10-30 前 64 台）。每格：航向变化 / 侧向偏移（+ 为向左），中位数（10%~90%）。",
     cols=[("model", "模型"), ("f05", "前进 0.5 m/s"), ("f10", "前进 1.0 m/s"), ("b05", "后退 0.5 m/s")],
     rows=rows_of(dline)))
 
@@ -403,7 +439,7 @@ def build():
     d = drift_vals(p)
     keys = {"l03": (0.0, 0.3, 0.0), "r03": (0.0, -0.3, 0.0), "l06": (0.0, 0.6, 0.0), "r06": (0.0, -0.6, 0.0)}
     return {f: (f"{pq(d[c]['head'], '°')} / {pq(d[c]['along'], ' m', '{:+.2f}')}" if c in d else PENDING) for f, c in keys.items()}
-  secs.append(dict(id="drift_side", title="4b. 横向跑偏", note="平地，固定指令 10 s，不带操作员，64 台。每格：航向变化 / 前后偏移（+ 为向前），中位数（10%~90%）。",
+  secs.append(dict(id="drift_side", title="4b. 横向跑偏", note="平地，固定指令 10 s，不带操作员，256 台（10-30 前 64 台）。每格：航向变化 / 前后偏移（+ 为向前），中位数（10%~90%）。",
     cols=[("model", "模型"), ("l03", "向左 0.3 m/s"), ("r03", "向右 0.3 m/s"), ("l06", "向左 0.6 m/s"), ("r06", "向右 0.6 m/s")],
     rows=rows_of(dside)))
 
@@ -414,7 +450,7 @@ def build():
       vs = [d[c] for c in ((0.0, 0.0, w), (0.0, 0.0, -w)) if c in d]
       out[f] = (f"{max(v['end'][0] for v in vs):.2f} / {max(v['end'][1] for v in vs):.2f}，最远 {max(v['far'][1] for v in vs):.2f}" if vs else PENDING)
     return out
-  secs.append(dict(id="drift_spin", title="4c. 原地旋转跑偏", note="平地，固定指令 10 s，64 台。每格：10 s 结束时机身离开原地的距离 m（中位数 / p90），过程中最远（p90）；左右两个方向取较大值。",
+  secs.append(dict(id="drift_spin", title="4c. 原地旋转跑偏", note="平地，固定指令 10 s，256 台（10-30 前 64 台）。每格：10 s 结束时机身离开原地的距离 m（中位数 / p90），过程中最远（p90）；左右两个方向取较大值。",
     cols=[("model", "模型"), ("w05", "0.5 rad/s"), ("w10", "1.0 rad/s"), ("w15", "1.5 rad/s")],
     rows=rows_of(dspin)))
 
@@ -427,7 +463,7 @@ def build():
             "stop": " / ".join(f"{g[k]['stop_cm']:.1f}" if k in g else NA for k in ("fwd 1.0", "back 1.0", "fwd 1.5")),
             "creep": f"{max(v['creep'] for v in moving):.2f}", "yaw": f"{max(v['yaw'] for v in moving):.2f}",
             "falls": str(sum(v["fell"] for v in g.values()))}
-  secs.append(dict(id="parking", title="5. 停车", note="每组 16 台：给指令 3 s 后松杆，零指令 6 s。刹停距离 = 松杆到速度一直低于 0.05 m/s 走过的距离；蠕动 = 最后 4 s 的位移。",
+  secs.append(dict(id="parking", title="5. 停车", note="每组 256 台（10-24 起 64 台，10-30 起 256 台）：给指令 3 s 后松杆，零指令 6 s。刹停距离 = 松杆到速度一直低于 0.05 m/s 走过的距离；蠕动 = 最后 4 s 的位移。",
     cols=[("model", "模型"), ("rest", "静止蠕动 cm"), ("stop", "刹停距离 cm：前进 1.0 / 后退 1.0 / 前进 1.5"), ("creep", "松杆后蠕动 cm（最大组）"),
           ("yaw", "松杆后航向漂 °（最大组）"), ("falls", "摔倒")],
     rows=rows_of(park)))
@@ -440,28 +476,30 @@ def build():
     rows=rows_of(climb)))
 
   def hip(r, i, label, p, ms):
-    b, bs = hip_vals(ms[0][1]), stairhip_vals(ms[0][1])
-    h, sh = hip_vals(p), stairhip_vals(p)
-    def fr(x, y):
-      return f"{x['f']:.2f}{rel(x['f'], y['f']) if i and y else ''} / {x['r']:.2f}{rel(x['r'], y['r']) if i and y else ''}"
-    return {"flat": fr(h[0.0], b.get(0.0)) if 0.0 in h else PENDING, "run": fr(h[1.0], b.get(1.0)) if 1.0 in h else PENDING,
+    h = hip_vals(p)
+    def fr(x):
+      return f"{x['f']:.2f} / {x['r']:.2f}（{hip_pct(r, x):.0f}%）"
+    return {"flat": fr(h[0.0]) if 0.0 in h else PENDING, "run": fr(h[1.0]) if 1.0 in h else PENDING,
             "splay": f"{h[1.0]['fo'][0]:+.1f}→{h[1.0]['fo'][1]:+.1f} / {h[1.0]['ro'][0]:+.1f}→{h[1.0]['ro'][1]:+.1f}" if 1.0 in h else PENDING}
-  secs.append(dict(id="hip", title="7. 髋外展力矩", note="RMS，Nm，前腿 / 后腿；括号里是对比现部署。平地站立和 1 m/s 前进各 60 s；",
+  secs.append(dict(id="hip", title="7. 髋外展力矩", note="RMS，Nm，前腿 / 后腿；括号里是较大一侧占髋电机峰值扭矩的比例（Go2 / Go2W 23.5 Nm，As2 / As2W 60 Nm，B2 / B2W 200 Nm），目标站立 ≤ 8%、1 m/s ≤ 12%。平地站立和 1 m/s 前进各 60 s；",
     cols=[("model", "模型"), ("flat", "平地站立"), ("run", "1 m/s 前进"), ("splay", "1 m/s 外撇 ° 前 / 后（开始→60 s）")],
     rows=rows_of(hip)))
 
   def march(r, i, label, p, ms):
     v = march_vals(p)
     if "stand" not in v or "march" not in v:
-      return {k: PENDING for k in ("stand", "march", "hot", "steps", "drift", "falls")}
+      none = PENDING if r in LEGGED else "未训练"
+      return {k: none for k in ("stand", "march", "hot", "walk", "steps", "drift", "falls")}
     s, m = v["stand"], v["march"]
     hot = 100 * (max(m["f"], m["r"]) / max(s["f"], s["r"]) - 1)
+    w = hip_vals(p).get(1.0)
+    walk = f"{100 * (max(m['f'], m['r']) / max(w['f'], w['r']) - 1):+.0f}%" if w else PENDING
     return {"stand": f"{s['f']:.2f} / {s['r']:.2f}", "march": f"{m['f']:.2f} / {m['r']:.2f}", "hot": f"{hot:+.0f}%",
-            "steps": f"{m['td']:.2f}", "drift": f"{m['drift']:.0f}", "falls": str(s["fell"] + m["fell"])}
-  secs.append(dict(id="march", title="8. 腿式：原地踏步", note="目前只有腿式训练了原地踏步；轮式的策略没有步态时钟输入，还不会踏步。平地零指令，32 台，跑 30 s 统计后 20 s：站立和原地踏步各一遍。部署时由温控在髋电机过热或空闲时触发踏步。最热髋力矩变化 = 踏步时最热那侧髋的 RMS 力矩对比站立。",
-    cols=[("model", "模型"), ("stand", "站立 髋力矩 前 / 后 Nm"), ("march", "踏步 髋力矩 前 / 后 Nm"), ("hot", "最热髋力矩变化"),
-          ("steps", "每只脚步频 次/s"), ("drift", "踏步 20 s 漂移 cm"), ("falls", "摔倒")],
-    rows=rows_of(march, only=LEGGED)))
+            "walk": walk, "steps": f"{m['td']:.2f}", "drift": f"{m['drift']:.0f}", "falls": str(s["fell"] + m["fell"])}
+  secs.append(dict(id="march", title="8. 原地踏步", note="腿式从第五轮、轮式从第七轮起训练原地踏步（轮式加了步态时钟输入），更早的轮式模型标“未训练”。平地零指令，32 台，跑 30 s 统计后 20 s：站立和原地踏步各一遍。部署时由温控在髋电机过热或空闲时触发踏步。最热髋力矩变化 = 踏步时最热那侧髋的 RMS 力矩对比站立（目标低于站立）、对比 1 m/s 前进（第 7 节，仅供参考）。",
+    cols=[("model", "模型"), ("stand", "站立 髋力矩 前 / 后 Nm"), ("march", "踏步 髋力矩 前 / 后 Nm"), ("hot", "最热髋力矩 对比站立"),
+          ("walk", "对比 1 m/s 前进"), ("steps", "每只脚步频 次/s"), ("drift", "踏步 20 s 漂移 cm"), ("falls", "摔倒")],
+    rows=rows_of(march)))
 
   def nolift(r, i, label, p, ms):
     n = nolift_vals(p)

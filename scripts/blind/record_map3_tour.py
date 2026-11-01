@@ -13,7 +13,7 @@ its reason.
 
 Modelled on the go2-depth branch's scripts/go2_depth/record_map3.py.
 
-  python scripts/blind/record_map3_tour.py --task Unitree-As2-Blind \
+  python scripts/blind/record_map3_tour.py --task Unitree-As2-Blind-Scratch \
     logs/rsl_rl/as2_blind/<run>/model_N.pt --out map3_tour.mp4 --title "As2 model_N"
 """
 

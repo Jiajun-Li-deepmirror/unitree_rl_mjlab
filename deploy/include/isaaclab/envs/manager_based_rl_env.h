@@ -54,6 +54,7 @@ public:
         global_phase = 0;
         episode_length = 0;
         zero_command_time = 0.0f;
+        stand_time = 0.0f;
         heading_settle = 2;
         robot->update();
         action_manager->reset();
@@ -95,6 +96,9 @@ public:
     // base yaw until then).
     float heading_target = 0.0f;
     int heading_settle = 2;
+    // State of the stand_time observation: seconds the command has been zero
+    // while not marching in place.
+    float stand_time = 0.0f;
     // Seconds the command (velocity_command) has been zero, counted per policy
     // step; read by FSM/ThermalGuard.h.
     std::atomic<float> zero_command_time{0.0f};

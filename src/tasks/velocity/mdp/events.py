@@ -116,3 +116,34 @@ def reset_hip_splay(
   joint_pos = asset.data.joint_pos[env_ids][:, ids] + splay
   joint_vel = asset.data.joint_vel[env_ids][:, ids]
   asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids)
+
+
+def push_by_setting_velocity_marked(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  velocity_range: dict[str, tuple[float, float]],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  march_skip_prob: float = 0.0,
+  command_name: str = "twist",
+) -> None:
+  """mjlab's push_by_setting_velocity that also stamps each pushed env with the
+  step counter (env._push_step) for terms that excuse a pushed robot
+  (standing_position_hold with `push_window`). With `march_skip_prob`, a robot
+  marching in place (the command term's march flag) skips each push with that
+  probability, so its march hold often charges a whole march undisturbed, as the
+  20 s march acceptance measures."""
+  from mjlab.envs.mdp.events import push_by_setting_velocity
+
+  if march_skip_prob > 0.0:
+    march = getattr(env.command_manager.get_term(command_name), "march", None)
+    if march is not None:
+      skip = march[env_ids] & (torch.rand(len(env_ids), device=env.device) < march_skip_prob)
+      env_ids = env_ids[~skip]
+      if len(env_ids) == 0:
+        return
+  push_by_setting_velocity(env, env_ids, velocity_range, asset_cfg)
+  stamp = getattr(env, "_push_step", None)
+  if stamp is None:
+    stamp = torch.full((env.num_envs,), -(10**9), dtype=torch.long, device=env.device)
+    env._push_step = stamp
+  stamp[env_ids] = env.common_step_counter

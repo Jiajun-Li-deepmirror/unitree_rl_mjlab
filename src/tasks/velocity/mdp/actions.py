@@ -7,12 +7,22 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from mjlab.envs.mdp.actions.actions import JointVelocityAction, JointVelocityActionCfg
+from mjlab.envs.mdp.actions.actions import (
+  JointPositionAction,
+  JointPositionActionCfg,
+  JointVelocityAction,
+  JointVelocityActionCfg,
+)
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
-__all__ = ["BrakedJointVelocityAction", "BrakedJointVelocityActionCfg"]
+__all__ = [
+  "BrakedJointVelocityAction",
+  "BrakedJointVelocityActionCfg",
+  "HeldJointPositionAction",
+  "HeldJointPositionActionCfg",
+]
 
 
 class BrakedJointVelocityAction(JointVelocityAction):
@@ -47,6 +57,18 @@ class BrakedJointVelocityAction(JointVelocityAction):
   after it, while a robot still coasting faster than the wider limit is not): in
   that test a 1 s timer or a 3x release left 2-6 cm instead of 11-13 cm, with the
   same coasting from 1.5 m/s and no falls.
+
+  With `brake_max_forward` the brake also works while the forward command is at
+  most that (m/s): stepping sideways or turning in place, where a wheeled robot
+  moves by stepping and its wheel targets are charged to zero anyway
+  (stepping_wheel_target). By damping alone the grounded wheels roll under the
+  legs' push and the steps make up for it, by a share that changes from checkpoint
+  to checkpoint: stepping at (0, 0.3, 0) the As2W wheels rolled back 0-8% of the
+  sideways travel (p50; v13wh 5000 ~0, the drcritic pilot 4000 ~7.5%, its steps
+  +4.4%), and the drift left over failed the gate at one checkpoint and passed at
+  the next (scratchpad w18/kit/go2-blind/tools/flat_items_dr.py, 2026-10-30). The
+  deploy side brakes the same way (JointVelocityAction `brake_max_forward`), on
+  the command after its deadzone.
   """
 
   cfg: BrakedJointVelocityActionCfg
@@ -79,6 +101,8 @@ class BrakedJointVelocityAction(JointVelocityAction):
     assert command is not None
     speed = torch.abs(self._entity.data.joint_vel[:, self._target_ids])
     zero = torch.all(command == 0.0, dim=1)
+    if self.cfg.brake_max_forward is not None:
+      zero = torch.abs(command[:, 0]) <= self.cfg.brake_max_forward
     limit = torch.full_like(zero, self.cfg.brake_speed, dtype=speed.dtype)
     if self.cfg.release_speed_ratio is not None:
       wide = self._braked
@@ -132,6 +156,80 @@ class BrakedJointVelocityActionCfg(JointVelocityActionCfg):
   brake_after_s: float | None = None
   """With release_speed_ratio: the wider limit also applies once the command has
   been zero this long (s), braking joints that keep turning slowly."""
+  brake_max_forward: float | None = None
+  """Brake whenever |forward command| is at most this (m/s; sideways, turning in
+  place), not only at the zero command."""
 
   def build(self, env: ManagerBasedRlEnv) -> BrakedJointVelocityAction:
     return BrakedJointVelocityAction(self, env)
+
+
+class HeldJointPositionAction(JointPositionAction):
+  """Joint position targets held where they were once the robot stands still: a standstill hold for a wheeled
+  robot's legs, next to the wheels' parking brake (BrakedJointVelocityAction).
+
+  Once the velocity command has been zero (not marching in place) for `hold_after_s` and every joint of the term
+  turns slower than `hold_speed`, the targets stay at the policy's targets of that step; they follow the policy
+  again when the command leaves zero, the robot marches, or a joint turns faster than `release_speed` (pushed),
+  and hold again once calm. On braked wheels every leg move moves the base: the B2W teachers kept bringing their
+  body back over the wheels for seconds after a stop and crept 1.3-6.5 cm in the stop acceptance's last 4 s (bar
+  1), where their own targets frozen 2 s after the release left 0.12-0.30 cm, and neither reward terms (restlock,
+  the leg-target hold up to x10) nor a stop clock in the observation taught a policy to hold still (2026-10-29 to
+  11-01, scratchpad w17/creep_split.py, w20). The deploy side holds the same way (JointPositionAction
+  `hold_after_s`, `hold_speed`, `hold_release_speed`) on the command after its deadzone, which is exactly zero
+  there, as in training.
+  """
+
+  cfg: HeldJointPositionActionCfg
+
+  def __init__(self, cfg: HeldJointPositionActionCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    self._held = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+    self._zero_time = torch.zeros(self.num_envs, device=self.device)
+    self._hold_target = torch.zeros(self.num_envs, self._num_targets, device=self.device)
+
+  @property
+  def held(self) -> torch.Tensor:
+    return self._held
+
+  def process_actions(self, actions: torch.Tensor):
+    super().process_actions(actions)
+    if self.cfg.hold_after_s is None:
+      return
+    term = self._env.command_manager.get_term(self.cfg.command_name)
+    command = self._env.command_manager.get_command(self.cfg.command_name)
+    assert command is not None
+    zero = torch.all(command == 0.0, dim=1)
+    march = getattr(term, "march", None)
+    if march is not None:
+      zero = zero & ~march
+    self._zero_time = torch.where(zero, self._zero_time + self._env.step_dt, 0.0)
+    speed = torch.abs(self._entity.data.joint_vel[:, self._target_ids]).amax(dim=1)
+    # Half a step of slack: summed float steps fall just short of whole seconds.
+    due = self._zero_time >= self.cfg.hold_after_s - 0.5 * self._env.step_dt
+    engage = zero & ~self._held & due & (speed < self.cfg.hold_speed)
+    self._held = zero & ((self._held & (speed <= self.cfg.release_speed)) | engage)
+    self._hold_target = torch.where(engage.unsqueeze(1), self._processed_actions, self._hold_target)
+    self._processed_actions = torch.where(self._held.unsqueeze(1), self._hold_target, self._processed_actions)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    super().reset(env_ids)
+    ids = slice(None) if env_ids is None else env_ids
+    self._held[ids] = False
+    self._zero_time[ids] = 0.0
+
+
+@dataclass(kw_only=True)
+class HeldJointPositionActionCfg(JointPositionActionCfg):
+  """JointPositionActionCfg with the standstill hold (see HeldJointPositionAction)."""
+
+  command_name: str = "twist"
+  hold_after_s: float | None = None
+  """Hold once the command has been zero this long (s); None never holds."""
+  hold_speed: float = 0.1
+  """Joint speed (rad/s) below which every joint must turn for the hold to engage."""
+  release_speed: float = 1.0
+  """A held term lets go once a joint turns faster than this (rad/s)."""
+
+  def build(self, env: ManagerBasedRlEnv) -> HeldJointPositionAction:
+    return HeldJointPositionAction(self, env)

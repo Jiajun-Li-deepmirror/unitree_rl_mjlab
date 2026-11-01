@@ -12,7 +12,12 @@ robots that fell left out:
 plus the mean value per second (= per-step value) over the zero-command phase of
 standing_position_hold / standing_speed / standing_feet_air, for weights.
 
-Usage: python eval_standing.py --task <flat task> <checkpoint> [--envs-per-group 16]
+Usage: python eval_standing.py --task <flat task> <checkpoint> [--envs-per-group 256]
+
+64 robots per group (16 before 2026-10-24 ~19:40): the B2 teachers' creep sits near the 1 cm bar with
+a long tail (v7 2000 after backing at 1 m/s: 1.26 cm over 16 robots, 0.80 cm over 64, p90 1.5-2.6),
+so 16 robots moved the mean by a quarter of the bar from draw to draw. 256 since 2026-10-30 (user ~15:15:
+"把横移、停车这类测试从每项 64 台机器人改成 256 台"): results near a bar flipped between reruns of one checkpoint.
 """
 
 import argparse
@@ -40,7 +45,7 @@ GROUPS = [
 p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
-p.add_argument("--envs-per-group", type=int, default=16)
+p.add_argument("--envs-per-group", type=int, default=256)
 args = p.parse_args()
 
 n = args.envs_per_group

@@ -2,8 +2,16 @@
 running, the controller's march flag): over the last 20 s per mode, touchdowns per
 second per foot, share of time each foot is in the air, base drift (cm) and yaw
 change (deg), hip angle outward from the default (deg) and hip abduction RMS
-torque (Nm) front / rear, and falls."""
+torque (Nm) front / rear, and falls.
+
+Then the posture reset (user 2026-10-24 ~23:20: "原地踏步的作用是将模型的站立姿态从内收或者
+外翻重新定义回零度"): half the robots start with every hip turned SPLAY in, half out
+(mirrored left / right, from the default), stand 3 s, march 5 s, stand 3 s. Per robot the
+worst hip's distance from its default just before the march and at the end (deg; mean over
+robots, and the worst robot at the end), base drift over the march (cm), touchdowns per
+second per foot while marching, and falls."""
 import argparse
+import math
 from dataclasses import asdict
 
 import torch
@@ -72,3 +80,53 @@ for march in (False, True):
         f"| air % {' '.join(f'{100 * v:.0f}' for v in (air / n).tolist())} | drift {drift:.1f} cm, yaw {yaw:.1f} deg "
         f"| hip outward {f(ang)} deg | rms tau {f(rms)} Nm | fell {int(fell.sum())}/{args.envs}")
   env.close()
+
+SPLAY = 0.14  # rad (8 deg)
+cfg = load_env_cfg(args.task, play=True)
+cfg.scene.num_envs = args.envs
+cfg.episode_length_s = 1000.0
+cfg.events.pop("push_robot", None)
+agent_cfg = load_rl_cfg(args.task)
+env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
+venv = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+runner = load_runner_cls(args.task)(venv, asdict(agent_cfg), device="cuda:0")
+runner.load(args.checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
+policy = runner.get_inference_policy(device="cuda:0")
+robot = env.scene["robot"]
+cmd = env.command_manager.get_term("twist")
+sensor = env.scene["feet_ground_contact"]
+hip_ids, hip_names = robot.find_joints(".*_hip_joint")
+side = torch.tensor([1.0 if n[1] == "L" else -1.0 for n in hip_names], device=env.device)
+inward = torch.arange(args.envs, device=env.device) < args.envs // 2
+q = robot.data.joint_pos.clone()
+default = robot.data.default_joint_pos[:, hip_ids]
+q[:, hip_ids] = default + SPLAY * torch.where(inward, -1.0, 1.0).unsqueeze(1) * side
+robot.write_joint_state_to_sim(q, robot.data.joint_vel.clone())
+obs = venv.get_observations()
+fell = torch.zeros(args.envs, dtype=torch.bool, device=env.device)
+stand, march_n = int(3.0 / env.step_dt), int(5.0 / env.step_dt)
+off = lambda: torch.rad2deg((robot.data.joint_pos[:, hip_ids] - default).abs().amax(dim=1))  # noqa: E731
+touch = 0
+for k in range(2 * stand + march_n):
+  marching = stand <= k < stand + march_n
+  cmd.vel_command_b[:] = 0.0
+  cmd.time_left[:] = 1e9
+  cmd.march[:] = marching
+  with torch.no_grad():
+    obs, _, dones, _ = venv.step(policy(obs))
+  fell |= dones.bool()
+  if marching:
+    touch = touch + sensor.compute_first_contact(dt=env.step_dt).float().mean(0)
+  if k == stand - 1:
+    before, p0 = off(), robot.data.root_link_pos_w[:, :2].clone()
+  if k == stand + march_n - 1:
+    p1 = robot.data.root_link_pos_w[:, :2].clone()
+after = off()
+drift = (p1 - p0).norm(dim=1) * 100
+ok = ~fell
+print(f"reset | splay +-{math.degrees(SPLAY):.1f} deg | before march hip off default {float(before[ok].mean()):.1f} deg "
+      f"| after {float(after[ok].mean()):.1f} deg, worst robot {float(after[ok].max()):.1f} deg "
+      f"| march 5 s drift {float(drift[ok].mean()):.1f} cm, worst {float(drift[ok].max()):.1f} cm "
+      f"| touchdowns/s per foot {' '.join(f'{v:.2f}' for v in (touch / (march_n * env.step_dt)).tolist())} "
+      f"| fell {int(fell.sum())}/{args.envs}")
+env.close()

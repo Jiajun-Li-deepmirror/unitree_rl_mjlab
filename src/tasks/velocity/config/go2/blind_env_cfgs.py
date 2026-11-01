@@ -21,7 +21,10 @@ from src.tasks.velocity.blind_env_cfg import (
   apply_blind_r5,
   apply_blind_r6,
   apply_blind_r7,
-  apply_blind_staged,
+  apply_blind_phased,
+  apply_grip,
+  apply_no_hip_load,
+  apply_speed_clock,
 )
 from src.tasks.velocity.blind_env_cfg import (
   MAP3_STAIR_TERRAIN_NAMES as MAP3_STAIR_TERRAIN_NAMES,
@@ -108,14 +111,6 @@ def unitree_go2_blind_heading_env_cfg(
 GO2_HIP = BlindHipCfg(hip_default=-0.16, torque_ref=1.8)
 
 
-def unitree_go2_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks (see unitree_go2_blind_heading_env_cfg) with the hip-load
-  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
-  and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_go2_blind_heading_env_cfg(play=play, terrain=terrain)
-  return apply_blind_hip(cfg, GO2_HIP, training=terrain == "map3")
-
-
 # Fourth round (user 2026-10-22 ~07:30): the third-round stance and penalties, and
 # the descent cap judged on each foot's mean speed per step (the instant-speed cap
 # slowed descents to 0.63x).
@@ -171,9 +166,23 @@ def unitree_go2_blind_rest3_env_cfg(play: bool = False, terrain: str = "map3") -
   return apply_blind_r7(cfg, GO2_R7, training=terrain == "map3")
 
 
-def unitree_go2_blind_scratch_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """unitree_go2_blind_rest3_env_cfg trained from scratch with ramped weights (see
-  apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
-  training task, "stairs" and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_go2_blind_rest3_env_cfg(play=play, terrain=terrain)
-  return apply_blind_staged(cfg) if terrain == "map3" else cfg
+# Thigh plus calf (go2.xml: thigh 0.213 + calf 0.213), for apply_speed_clock.
+GO2_LEG_LENGTH = 0.426
+# Feet (FL, FR, RL, RR) in the base frame at the model's own default stance (m), for the gait clock's
+# fastest-foot speed on arcs (apply_speed_clock with "arcclock").
+GO2_FOOT_XY = ((0.193, 0.115), (0.193, -0.115), (-0.193, 0.115), (-0.193, -0.115))
+# The same with every hip at 0 ("hipzero"; see apply_no_hip_load).
+GO2_FOOT_XY_HIP0 = ((0.193, 0.142), (0.193, -0.142), (-0.193, 0.142), (-0.193, -0.142))
+
+
+def unitree_go2_blind_scratch_env_cfg(
+  play: bool = False, terrain: str = "map3", phase: str = "teacher"
+) -> ManagerBasedRlEnvCfg:
+  """unitree_go2_blind_rest3_env_cfg, the speed-dependent gait clock, the grip and the robot's own default
+  stance (apply_speed_clock, apply_grip, apply_no_hip_load): `terrain` "map3" (generated
+  map3-like flights, not map3) trains `phase` of apply_blind_phased, "stairs" and "flat"
+  are the evaluation tasks of the same policies."""
+  cfg = apply_no_hip_load(apply_grip(apply_speed_clock(unitree_go2_blind_rest3_env_cfg(play=play, terrain=terrain), GO2_LEG_LENGTH, GO2_FOOT_XY, GO2_FOOT_XY_HIP0)), get_go2_robot_cfg())
+  if terrain != "map3":
+    return cfg
+  return apply_blind_phased(cfg, phase)

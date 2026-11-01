@@ -13,6 +13,8 @@ from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
 )
 
+from .observations import gait_clock
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -35,10 +37,11 @@ def track_linear_velocity(
   The commanded z velocity is assumed to be zero. Set `z_weight` to 0 on
   terrain where vertical base motion is expected (e.g. stairs). With
   `even_std` and `scan_sensor_name`, ground that is not uneven (see
-  uneven_terrain_mask) uses the tighter `even_std`. With `min_std` instead,
-  the std shrinks with the commanded planar speed to clamp(|v_cmd,xy|,
-  min_std, std): standing still then keeps exp(-1) of the reward at any
-  command of at least `min_std`, not most of it at slow ones (Irie et al. 2025).
+  uneven_terrain_mask) uses the tighter `even_std`. With `min_std`, the std
+  shrinks with the commanded planar speed to clamp(|v_cmd,xy|, min_std, std)
+  (std: the even or uneven one): standing still then keeps exp(-1) of the
+  reward at any command of at least `min_std`, not most of it at slow ones
+  (Irie et al. 2025).
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -47,14 +50,12 @@ def track_linear_velocity(
   xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
   z_error = torch.square(actual[:, 2])
   lin_vel_error = xy_error + (z_weight * z_error)
+  std_t = torch.full_like(lin_vel_error, std)
+  if even_std is not None and scan_sensor_name is not None:
+    std_t = torch.where(uneven_terrain_mask(env, scan_sensor_name), std_t, even_std)
   if min_std is not None:
-    assert even_std is None, "min_std and even_std are exclusive."
-    std_t = torch.clamp(torch.norm(command[:, :2], dim=1), min=min_std, max=std)
-    return torch.exp(-lin_vel_error / std_t**2)
-  if even_std is None or scan_sensor_name is None:
-    return torch.exp(-lin_vel_error / std**2)
-  uneven = uneven_terrain_mask(env, scan_sensor_name)
-  std_t = torch.where(uneven, std, even_std)
+    speed = torch.norm(command[:, :2], dim=1)
+    std_t = torch.minimum(speed.clamp(min=min_std), std_t)
   return torch.exp(-lin_vel_error / std_t**2)
 
 
@@ -64,25 +65,51 @@ def track_angular_velocity(
   command_name: str,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   min_std: float | None = None,
+  yaw_accel: float | None = None,
 ) -> torch.Tensor:
   """Reward heading error for heading-controlled envs, angular velocity for others.
 
   The commanded xy angular velocities are assumed to be zero. With `min_std`,
   the std of the yaw rate error shrinks with the commanded yaw rate to
-  clamp(|wz_cmd|, min_std, std), as in track_linear_velocity; the xy term
-  keeps `std`.
+  clamp(|wz_cmd|, min_std, std), as in track_linear_velocity; the xy term keeps
+  `std`. With `yaw_accel` (rad/s^2) the yaw rate is tracked against
+  _yaw_reference (the command's rate rising at most that fast; the policy still
+  observes the command itself).
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
   assert command is not None, f"Command '{command_name}' not found."
   actual = asset.data.root_link_ang_vel_b
-  z_error = torch.square(command[:, 2] - actual[:, 2])
+  target = command[:, 2] if yaw_accel is None else _yaw_reference(env, command_name, yaw_accel)
+  z_error = torch.square(target - actual[:, 2])
   xy_error = torch.sum(torch.square(actual[:, :2]), dim=1)
   if min_std is not None:
-    z_std = torch.clamp(torch.abs(command[:, 2]), min=min_std, max=std)
+    rate = torch.abs(command[:, 2])
+    z_std = torch.clamp(rate, min=min_std, max=std)
     return torch.exp(-z_error / z_std**2 - 0.05 * xy_error / std**2)
   ang_vel_error = z_error + (0.05 * xy_error)
   return torch.exp(-ang_vel_error / std**2)
+
+
+def _yaw_reference(env: ManagerBasedRlEnv, command_name: str, yaw_accel: float) -> torch.Tensor:
+  """The commanded yaw rate with its magnitude rising at most `yaw_accel` rad/s^2 (2026-11-01, B2 spin-up falls).
+
+  It starts at 0 with each episode, drops at once when the command slows, stops or reverses, and is updated once
+  per env step (the reward computes before resets, so a robot reset on the last step has episode length 1 here).
+  B2 spun up to 80% of 1.5 rad/s in 0.12 s from a standstill, with one foot down and 16-26 deg of roll at
+  0.1-0.3 s, and fell 7 of 4096 at low foot friction; the same policy under a command ramped over 0.5 s fell 0.
+  """
+  wz = env.command_manager.get_command(command_name)[:, 2]
+  refs = env.__dict__.setdefault("_yaw_refs", {})
+  step, ref = refs.get(command_name, (None, None))
+  if step == env.common_step_counter:
+    return ref
+  if ref is None:
+    ref = torch.zeros_like(wz)
+  ref = torch.where((env.episode_length_buf > 1) & (wz * ref > 0), ref, 0.0)
+  ref = torch.sign(wz) * torch.minimum(wz.abs(), ref.abs() + yaw_accel * env.step_dt)
+  refs[command_name] = (env.common_step_counter, ref)
+  return ref
 
 
 def body_orientation_l2(
@@ -223,18 +250,25 @@ def feet_gait(
         max_lin_vel_y: float = 0.1,
         max_ang_vel_z: float = 0.1,
         scan_sensor_name: str | None = None,
+        ref_speed: float | None = None,
+        foot_xy: tuple[tuple[float, float], ...] | None = None,
+        march_scale: float = 1.0,
 ) -> torch.Tensor:
-    """Reward feet whose contact state matches the gait clock. With `march_only`, only
+    """Reward feet whose contact state matches the gait clock (mdp.gait_clock: with
+    `ref_speed` its period shortens at speed, with `foot_xy` at the fastest foot's speed,
+    shared with the phase observation). With `march_only`, only
     while marching in place (the command term's march flag): wheeled robots drive with
     all wheels down and step only when told to march (seventh round). With
     `stepping_only`, while marching or under a command the wheels cannot drive
     (sideways beyond `max_lin_vel_y` or turning beyond `max_ang_vel_z`, as in
     wheel_air_drivable), and with `scan_sensor_name` only on even ground: wheeled
     robots then step to the clock wherever they step on flat ground (user
-    2026-10-22), and lift freely over stair edges."""
+    2026-10-22), and lift freely over stair edges. While marching in place the
+    reward is `march_scale` times as large: standing still matches the clock's
+    stance share (56% of the wheeled trot) for free."""
     sensor: ContactSensor = env.scene[sensor_name]
     is_contact = sensor.data.current_contact_time > 0
-    global_phase = ((env.episode_length_buf * env.step_dt) / period).unsqueeze(1)
+    global_phase = gait_clock(env, period, command_name, ref_speed, foot_xy).unsqueeze(1)
     offsets = torch.as_tensor(offset, device=env.device, dtype=global_phase.dtype).view(1, -1)
     leg_phase = (global_phase + offsets) % 1.0
     is_stance = (leg_phase < threshold)
@@ -256,6 +290,10 @@ def feet_gait(
             if scan_sensor_name is not None:
                 gate = gate & ~uneven_terrain_mask(env, scan_sensor_name)
         reward = reward * gate.float()
+    if march_scale != 1.0:
+        march = getattr(env.command_manager.get_term(command_name), "march", None)
+        assert march is not None, "march_scale: the command term has no march flag"
+        reward = torch.where(march, march_scale * reward, reward)
     return reward
 
 
@@ -429,6 +467,45 @@ def wheel_air_drivable(
     assert hip_cfg is not None
     in_air = in_air * (_hip_outward(env, hip_cfg) <= free_splay).float()
   return torch.mean(in_air, dim=1) * drivable.float()
+
+
+def _stepping_in_place(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float,
+  scan_sensor_name: str | None,
+) -> torch.Tensor:
+  """Marching in place, or a command with no forward part (sideways, turning in
+  place): a wheeled robot moves by stepping. Not at the zero command and, with
+  `scan_sensor_name`, only on even ground."""
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  stepping = ~_zero_command_mask(env, command_name, command_threshold) & (torch.abs(command[:, 0]) <= 1e-6)
+  if scan_sensor_name is not None:
+    stepping &= ~uneven_terrain_mask(env, scan_sensor_name)
+  return stepping
+
+
+def stepping_wheel_target(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  action_name: str = "wheel_vel",
+  command_threshold: float = 0.1,
+  scan_sensor_name: str | None = None,
+) -> torch.Tensor:
+  """Summed |wheel velocity target| (rad/s) while stepping without a forward command
+  (see _stepping_in_place), on every wheel: a grounded wheel then brakes by its
+  damping, and a wheel in the air lands still.
+
+  standing_wheel_target's cost for the same reason at the zero command: the policy
+  sets the targets and observes them (its last action), the wheel speed it does
+  not set alone. The v11w teachers' (charged on the wheel speed) wheels in the air turned
+  at ~2.5 rad/s stepping sideways (Go2W 2000: fronts back, rears forward).
+  """
+  term = env.action_manager.get_term(action_name)
+  target = term.raw_action * term.scale
+  stepping = _stepping_in_place(env, command_name, command_threshold, scan_sensor_name)
+  return torch.sum(torch.abs(target), dim=1) * stepping.float()
 
 
 def _hip_outward(env: ManagerBasedRlEnv, hip_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -723,16 +800,32 @@ def stair_speed_deficit(
   sensor_name: str,
   ratio: float = 0.9,
   min_speed: float = 0.1,
+  even: bool = False,
+  ratio_high: float | None = None,
+  axis_min: float | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """On uneven ground (stairs), how far the speed along the commanded direction
   falls short of `ratio` times the commanded speed, as a fraction of the command
   (0 to 1). Going faster than that earns nothing, so it cannot pay to rush.
+  With `ratio_high` it also charges going faster than that times the command, the
+  same way (two-sided).
+
+  With `axis_min`, commands whose forward and sideways parts are both at least
+  that (diagonals) are judged per axis instead, as the acceptance does: the sum
+  of the forward and the sideways deficits, each a fraction of its own part.
+  Along the direction, going faster on one axis hides a shortfall on the other
+  (Go2W v12w 4000 at (0.6, 0.4): x 108%, y 68%, along 0.96x, no charge).
 
   The wheeled stairs policies (2026-10-20) went down map3's flights at 0.5-0.7x
   the command: at tracking std 0.35 half of 0.4 m/s costs 28% of the tracking
   reward. An ungated descent progress reward made the go2-depth wheeled robots
   rush down at 1.35-5x instead.
+
+  With `even` the same on even ground instead (2026-10-23: the phased legged
+  teachers marched in place at 1.5 m/s commands: walking at 1.0 earned almost no
+  tracking at std 0.35 and paid the stepping costs; the deficit costs ~1.8/s for
+  not moving at 1.5 m/s at weight -2, ~0.4 at 1.0 m/s).
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -742,7 +835,18 @@ def stair_speed_deficit(
   direction = cmd / speed.clamp(min=1e-6).unsqueeze(1)
   along = (asset.data.root_link_lin_vel_b[:, :2] * direction).sum(dim=1)
   deficit = ((ratio * speed - along) / speed.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
-  active = (speed >= min_speed) & uneven_terrain_mask(env, sensor_name)
+  if ratio_high is not None:
+    deficit = deficit + ((along - ratio_high * speed) / speed.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+  if axis_min is not None:
+    part = cmd.abs()
+    moved = asset.data.root_link_lin_vel_b[:, :2] * torch.sign(cmd)
+    axes = ((ratio * part - moved) / part.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+    if ratio_high is not None:
+      axes = axes + ((moved - ratio_high * part) / part.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+    diagonal = (part >= axis_min).all(dim=1)
+    deficit = torch.where(diagonal, axes.sum(dim=1), deficit)
+  uneven = uneven_terrain_mask(env, sensor_name)
+  active = (speed >= min_speed) & (~uneven if even else uneven)
   return torch.where(active, deficit, torch.zeros_like(deficit))
 
 
@@ -818,9 +922,11 @@ def stand_still_even(
   uneven_threshold: float = 0.05,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   rest_hip: float | None = None,
+  hold_term: str | None = None,
 ) -> torch.Tensor:
   """Penalize deviation from the default pose while standing on even ground; with
-  `rest_hip`, from the rest stance (hips at that outward angle, see _rest_pose)."""
+  `rest_hip`, from the rest stance (hips at that outward angle, see _rest_pose). With
+  `hold_term` (a standing_position_hold term), not once that term holds its anchor."""
   asset: Entity = env.scene[asset_cfg.name]
   desired = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
   if rest_hip is not None:
@@ -829,7 +935,93 @@ def stand_still_even(
   cost = torch.sum(torch.square(diff), dim=1)
   scale = _standing_scale(env, command_name, command_threshold, calm_std, asset_cfg)
   even = ~uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+  if hold_term is not None:
+    even &= ~_hold_locked(env, hold_term)
   return cost * scale * even.float()
+
+
+def _hold_locked(env: ManagerBasedRlEnv, hold_term: str) -> torch.Tensor:
+  """Robots whose standing_position_hold term `hold_term` holds its anchor (standing, settled or past its push
+  window); as of that term's last call (the previous step when it comes later in the reward order)."""
+  return env.reward_manager.get_term_cfg(hold_term).func.locked
+
+
+def drive_still_even(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.1,
+  max_lin_vel_y: float = 0.1,
+  max_ang_vel_z: float = 0.1,
+  uneven_radius: float = 0.45,
+  uneven_threshold: float = 0.05,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Squared deviation of the selected joints from the default pose while a wheeled
+  robot drives on even ground (a moving command with |vy| and |wz| within the limits,
+  the wheels' share): stand_still_even for driving. Unlike the posture term's exp
+  kernel it does not flatten far from the default, so a crouch keeps a pull back."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  # Marching in place counts as activity (_command_activity) but is no drive.
+  drive = (
+    (torch.norm(command[:, :2], dim=1) + command[:, 2].abs() > command_threshold)
+    & (command[:, 1].abs() <= max_lin_vel_y)
+    & (command[:, 2].abs() <= max_ang_vel_z)
+    & ~uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+  )
+  diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  return torch.sum(torch.square(diff), dim=1) * drive.float()
+
+
+class drive_still_even_lp:
+  """drive_still_even on the joints' deviation low-passed over `tau_s` (exponential average, restarted at
+  each reset). A held crouch pays as before; the step-to-step wobble from the action noise averages out,
+  so the policy gains nothing by cancelling its own noise through the last-action input. Charged
+  per step (B2W v13wg, 2026-10-28), that cancelling grew a thigh / calf action loop with gains 4-36
+  from 2200 on (w13/big_gain2.py; v13wf below 2). Right after resets, deterministic actions then ran away
+  x3 per step and the robots sat down (86 falls at the 3000 gate)."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    self.avg: torch.Tensor | None = None
+    self.restart = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.restart[env_ids] = True
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    command_threshold: float = 0.1,
+    max_lin_vel_y: float = 0.1,
+    max_ang_vel_z: float = 0.1,
+    uneven_radius: float = 0.45,
+    uneven_threshold: float = 0.05,
+    tau_s: float = 0.5,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    asset: Entity = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    if self.avg is None:
+      self.avg = diff.clone()
+    self.avg[self.restart] = diff[self.restart]
+    self.restart[:] = False
+    alpha = min(1.0, env.step_dt / tau_s)
+    self.avg += alpha * (diff - self.avg)
+    drive = (
+      (torch.norm(command[:, :2], dim=1) + command[:, 2].abs() > command_threshold)
+      & (command[:, 1].abs() <= max_lin_vel_y)
+      & (command[:, 2].abs() <= max_ang_vel_z)
+      & ~uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+    )
+    return torch.sum(torch.square(self.avg), dim=1) * drive.float()
 
 
 def standing_joint_vel(
@@ -877,18 +1069,64 @@ class standing_position_hold:
   (2026-10-22), which the zero-command tracking terms barely see either. Their
   steps sway the base, so `moving_speed` and `moving_yaw_rate` must sit above that
   sway.
+
+  With `push_window` (seconds) the anchor follows pushes instead of the base's own
+  motion: for `push_window` after a push (push_by_setting_velocity_marked) or after
+  standing starts (braking), never because the base moves. Speed-based following
+  lets the policy buy its way out: at -40 the march-hold pilots (2026-10-23) walked
+  off at ~0.35 m/s, just over moving_speed 0.25, 7 m per 20 s of marching. With
+  `settle` the following ends early once the base has settled (no faster than
+  `moving_speed` / `moving_yaw_rate`, at least 0.2 s after the push or start):
+  only a push or a start can set the anchor going, settling only stops it.
+  With `smooth_s` (one gait period) the hold sees the base's mean pose over that
+  window instead of the instant one, so the stepping sway cancels, and `settle`
+  waits until the mean speed and yaw rate over the window are at most
+  `settle_speed` / `settle_yaw_rate` (and one window has passed): marching steadily
+  in place, no longer sliding out a push. The instant rule (2026-10-24, legged v3)
+  locked at 0.25 m/s 0.2 s after a push, and a ~3 cm mean offset of sway and push
+  residue buried the 0.2-0.7 cm/s drift the 20 s march acceptance measures.
   """
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
     self.anchor_pos = torch.zeros(env.num_envs, 2, device=env.device)
     self.anchor_yaw = torch.zeros(env.num_envs, device=env.device)
     self.needs_anchor = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    self.was_standing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    self.excused = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    self.excused_since = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+    self.locked = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)  # standing, anchor held
+    self.seen_push = torch.full((env.num_envs,), -(10**9), dtype=torch.long, device=env.device)
+    self.history: torch.Tensor | None = None  # x, y, cos / sin heading over `smooth_s`
+    self.slot = 0
+
+  def _window_mean(
+    self, env: ManagerBasedRlEnv, pos: torch.Tensor, yaw: torch.Tensor, window_s: float
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Mean base position and heading over the last `window_s`, and the mean speed and
+    yaw rate across it (displacement and heading change over the window)."""
+    n = max(1, round(window_s / env.step_dt))
+    sample = torch.stack((pos[:, 0], pos[:, 1], torch.cos(yaw), torch.sin(yaw)), dim=1)
+    if self.history is None or self.history.shape[1] != n:
+      self.history = sample.unsqueeze(1).repeat(1, n, 1)
+      self.slot = 0
+    fresh = self.needs_anchor
+    self.history[fresh] = sample[fresh].unsqueeze(1)
+    oldest = self.history[:, self.slot].clone()
+    self.history[:, self.slot] = sample
+    self.slot = (self.slot + 1) % n
+    mean = self.history.mean(dim=1)
+    span = n * env.step_dt
+    speed = torch.norm(pos - oldest[:, :2], dim=1) / span
+    yaw_rate = torch.abs(wrap_to_pi(yaw - torch.atan2(oldest[:, 3], oldest[:, 2]))) / span
+    return mean[:, :2], torch.atan2(mean[:, 3], mean[:, 2]), speed, yaw_rate
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     if env_ids is None:
       env_ids = slice(None)
     # Set at the next call: the root pose may still be the previous episode's.
     self.needs_anchor[env_ids] = True
+    self.was_standing[env_ids] = False
+    self.excused[env_ids] = False
 
   def __call__(
     self,
@@ -900,27 +1138,165 @@ class standing_position_hold:
     max_dist: float = 0.3,
     yaw_scale: float = 0.3,
     march: bool = False,
+    push_window: float | None = None,
+    settle: bool = False,
+    smooth_s: float | None = None,
+    settle_speed: float = 0.03,
+    settle_yaw_rate: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> torch.Tensor:
+    standing, pos, yaw = self._follow(
+      env, command_name, command_threshold, moving_speed, moving_yaw_rate, march, push_window, settle,
+      smooth_s, settle_speed, settle_yaw_rate, asset_cfg,
+    )
+    dist = torch.norm(pos - self.anchor_pos, dim=1).clamp(max=max_dist)
+    turn = torch.abs(wrap_to_pi(yaw - self.anchor_yaw))
+    return standing.float() * (dist + yaw_scale * turn)
+
+  def _follow(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float,
+    moving_speed: float,
+    moving_yaw_rate: float,
+    march: bool,
+    push_window: float | None,
+    settle: bool,
+    smooth_s: float | None,
+    settle_speed: float,
+    settle_yaw_rate: float,
+    asset_cfg: SceneEntityCfg,
+  ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Move the anchor with the base where it follows; the standing mask, the (smoothed) base position and
+    heading. Sets self.follow."""
     asset: Entity = env.scene[asset_cfg.name]
     pos = asset.data.root_link_pos_w[:, :2]
     yaw = asset.data.heading_w
     speed = torch.norm(asset.data.root_link_lin_vel_b[:, :2], dim=1)
     yaw_rate = torch.abs(asset.data.root_link_ang_vel_b[:, 2])
+    calm_speed, calm_yaw_rate, calm_after = moving_speed, moving_yaw_rate, 0.2
+    if smooth_s is not None:
+      pos, yaw, speed, yaw_rate = self._window_mean(env, pos, yaw, smooth_s)
+      calm_speed, calm_yaw_rate, calm_after = settle_speed, settle_yaw_rate, smooth_s
     if march:
       standing = getattr(env.command_manager.get_term(command_name), "march", None)
       assert standing is not None, "march: the command term has no march flag"
     else:
       standing = _zero_command_mask(env, command_name, command_threshold)
-    follow = (
-      ~standing | (speed > moving_speed) | (yaw_rate > moving_yaw_rate) | self.needs_anchor
-    )
+    if push_window is None:
+      follow = (
+        ~standing | (speed > moving_speed) | (yaw_rate > moving_yaw_rate) | self.needs_anchor
+      )
+    else:
+      step = env.common_step_counter
+      new = standing & ~self.was_standing
+      self.was_standing = standing.clone()
+      stamp = getattr(env, "_push_step", None)
+      if stamp is not None:
+        new |= stamp > self.seen_push
+        self.seen_push = stamp.clone()
+      self.excused |= new
+      self.excused_since = torch.where(new, step, self.excused_since)
+      elapsed = (step - self.excused_since) * env.step_dt
+      self.excused &= elapsed <= push_window
+      if settle:
+        settled = (speed <= calm_speed) & (yaw_rate <= calm_yaw_rate) & (elapsed >= calm_after)
+        self.excused &= ~settled
+      follow = ~standing | self.excused | self.needs_anchor
     self.anchor_pos = torch.where(follow.unsqueeze(1), pos, self.anchor_pos)
     self.anchor_yaw = torch.where(follow, yaw, self.anchor_yaw)
     self.needs_anchor[:] = False
-    dist = torch.norm(pos - self.anchor_pos, dim=1).clamp(max=max_dist)
-    turn = torch.abs(wrap_to_pi(yaw - self.anchor_yaw))
-    return standing.float() * (dist + yaw_scale * turn)
+    self.follow = follow
+    self.locked = standing & ~follow
+    return standing, pos, yaw
+
+
+class standing_target_hold(standing_position_hold):
+  """Penalize the legs' position targets moving once the robot has come to rest while commanded to stand:
+  the norm of the change of the targets (low-passed over `tau_s`, so the step-to-step action noise averages
+  out, see drive_still_even_lp) since the anchor locked, clamped to `max_dev` (rad). The anchor follows as in
+  standing_position_hold with the same params (one gait period's smoothing, push window, settling).
+
+  A wheeled robot standing on braked wheels moves its base whenever its legs move. The B2W final (polish 7000,
+  kp 160) kept changing its leg targets after stops (3-12 deg summed over the last 4 s) and crept 0.75-2.22 cm
+  per 4 s (bar 1); frozen targets at kp 240 ("legkp15") crept 0.21-0.91 (2026-10-29, scratchpad
+  w17/creep_split.py). The base hold (standing_position_hold, -40 on B2W) sees the creep only as the cm it
+  makes, which the posture terms' pull toward the default pose outbid.
+
+  With `anchor_s` the anchor is the mean of the targets over the first `anchor_s` after the lock (the low-pass
+  restarts from it, nothing is charged meanwhile), not the low-passed target at the lock: that one lags the
+  targets by ~`tau_s`, and after a stop, when the targets still move as the anchor locks, holding still paid
+  0.8-1.1 per second (3.6 standing from the start) that only moving the targets back to the lagged average could
+  cut (B2W v13wo teacher 4000, 2026-11-01, scratchpad w20/rew_attr2.py)."""
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    self.avg: torch.Tensor | None = None
+    self.anchor_target: torch.Tensor | None = None
+    self.restart = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    self.held = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)  # steps since the lock
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    super().reset(env_ids)
+    self.restart[slice(None) if env_ids is None else env_ids] = True
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    moving_speed: float = 0.1,
+    moving_yaw_rate: float = 0.2,
+    push_window: float | None = None,
+    settle: bool = False,
+    smooth_s: float | None = None,
+    settle_speed: float = 0.03,
+    settle_yaw_rate: float = 0.1,
+    tau_s: float = 0.5,
+    max_dev: float = 0.5,
+    anchor_s: float | None = None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> torch.Tensor:
+    standing, _, _ = self._follow(
+      env, command_name, command_threshold, moving_speed, moving_yaw_rate, False, push_window, settle,
+      smooth_s, settle_speed, settle_yaw_rate, asset_cfg,
+    )
+    asset: Entity = env.scene[asset_cfg.name]
+    target = asset.data.joint_pos_target[:, asset_cfg.joint_ids]
+    if self.avg is None or self.anchor_target is None:
+      self.avg = target.clone()
+      self.anchor_target = target.clone()
+    self.avg[self.restart] = target[self.restart]
+    self.restart[:] = False
+    if anchor_s is None:
+      self.avg += min(1.0, env.step_dt / tau_s) * (target - self.avg)
+      self.anchor_target = torch.where(self.follow.unsqueeze(1), self.avg, self.anchor_target)
+    else:
+      self.held = torch.where(self.follow, 0, self.held + 1)
+      building = (~self.follow & (self.held <= max(1, round(anchor_s / env.step_dt)))).unsqueeze(1)
+      n = self.held.clamp(min=1).unsqueeze(1).float()
+      mean = torch.where(n > 1, self.anchor_target + (target - self.anchor_target) / n, target)
+      self.anchor_target = torch.where(self.follow.unsqueeze(1), target, torch.where(building, mean, self.anchor_target))
+      self.avg += min(1.0, env.step_dt / tau_s) * (target - self.avg)
+      self.avg = torch.where(self.follow.unsqueeze(1) | building, self.anchor_target, self.avg)
+    dev = torch.norm(self.avg - self.anchor_target, dim=1).clamp(max=max_dev)
+    return standing.float() * dev
+
+
+def march_joint_deviation(
+  env: ManagerBasedRlEnv, command_name: str, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Squared distance of the selected joints from their default while marching in place
+  (the command term's march flag). With the hips: each step sets its foot down at the
+  default stance, so a march resets a stance that drifted in or out while standing (user
+  2026-10-24 ~23:20); standing still cannot move a planted foot back."""
+  asset: Entity = env.scene[asset_cfg.name]
+  marching = getattr(env.command_manager.get_term(command_name), "march", None)
+  assert marching is not None, "march_joint_deviation: the command term has no march flag"
+  ids = asset_cfg.joint_ids
+  dev = asset.data.joint_pos[:, ids] - asset.data.default_joint_pos[:, ids]
+  return marching.float() * torch.sum(torch.square(dev), dim=1)
 
 
 class straight_drift:
@@ -939,13 +1315,32 @@ class straight_drift:
   an operator. A blind policy sees no heading, so it lowers this cost by keeping
   its yaw rate and sideways velocity at zero on average.
 
+  `offset_ratio_scale` adds the sideways offset as a share of the distance walked
+  along the line (at least `offset_min_distance`), / `offset_ratio_scale` and
+  clamped at 1: the acceptance judges the offset per distance walked (<= 5%), and
+  walking slower does not lower a share (user 2026-10-23 ~02:50).
+
   `sideways_only` limits it to commands without a forward part (walking sideways:
   the sixth-round wheeled policies turned up to 15-16 deg per 10 s there, p90).
   `max_speed` and `forward_only` limit it to commands up to that planar speed and
   without a sideways part: penalized at 1.5 m/s and sideways, Go2 and As2
   (2026-10-20) gave up 10 points of top speed and of diagonal sideways speed,
   where walking slower drifted less.
+
+  With `uneven_sensor_name` only the heading part counts on uneven ground (stairs),
+  times `uneven_scale`: the acceptance judges the line on flat ground, and on stairs
+  climbing pushes the base sideways (see the "stairline" switch in apply_blind_phased).
+  `uneven_share` keeps the offset share there too, next to the heading (the "stairshare"
+  switch). With `uneven_heading_obs` (a critic observation term of mdp.heading_error)
+  the heading part on stairs is the heading error the policy observes, clamped at
+  `uneven_turn_max` instead of 1 (the "stairhead" switch).
+
+  `settle_pos` (the position `SETTLE_S` into the line) and `since` (steps since the
+  line started) do not enter the cost: the "back_drift" constraint metric measures
+  from there, past the start's carry-over (mdp.constraints._back_drift).
   """
+
+  SETTLE_S = 1.0
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
     n = env.num_envs
@@ -954,6 +1349,8 @@ class straight_drift:
     self.ref_dir = torch.zeros(n, 2, device=env.device)
     self.prev_command = torch.zeros(n, 3, device=env.device)
     self.active = torch.zeros(n, dtype=torch.bool, device=env.device)
+    self.settle_pos = torch.zeros(n, 2, device=env.device)
+    self.since = torch.zeros(n, dtype=torch.long, device=env.device)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     if env_ids is None:
@@ -972,6 +1369,13 @@ class straight_drift:
     max_speed: float | None = None,
     forward_only: bool = False,
     sideways_only: bool = False,
+    offset_ratio_scale: float | None = None,
+    offset_min_distance: float = 0.5,
+    uneven_sensor_name: str | None = None,
+    uneven_scale: float = 1.0,
+    uneven_share: bool = False,
+    uneven_heading_obs: str | None = None,
+    uneven_turn_max: float = 1.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
@@ -996,14 +1400,32 @@ class straight_drift:
     self.ref_heading = torch.where(start, heading, self.ref_heading)
     self.ref_pos = torch.where(start.unsqueeze(1), pos, self.ref_pos)
     self.ref_dir = torch.where(start.unsqueeze(1), direction, self.ref_dir)
+    self.since = torch.where(start, torch.zeros_like(self.since), self.since + 1)
+    settling = (self.since.float() * env.step_dt <= self.SETTLE_S).unsqueeze(1)
+    self.settle_pos = torch.where(settling, pos, self.settle_pos)
     self.active = straight
     self.prev_command = command.clone()
     turn = torch.abs(wrap_to_pi(heading - self.ref_heading))
     cost = (turn / heading_scale).clamp(max=1.0)
+    rel = pos - self.ref_pos
+    side = torch.abs(self.ref_dir[:, 0] * rel[:, 1] - self.ref_dir[:, 1] * rel[:, 0])
     if lateral_scale is not None:
-      rel = pos - self.ref_pos
-      side = torch.abs(self.ref_dir[:, 0] * rel[:, 1] - self.ref_dir[:, 1] * rel[:, 0])
       cost = cost + (side / lateral_scale).clamp(max=1.0)
+    share = torch.zeros_like(cost)
+    if offset_ratio_scale is not None:
+      along = (self.ref_dir * rel).sum(dim=1).clamp(min=offset_min_distance)
+      share = (side / along / offset_ratio_scale).clamp(max=1.0)
+      cost = cost + share
+    if uneven_sensor_name is not None:
+      uneven = uneven_terrain_mask(env, uneven_sensor_name)
+      stair_turn = turn
+      if uneven_heading_obs is not None:
+        # The observation's target heading (it integrates the commanded yaw rate from the
+        # reset on and stays within its max_error of the base heading).
+        observed = env.observation_manager.get_term_cfg("critic", uneven_heading_obs).func
+        stair_turn = torch.abs(wrap_to_pi(observed.target - heading))
+      stairs = (stair_turn / heading_scale).clamp(max=uneven_turn_max) + (share if uneven_share else 0.0)
+      cost = torch.where(uneven, stairs * uneven_scale, cost)
     return torch.where(straight & ~start, cost, torch.zeros_like(cost))
 
 
@@ -1262,6 +1684,45 @@ def feet_terrain_clearance(
   return torch.sum(torch.where(edge & swing, torch.square(shortfall), 0.0), dim=1)
 
 
+def feet_edge(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  contact_sensor_name: str,
+  edge_sensor_names: tuple[str, ...],
+  span: float = 0.03,
+) -> torch.Tensor:
+  """Number of feet in contact standing at a stair edge, on robots that spawned on
+  the stairs (Extreme Parkour's feet_edge; the user 2026-10-30, legged group).
+
+  Each foot has a ray grid around it (`edge_sensor_names`, in the contact sensor's
+  foot order); a foot is at an edge when the hit heights under it span more than
+  `span` or a ray misses. The legged finals (2026-10-30, scratchpad
+  w18/kit/go2-blind/tools/foot_edge_diag.py, +-4 cm grid, 0.5 m/s) stood at edges
+  17-19% of their stance time and 21-23% of their touchdowns, about what random
+  footfalls on 25-32 cm treads give, and slid there faster climbing 15-18 cm steps
+  (10-13 vs 7 cm/s); none fell in simulation.
+  """
+  at_edge = feet_at_edge(env, contact_sensor_name, edge_sensor_names, span)
+  stairs = env.command_manager.get_term(command_name).is_stair_env
+  return torch.sum(at_edge, dim=1).float() * stairs.float()
+
+
+def feet_at_edge(
+  env: ManagerBasedRlEnv, contact_sensor_name: str, edge_sensor_names: tuple[str, ...], span: float = 0.03
+) -> torch.Tensor:
+  """Per foot (envs, feet): in contact and at an edge (see feet_edge)."""
+  contact: ContactSensor = env.scene[contact_sensor_name]
+  assert contact.data.found is not None
+  edge = []
+  for name in edge_sensor_names:
+    data = env.scene[name].data
+    miss = data.distances < 0.0
+    z = data.hit_pos_w[..., 2]
+    spread = z.masked_fill(miss, -1e3).amax(dim=1) - z.masked_fill(miss, 1e3).amin(dim=1)
+    edge.append((spread > span) | miss.any(dim=1))
+  return (contact.data.found > 0) & torch.stack(edge, dim=1)
+
+
 class feet_foothold_height_gain:
   """Reward each foot for standing higher than it has stood before this episode.
 
@@ -1368,7 +1829,9 @@ class variable_posture_terrain_aware(variable_posture):
   """variable_posture that uses the walking tolerance when standing on uneven ground.
 
   Standing on stairs needs different joint angles per leg, so the tight
-  standing tolerance only applies on even ground.
+  standing tolerance only applies on even ground. With `drive_max_lin_vel_y`
+  (wheeled), moving commands the wheels drive (|vy| and |wz| within the limits)
+  on even ground keep the standing tolerance too: the legs do not step there.
   """
 
   def __call__(
@@ -1386,6 +1849,9 @@ class variable_posture_terrain_aware(variable_posture):
     uneven_threshold: float = 0.05,
     rest_hip: float | None = None,
     calm_std: float = 0.1,
+    drive_max_lin_vel_y: float | None = None,
+    drive_max_ang_vel_z: float = 0.1,
+    hold_term: str | None = None,
   ) -> torch.Tensor:
     del std_standing, std_walking, std_running  # Unused.
 
@@ -1408,6 +1874,14 @@ class variable_posture_terrain_aware(variable_posture):
       + self.std_walking * walking_mask.unsqueeze(1)
       + self.std_running * running_mask.unsqueeze(1)
     )
+    if drive_max_lin_vel_y is not None:
+      drive = (
+        (total_speed >= walking_threshold)
+        & (command[:, 1].abs() <= drive_max_lin_vel_y)
+        & (command[:, 2].abs() <= drive_max_ang_vel_z)
+        & ~uneven
+      )
+      std = torch.where(drive.unsqueeze(1), self.std_standing.expand_as(std), std)
 
     current_joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
     desired_joint_pos = self.default_joint_pos[:, asset_cfg.joint_ids]
@@ -1418,6 +1892,16 @@ class variable_posture_terrain_aware(variable_posture):
       ang_vel_z = asset.data.root_link_ang_vel_b[:, 2]
       calm = torch.exp(-(torch.sum(torch.square(lin_vel_xy), dim=1) + torch.square(ang_vel_z)) / calm_std)
       desired_joint_pos = _rest_pose(asset, asset_cfg.joint_ids, desired_joint_pos, rest_hip, calm * standing_mask)
+    if hold_term is not None:
+      # Once the standing hold has its anchor the pose to keep is the one the robot settled in (2026-11-01):
+      # on braked wheels a return to the default pose moves the base, and the B2W v13wn teacher crept 2-3 cm per
+      # 4 s after stops doing so (frozen actions 0.1-0.3). The settling (up to the hold's push window) and a
+      # march still bring the default pose back.
+      locked = _hold_locked(env, hold_term)
+      if getattr(self, "lock_pos", None) is None:
+        self.lock_pos = current_joint_pos.clone()
+      self.lock_pos = torch.where(locked.unsqueeze(1), self.lock_pos, current_joint_pos)
+      desired_joint_pos = torch.where(locked.unsqueeze(1), self.lock_pos, desired_joint_pos)
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
@@ -1452,9 +1936,10 @@ class hip_torque_sq:
   ) -> torch.Tensor:
     """With `command_name`, the cost is `standing_scale` times higher while the
     command is zero (the hip motors overheat mostly while the robot stands); with
-    `sensor_name` (a height scan), `uneven_scale` times higher again while standing
-    on uneven ground: stopped mid-flight the sixth-round policies loaded their hips
-    about twice as much as standing on flat ground (B2 49-51 Nm front)."""
+    `sensor_name` (a height scan), `uneven_scale` times
+    higher again while standing on uneven ground: stopped mid-flight the sixth-round
+    policies loaded their hips about twice as much as standing on flat ground (B2
+    49-51 Nm front)."""
     del actuator_names
     asset: Entity = env.scene[asset_name]
     tau = asset.data.actuator_force[:, self.ids]
@@ -1476,11 +1961,13 @@ def hip_splay(
   max_lin_vel_y: float = 0.1,
   max_ang_vel_z: float = 0.5,
   inward_deadband: float | None = None,
+  outward_standing_only: bool = False,
 ) -> torch.Tensor:
   """Squared outward hip abduction beyond `deadband` (rad) relative to the default
   stance, summed over the hips, while the command needs no sideways step
   (|vy| <= max_lin_vel_y, |wz| <= max_ang_vel_z). With `inward_deadband`, inward
-  adduction beyond it costs the same.
+  adduction beyond it costs the same. With `outward_standing_only`, the outward
+  part counts under the zero command only.
 
   Splayed legs put the feet further outboard of the hip axes, which raises the hip
   load; on wheels the legs splay slowly while rolling on (the Go2W's rear hips
@@ -1497,6 +1984,8 @@ def hip_splay(
   assert command is not None
   outward = _hip_outward(env, hip_cfg)
   over = torch.clamp(outward - deadband, min=0.0)
+  if outward_standing_only:
+    over = over * _zero_command_mask(env, command_name, 0.1).float().unsqueeze(1)
   if inward_deadband is not None:
     over = over + torch.clamp(-outward - inward_deadband, min=0.0)
   active = (command[:, 1].abs() <= max_lin_vel_y) & (command[:, 2].abs() <= max_ang_vel_z)

@@ -170,15 +170,53 @@ REGISTER_OBSERVATION(heading_error)
     return std::vector<float>{error};
 }
 
+// Seconds the deadzoned command (velocity_command) has been zero while not
+// marching in place, over horizon_s and clamped to 1, as mdp.stand_time in
+// training: the policy tells a stop's settling from standing on. Must come after
+// velocity_commands in the yaml.
+REGISTER_OBSERVATION(stand_time)
+{
+    const float horizon = params["horizon_s"].as<float>(2.0f);
+    const auto & c = env->velocity_command;
+    const float norm = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    const bool still = norm < 0.1f && !env->march.load();
+    env->stand_time = still ? env->stand_time + env->step_dt : 0.0f;
+    return std::vector<float>{std::min(env->stand_time / horizon, 1.0f)};
+}
+
 REGISTER_OBSERVATION(gait_phase)
 {
     float period = params["period"].as<float>();
+    auto cmd = isaaclab::mdp::velocity_commands(env, params);
+    // With ref_speed the period shortens above that commanded planar speed to
+    // period * ref_speed / speed, as mdp.gait_clock in training (the stride stays
+    // the same length at speed; slower commands and turning in place keep period).
+    // With foot_xy (the feet's nominal [x, y] in the base frame) the speed is the
+    // fastest foot's under the command, |(vx - wz y, vy + wz x)| (arcs).
+    if (params["ref_speed"])
+    {
+        const float ref_speed = params["ref_speed"].as<float>();
+        float speed = std::sqrt(cmd[0] * cmd[0] + cmd[1] * cmd[1]);
+        if (params["foot_xy"])
+        {
+            speed = 0.0f;
+            for (const auto& foot : params["foot_xy"])
+            {
+                const float vx = cmd[0] - cmd[2] * foot[1].as<float>();
+                const float vy = cmd[1] + cmd[2] * foot[0].as<float>();
+                speed = std::max(speed, std::sqrt(vx * vx + vy * vy));
+            }
+        }
+        if (speed > ref_speed)
+        {
+            period *= ref_speed / speed;
+        }
+    }
     float delta_phase = env->step_dt * (1.0f / period);
 
     env->global_phase += delta_phase;
     env->global_phase = std::fmod(env->global_phase, 1.0f);
 
-    auto cmd = isaaclab::mdp::velocity_commands(env, params);
     float cmd_norm = std::sqrt(
         cmd[0] * cmd[0] +
         cmd[1] * cmd[1] +
@@ -190,7 +228,15 @@ REGISTER_OBSERVATION(gait_phase)
     obs[1] = std::cos(env->global_phase * 2 * M_PI);
 
     // Zero while standing; still running while marching in place (env->march).
-    if (cmd_norm < 0.1f && !env->march.load())
+    // With the drivable limits (wheeled, as mdp.phase in training) also zero under
+    // a command the wheels drive: the clock runs only where the robot steps.
+    bool still = cmd_norm < 0.1f;
+    if (params["drivable_max_lin_vel_y"] && params["drivable_max_ang_vel_z"])
+    {
+        still = still || (std::abs(cmd[1]) <= params["drivable_max_lin_vel_y"].as<float>() &&
+                          std::abs(cmd[2]) <= params["drivable_max_ang_vel_z"].as<float>());
+    }
+    if (still && !env->march.load())
     {
         obs[0] = 0.0f;
         obs[1] = 0.0f;

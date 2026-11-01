@@ -23,7 +23,11 @@ from src.tasks.velocity.blind_env_cfg import (
   apply_blind_r4,
   apply_blind_r5,
   apply_blind_r7,
-  apply_blind_staged,
+  apply_blind_phased,
+  apply_grip,
+  apply_no_hip_load,
+  apply_side_brake,
+  apply_speed_clock,
   apply_wheel_stepping_clock,
   apply_blind_straight,
   blind_collision_cfg,
@@ -44,11 +48,6 @@ AS2W_BLIND = WheeledBlindRobotCfg(
   wheel_radius=0.086,
   wheel_action_scale=8.0,
 )
-
-
-def unitree_as2w_blind_env_cfg(play: bool = False, stairs: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Unitree As2W blind velocity configuration (see make_wheeled_blind_env_cfg)."""
-  return make_wheeled_blind_env_cfg(AS2W_BLIND, play=play, stairs=stairs)
 
 
 # Stairs (2026-10-20), the recipe of the Go2W stairs runs: stance-leg tilt, map3
@@ -72,28 +71,14 @@ def unitree_as2w_blind_heading_env_cfg(
   the training task (map3 walled flights with the wheeled terms, see
   apply_blind_map3; apply_blind_straight; apply_blind_heading), "stairs" and
   "flat" the evaluation tasks of the same policy. Start from the flat model
-  widened by scripts/blind/widen_obs.py, then scripts/blind/make_stairs_init.py."""
+  widened by scripts/blind/widen_obs.py, then (until 2026-10-29) the stairs
+  normalizer reset of scripts/blind/make_stairs_init.py, since removed."""
   if terrain == "map3":
     cfg = make_wheeled_blind_env_cfg(AS2W_BLIND_STAIRS, play=play, stairs=True)
     cfg = apply_blind_straight(apply_blind_map3(cfg, play, legged_terms=False))
   else:
     cfg = make_wheeled_blind_env_cfg(AS2W_BLIND_STAIRS, play=play, stairs=terrain == "stairs")
   return apply_blind_heading(apply_blind_fix(cfg, fix, training=terrain == "map3"))
-
-
-# Hip load (third round, user 2026-10-22; see BlindHipCfg): default hips -0.30 rad
-# outward (was -0.10), torque penalty against 5.75 Nm (the static hip torque of the
-# old stance) and the splay penalty. Wheeled: lifting a wheel is free while its hip
-# is splayed 0.08 rad, and 30% of the resets start splayed 0.04-0.15 rad.
-AS2W_HIP = BlindHipCfg(hip_default=-0.3, torque_ref=5.75, wheel_free_splay=0.08, reset_splay_prob=0.3)
-
-
-def unitree_as2w_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks (see unitree_as2w_blind_heading_env_cfg) with the hip-load
-  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
-  and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_as2w_blind_heading_env_cfg(play=play, terrain=terrain)
-  return apply_blind_hip(cfg, AS2W_HIP, training=terrain == "map3")
 
 
 # Fourth round (user 2026-10-22 ~07:30): from the deployed stairs_v4_air model_8200,
@@ -168,10 +153,27 @@ def unitree_as2w_blind_rest3_env_cfg(play: bool = False, terrain: str = "map3") 
   return apply_blind_r7(apply_blind_r5(cfg, AS2W_R5, training=training), AS2W_R7, training=training)
 
 
-def unitree_as2w_blind_scratch_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """unitree_as2w_blind_rest3_env_cfg with the clocked stepping (apply_wheel_stepping_clock)
-  trained from scratch with ramped weights (see apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
-  training task, "stairs" and "flat" the evaluation tasks of the same policy."""
+# Thigh plus calf (as2w.xml: thigh 0.212 + calf to wheel axle 0.212), for apply_speed_clock.
+AS2W_LEG_LENGTH = 0.424
+# Feet (FL, FR, RL, RR) in the base frame at the model's own default stance (m), for the gait clock's
+# fastest-foot speed on arcs (apply_speed_clock with "arcclock").
+AS2W_FOOT_XY = ((0.212, 0.193), (0.212, -0.193), (-0.212, 0.193), (-0.212, -0.193))
+# The same with every hip at 0 ("hipzero"; see apply_no_hip_load).
+AS2W_FOOT_XY_HIP0 = ((0.212, 0.22), (0.212, -0.22), (-0.212, 0.22), (-0.212, -0.22))
+
+
+def unitree_as2w_blind_scratch_env_cfg(
+  play: bool = False, terrain: str = "map3", phase: str = "teacher"
+) -> ManagerBasedRlEnvCfg:
+  """unitree_as2w_blind_rest3_env_cfg with the clocked stepping
+  (apply_wheel_stepping_clock), the speed-dependent gait clock, the grip and the robot's own default
+  stance (apply_speed_clock, apply_grip, apply_no_hip_load): `terrain` "map3" (generated
+  map3-like flights, not map3) trains `phase` of apply_blind_phased, "stairs" and "flat"
+  are the evaluation tasks of the same policies."""
   training = terrain == "map3"
   cfg = apply_wheel_stepping_clock(unitree_as2w_blind_rest3_env_cfg(play=play, terrain=terrain), training=training)
-  return apply_blind_staged(cfg) if training else cfg
+  cfg = apply_no_hip_load(apply_grip(apply_speed_clock(cfg, AS2W_LEG_LENGTH, AS2W_FOOT_XY, AS2W_FOOT_XY_HIP0)), get_as2w_robot_cfg())
+  cfg = apply_side_brake(cfg)
+  if not training:
+    return cfg
+  return apply_blind_phased(cfg, phase)

@@ -285,6 +285,12 @@ def set_command(env, vx: float, vy: float, wz: float) -> None:
   term.cfg.stair_ranges = fixed
   term.cfg.flat_mode_probs = (0.0, 0.0, 0.0, 0.0, 1.0)
   term.cfg.stair_standing_prob = 0.0
+  # The training-time replacements must not touch the command either (2026-10-28 ~06:00): the wheeled
+  # configs keep steer_prob 0.2 in play mode, so 20-28% of the no-operator robots drove an arc (vx 0.3-0.5,
+  # wz +-0.05-0.4) into the rails in every wheeled no-operator check (As2W ~78%; scratchpad w13/map3_cmd_check.py).
+  for name in ("steer_prob", "diag_prob", "flat_slow_prob", "stair_straight_prob", "march_prob", "stop_after_fast_prob"):
+    if hasattr(term.cfg, name):
+      setattr(term.cfg, name, 0.0)
   term.time_left[:] = 0.0
 
 

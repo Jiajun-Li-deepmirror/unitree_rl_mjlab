@@ -140,6 +140,8 @@ def _build(env: ManagerBasedRlEnv) -> tuple[_Mirror, _Mirror]:
       p, s = [0, 1], [-1.0, -1.0]
     elif name == "heading_error":
       p, s = [0], [-1.0]  # a yaw angle
+    elif name == "stand_time":
+      p, s = [0], [1.0]  # a duration
     else:
       raise ValueError(f"No mirror for actor observation term {name!r}.")
     size = int(math.prod(dims))

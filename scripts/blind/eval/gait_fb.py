@@ -6,7 +6,7 @@ left out): tracking ratio on the commanded axes, share of steps with all four
 wheels on the ground, and touchdowns (off -> on ground) per second for each foot
 (mean over robots), with the min and max foot.
 
-Usage: python gait_numbers.py --task Unitree-As2W-Blind-Flat <checkpoint> [--envs-per-cmd 32]
+Usage: python gait_numbers.py --task Unitree-As2W-Blind-Flat-Scratch <checkpoint> [--envs-per-cmd 32]
 """
 
 import argparse

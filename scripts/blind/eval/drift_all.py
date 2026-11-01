@@ -12,7 +12,10 @@ Driving straight the drift is the heading change and the sideways offset; walkin
 sideways it is the heading change and the forward offset; turning in place it is
 how far the base wanders from its spot.
 
-Usage: python drift_all.py --task <flat task> <checkpoint> [--num-envs 64] [--seconds 10]
+Usage: python drift_all.py --task <flat task> <checkpoint> [--num-envs 256] [--seconds 10]
+
+256 robots per command since 2026-10-30 (64 before; user ~15:15): the p10 / p90 offsets near the 5% bar flipped
+between reruns of one checkpoint (As2W v13wh 5000).
 """
 import argparse
 from dataclasses import asdict
@@ -28,7 +31,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
-p.add_argument("--num-envs", type=int, default=64)
+p.add_argument("--num-envs", type=int, default=256)
 p.add_argument("--seconds", type=float, default=10.0)
 args = p.parse_args()
 CMDS = [
