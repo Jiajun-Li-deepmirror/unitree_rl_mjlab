@@ -1319,6 +1319,18 @@ class straight_drift:
   along the line (at least `offset_min_distance`), / `offset_ratio_scale` and
   clamped at 1: the acceptance judges the offset per distance walked (<= 5%), and
   walking slower does not lower a share (user 2026-10-23 ~02:50).
+  `offset_cmd_distance` divides by the smaller of that distance and the commanded one
+  (command speed x time on the line) instead: walking faster than the command does
+  not lower the share either. An offset that grows with time, not distance (a
+  stepping robot's back-slip per step at a fixed step rate), is a smaller share of a
+  longer walk: the B2W perception teacher (2026-11-01) walked (0, 0.15, 0) at
+  121-129% of the command with this term at 2.3x (acceptance bar 120%).
+  `offset_cmd_only` divides by the commanded distance alone (2026-11-02): with the
+  smaller of the two, a robot behind the command (accelerating into the line: walked
+  / commanded p50 0.95 1-2 s in) still lowers the share by walking faster, on 20%
+  of the B2W polish 9000's sideways line steps (32% from 2 s in), and the perception
+  teacher with `offset_cmd_distance` and this term at 3x went (0, 0.15, 0) from 115
+  to 126% of the command over 10000-12000.
 
   `sideways_only` limits it to commands without a forward part (walking sideways:
   the sixth-round wheeled policies turned up to 15-16 deg per 10 s there, p90).
@@ -1371,6 +1383,8 @@ class straight_drift:
     sideways_only: bool = False,
     offset_ratio_scale: float | None = None,
     offset_min_distance: float = 0.5,
+    offset_cmd_distance: bool = False,
+    offset_cmd_only: bool = False,
     uneven_sensor_name: str | None = None,
     uneven_scale: float = 1.0,
     uneven_share: bool = False,
@@ -1413,7 +1427,13 @@ class straight_drift:
       cost = cost + (side / lateral_scale).clamp(max=1.0)
     share = torch.zeros_like(cost)
     if offset_ratio_scale is not None:
-      along = (self.ref_dir * rel).sum(dim=1).clamp(min=offset_min_distance)
+      along = (self.ref_dir * rel).sum(dim=1)
+      # The command is constant on the line (a change restarts it).
+      if offset_cmd_only:
+        along = speed * self.since.float() * env.step_dt
+      elif offset_cmd_distance:
+        along = torch.minimum(along, speed * self.since.float() * env.step_dt)
+      along = along.clamp(min=offset_min_distance)
       share = (side / along / offset_ratio_scale).clamp(max=1.0)
       cost = cost + share
     if uneven_sensor_name is not None:

@@ -1915,6 +1915,28 @@ def apply_blind_phased(cfg: ManagerBasedRlEnvCfg, phase: str, swing_weight: floa
          "sense": "min", "term": "stair_speed_deficit", "lr": 0.5, "max_scale": 2.0},
       ]},
     )
+  if "driftcmd" in pilot:
+    # The line costs' offset share is over the smaller of the distance walked and the commanded distance (2026-11-01
+    # ~20:30, B2W perception teacher of go2-depth, user's choice; see mdp.straight_drift offset_cmd_distance): from
+    # the delivered B2W polish 9000 with b2wcons, its back_drift multiplier sat at 2.32 (polish: 1.0-2.0) and
+    # (0, 0.15, 0) went 121 -> 129% of the command (polish 116-117%, bar 120%), (0, +-0.3, 0) 120-123%. Walking
+    # sideways the robot slips back per step at a fixed step rate, so the share fell as it walked faster, and only
+    # flat_speed_deficit (0.3 per second at 125%) held against it. The back_drift constraint metric keeps the distance
+    # walked, as the acceptance judges it and its target was calibrated: where a robot walks faster than the command
+    # it reads lower than the cost's share by that ratio, and the cost no longer pays for walking faster.
+    for name in ("straight_drift", "side_drift"):
+      if name in rewards and rewards[name].params.get("offset_ratio_scale") is not None:
+        rewards[name].params = {**rewards[name].params, "offset_cmd_distance": True}
+  if "sidecmd" in pilot:
+    # The sideways line cost's offset share is over the commanded distance alone (2026-11-02, B2W perception
+    # teacher; see mdp.straight_drift offset_cmd_only), in place of "driftcmd": with driftcmd on both line costs
+    # the teacher's sideways speeds rose as the back_drift multiplier reached 3x, (0, 0.15, 0) 115 -> 126% and
+    # (0, +-0.3, 0) 110 -> 124% over averages 10000-12000, since a robot behind the commanded distance still
+    # lowered the share by walking faster; and its map3 descents went 0.81-0.85 of the command (0.83-0.89 without
+    # driftcmd, forward flat speeds 97-114% either way): straight_drift keeps the share over the distance walked,
+    # which on stairs ("stairshare") pays for keeping up with the command.
+    if "side_drift" in rewards and rewards["side_drift"].params.get("offset_ratio_scale") is not None:
+      rewards["side_drift"].params = {**rewards["side_drift"].params, "offset_cmd_only": True}
   if "slowarc2" in pilot and wheeled:
     # A quarter of the steering commands are slow arcs, 0.1-0.3 m/s (wheeled group, v13wm, 2026-10-30): with
     # "slowarc" they were ~1.6% of the flat commands, and the As2W v13wl teacher's slow arc (0.15, 0, 0.3) fell from
