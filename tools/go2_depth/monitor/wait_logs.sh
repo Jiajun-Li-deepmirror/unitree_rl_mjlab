@@ -1,10 +1,12 @@
 #!/bin/bash
-# wait_logs.sh: exits when blind_as2w.txt / blind_go2.txt (t1) or fe_go2w.txt (t2) grows, a fall diagnosis finishes, or a tinynav verdict appears
+# wait_logs.sh: exits when a chain log on t1 / t2 grows (logs/jobs/{blind,fe,repro}_*.txt), a fall diagnosis finishes or
+# a tinynav verdict appears (MAXS seconds at most, default 7200); the monitoring loop waits on it.
 R=/home/dm/.cache/go2-depth-work/ssh/r
 D=/root/gpufree-data/go2-depth/depth_fe
+q="cd $D; cat logs/jobs/blind_[a-z0-9]*.txt logs/jobs/fe_[a-z0-9]*.txt logs/jobs/repro_*.txt 2>/dev/null | wc -l; ls logs/accept/*.verdict 2>/dev/null | wc -l; tail -c 300 logs/jobs/repro_queue.txt 2>/dev/null | md5sum | cut -c1-6"
 st() {
-  a=$(timeout 40 $R 30714 "cd $D; cat logs/jobs/blind_as2w.txt logs/jobs/blind_go2.txt logs/jobs/fe_as2w.txt logs/jobs/blind_as2.txt 2>/dev/null | wc -l; ls logs/accept/*.verdict | wc -l; tail -c 300 logs/jobs/blind_as2.txt | md5sum | cut -c1-6" < /dev/null 2>/dev/null | tr '\n' ' ')
-  b=$(timeout 40 $R 31365 "cd $D; cat logs/jobs/fe_go2w.txt logs/jobs/blind_go2.txt 2>/dev/null | wc -l; ls logs/accept/*.verdict | wc -l; tail -c 300 logs/jobs/fe_go2w.txt | md5sum | cut -c1-6" < /dev/null 2>/dev/null | tr '\n' ' ')
+  a=$(timeout 40 $R 30714 "$q" < /dev/null 2>/dev/null | tr '\n' ' ')
+  b=$(timeout 40 $R 31365 "$q" < /dev/null 2>/dev/null | tr '\n' ' ')
   echo "t1[$a] t2[$b]"
 }
 s0=$(st); echo "start $(date +%T) $s0"; t=0
