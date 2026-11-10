@@ -222,7 +222,7 @@ for K in $KLIST; do
   A=$SD/${SRUN}_avg$K/model_$K.pt
   mkdir -p $(dirname $A)
   $PY jobs/avg_student.py $A $(last8 $RUN $K) >> $L 2>&1 || { log "$R student average $K failed"; continue; }
-  ok=1
+  ok=1 lucky=""
   for SEED in 0 1 2; do
     P=$C/fe_${r}_student_${SRUN#fe_edge_}_avg${K}_s$SEED
     bash jobs/fe_check.sh student $R $A $SEED $P
@@ -232,8 +232,15 @@ for K in $KLIST; do
     fi
     v=$(cat ${P}_verdict.txt)
     log "$R student avg$K s$SEED: noop $(reached ${P}_noop.txt) op $(reached ${P}_op.txt) edge noop $(reached ${P}_noopedge.txt) op $(reached ${P}_opedge.txt) speed up/down/margin $($PY jobs/fe_margin.py $R $P) | $v"
-    [[ "$v" == PASS ]] || { ok=0; break; }
+    if [[ "$v" != PASS ]]; then
+      # luck rule (2026-11-10, doc/acceptance.md): one seed may fail on a single fall alone, the other two decide
+      if [ -z "$lucky" ] && [[ "$($PY jobs/luck_pass.py $R $P)" == ELIGIBLE* ]]; then
+        lucky=$SEED; log "$R student avg$K s$SEED: a single fall only -> luck rule, the other seeds decide"; continue
+      fi
+      ok=0; break
+    fi
   done
+  [ $ok = 1 ] && [ -n "$lucky" ] && log "$R student avg$K: seeds pass by the luck rule (seed $lucky: one fall)"
   # FE_TN_GATE=1 (2026-11-05, the new pipeline's early stop: the user, "如果提前通过验收，就不要继续训练了"): the 3 seeds
   # passed; the tinynav acceptance (stairs gate, the user's stairs requirements, the payload limit) runs on the
   # workstation (scratchpad check/tn_gate_watch.sh): request logs/accept/<run>_<K>.req, wait (training goes on) for

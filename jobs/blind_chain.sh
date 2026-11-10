@@ -72,7 +72,7 @@ phase() {
   local base=${fk:-0} pick=""
   for K in $(seq $((base + first)) 500 $((base + maxit - 1))); do
     wait_ck $rd $K $tp || { log "$R $name ended before model_$K"; break; }
-    local A=$TD/${run}_avg$K/model_$K.pt ok=1
+    local A=$TD/${run}_avg$K/model_$K.pt ok=1 lucky=""
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $rd $K) >> $L 2>&1 || cp $rd/model_$K.pt $A
     for SEED in $seeds; do
@@ -86,8 +86,15 @@ phase() {
         local rest=$(echo "${v#FAIL: }" | sed "s/；/\n/g" | grep -v -x -E "楼梯：不通过：(上楼慢|下楼慢)(、(上楼慢|下楼慢))?" | grep -c .)
         [ "$rest" = 0 ] && { log "$R $name avg$K s$SEED: only stairs speed misses -> M pass (polish adds the stairspeed keys)"; v=PASS; }
       fi
-      [[ "$v" == PASS ]] || { ok=0; break; }
+      if [[ "$v" != PASS ]]; then
+        # luck rule (2026-11-10, doc/acceptance.md): one seed of several may fail on a single fall alone
+        if [ -z "$lucky" ] && [ $(echo $seeds | wc -w) -gt 1 ] && [[ "$($PY jobs/luck_pass.py $R $P)" == ELIGIBLE* ]]; then
+          lucky=$SEED; log "$R $name avg$K s$SEED: a single fall only -> luck rule, the other seeds decide"; continue
+        fi
+        ok=0; break
+      fi
     done
+    [ $ok = 1 ] && [ -n "$lucky" ] && log "$R $name avg$K: seeds pass by the luck rule (seed $lucky: one fall)"
     if [ $ok = 1 ] && [ $name = P ]; then
       mkdir -p logs/accept
       local Q=logs/accept/bl_${r}_${run}_$K
@@ -144,7 +151,13 @@ else
   else
     M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $TRUN $TK $((MEND - TK)) 3000 full 0 | tail -n 1)
   fi
-  [ -n "$M" ] || { log "$R blind M: no checkpoint passed by $MEND"; exit 1; }
+  if [ -z "$M" ]; then
+    # 2026-11-10 (doc/acceptance.md, the user: the mixed phase's handoff as a rule): M at its end without a pass hands
+    # its last check to P, which is judged on the whole acceptance (3 seeds + tinynav)
+    M=$(ls $TD/bl2M_${TAG}_avg*/model_*.pt 2> /dev/null | sort -V | tail -n 1)
+    [ -n "$M" ] || { log "$R blind M: no checkpoint checked by $MEND"; exit 1; }
+    log "$R blind M: no checkpoint passed by $MEND -> P from the last check $M"
+  fi
   MRUN=$(new_run bl2M_$TAG)
   log "$R blind M PICK $M"
 fi

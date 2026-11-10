@@ -44,6 +44,8 @@ while true; do
       (cd $WT && $PY scripts/import_blind_policy.py $C/gate_pull/$n $C/gate_pull/$n.onnx > /dev/null 2>&1)
       [ -s $C/gate_pull/$n.onnx ] || { echo "FAIL: blind export / import" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"; continue; }
       X2=$C/gate_pull/$n.onnx
+      # wheeled blind too (2026-11-10, doc/acceptance.md): the L0 slide gate is the one measure of the top landing
+      [[ $R == *W ]] && flock $C/tinynav.lock bash $HERE/slide_gate.sh $r $X2 > /dev/null 2>&1
     else
       timeout 900 $SSH $P "cd $D && bash jobs/probe_export.sh $R $CK $X $EXTRA 2>&1 | tail -n 1" < /dev/null > /dev/null
       if ! timeout 300 $SSH $P "cat $D/$X" < /dev/null > $C/gate_pull/$n.onnx.new || [ ! -s $C/gate_pull/$n.onnx.new ]; then
@@ -71,15 +73,9 @@ PYEOF
       fi
       X2=$C/slide_gate_onnx/$n.onnx
     fi
-    # legged depth bars at the deployed depth's level, per robot as measured (11-06; B2: b2_depth_v3_fe kicks 3.1 / run,
-    # mid-tread 76.6%; the initial 2 / 80 met by no B2): the students must be no worse than what runs on the robot.
-    # Go2 / As2 keep the initial bars until their deployed depth is measured; blind legged policies are judged by hand
-    # against the deployed blind (B2 11-06).
-    LB=""; [ $BLIND = 0 ] && case $R in B2) LB="kicks=3.1,mid=76.6" ;; esac
-    # at the payload limit (11-08): the deployed depth at the same payload, as the unloaded bars (B2 b2_depth_v3_fe at
-    # 40 kg x 0.15 z 0.30: kicks 4.2 / run, mid-tread 73.9%, slips 0.6 / run; the unloaded bars had been applied, which
-    # the deployed model itself fails)
-    LBP=$LB; [ $BLIND = 0 ] && case $R in B2) LBP="kicks=4.2,mid=73.9,slips=0.6" ;; esac
+    # legged bars: the initial ones for every robot (2026-11-10, doc/acceptance.md, the user: "统一用原始门槛"); B2 had
+    # its deployed depth's level (kicks 3.1 / mid 76.6; loaded 4.2 / 73.9 / slips 0.6) since 11-06
+    LB="" LBP=""
     case $R in
       Go2|Go2W) PAY=12,0.15,0,0.20 ;; As2) PAY=10,0.15,0,0.20 ;; As2W) PAY=13,0.15,0,0.20 ;;
       # B2 (11-06): 40 kg at x 0.15 / z 0.30, 4 runs. At the training range's corner (x 0.30) the deployed b2_depth_v3_fe
@@ -101,7 +97,7 @@ PYEOF
     st=$(grep "^TOTAL" $C/accept_base/$n.log | tail -n 1)
     pay=$(grep "^TOTAL" $C/accept_base/${n}_pay.log | tail -n 1)
     fails=()
-    [ $BLIND = 1 ] || [[ $R != *W ]] || [[ "$gate" == *"-> PASS"* ]] || fails+=("tinynav 楼梯验收")   # blind: accept_stairs' map3 / pyramid items
+    [[ $R != *W ]] || [[ "$gate" == *"-> PASS"* ]] || fails+=("滑回门")   # every wheeled policy (blind too since 2026-11-10)
     [ -n "$st" ] || fails+=("楼梯要求:未出结果")
     IFS=',' read -ra items <<< "$(echo "$st" | sed -n 's/.*-> FAIL //p')"
     for item in "${items[@]}"; do

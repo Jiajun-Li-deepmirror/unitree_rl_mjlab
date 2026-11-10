@@ -352,7 +352,8 @@ wr = (tot["w2"] / max(tot["wn"], 1)) ** 0.5
 if WHEELED:
   sb = 100 * tot["slips"] / max(tot["ups"], 1)
   checks = [("slide-back", sb <= 5.0, f"{sb:.1f}%"), ("start idle", tot["idle_rear"] / n <= 0.5, f"{tot['idle_rear'] / n:.1f}"),
-            ("end idle", tot["idle_front"] / n <= 1.0, f"{tot['idle_front'] / n:.1f}"),
+            # the top landing is judged by slide_gate.sh's L0 climbs alone (2026-11-10, doc/acceptance.md): info here
+            ("end idle (info)", True, f"{tot['idle_front'] / n:.1f}"),
             ("roll", tot["roll"] <= 4.0, f"{tot['roll']:.1f} deg"), ("falls", tot["falls"] == 0, str(tot["falls"]))]
   # heading off the flights' axis on the stairs, mean (11-07, the user: "它不是头朝前上楼梯"; Go2W blind g20b 18300 5.6 deg
   # on the up flights, the deployed go2w blind_v2 / depth_v5_ws 1.5-1.6). WHEELED_HEADING_BAR (deg) overrides the bar.

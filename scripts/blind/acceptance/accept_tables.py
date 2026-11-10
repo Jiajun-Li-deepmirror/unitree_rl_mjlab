@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
 KINDS = ("noop", "op", "am", "stairs", "drift3", "stand", "climb", "hip", "stairhip", "gait", "march", "clock", "spinalt",
-         "loadstand")
+         "loadstand", "stopmove")
 WHEELED = ("Go2W", "As2W", "B2W")
 NA = "—"
 NOT_JUDGED = "不考核"
@@ -104,6 +104,13 @@ def drift_vals(p):
   return out
 
 
+def posture_vals(p):
+  """stop_then_move.py: the largest p90 stance deviation (rad) over the "after stop" groups, or None."""
+  t = txt(p.get("stopmove")) or ""
+  v = [float(m.group(1)) for m in re.finditer(r"after stop \|\s*[\d.]+\s+([\d.]+)", t)]
+  return max(v) if v else None
+
+
 def spinalt_vals(p):
   """spin_alt.py (go2-depth 2026-11-06): per (wz, s per turn) the end / largest distance from the start (m, p50 p90),
   the end heading (|deg|, p50 p90) and falls."""
@@ -126,7 +133,13 @@ def spinalt_vals(p):
 STOP_FEET_BAR = 0.9
 LOADSTAND_FALLS = 0
 LOADSTAND_SETTLE = 3.0   # s: falls before this are the spawn transient, not judged (see goal_cells)
-SPINALT_BAR = {"Go2W": 0.29, "B2": 0.17, "B2W": 0.28, "As2W": 0.31, "As2": 0.30}
+# One bar for every robot since 2026-11-10 (doc/acceptance.md, the user: "统一 0.25 m"); the per-robot bars above were
+# the deployed blinds' worst.
+SPINALT_BAR = {}
+# Stance after a hard stop at the payload limit (stop_then_move.py, judged since 2026-11-10, doc/acceptance.md): the leg
+# joints' largest deviation from the default stance, p90 over the robots, in every "after stop" group, at most the
+# robots' posture reset trigger (ThermalGuard posture_march_rad 0.15).
+POSTURE_BAR = 0.15
 
 
 def pq(x, unit, fmt="{:+.1f}"):
@@ -173,7 +186,8 @@ HIP_MAX = {0.0: 8.0, 1.0: 12.0}
 # listed). B2W 5.2% (2026-11-01; the user's rule for the wheeled group: its bar may be lowered only where passing is
 # luck): the b2wcons polish average 9000 drifted back 5.13 / 4.98 / 4.65% walking left at 0.6 m/s on env seeds
 # 0 / 1 / 2, every other judged item passing on all three.
-SIDE_DRIFT_BAR = {"B2W": 0.052}
+# 5% for every robot since 2026-11-10 (doc/acceptance.md; B2W had 5.2%).
+SIDE_DRIFT_BAR = {}
 
 
 def hip_pct(r, x):
@@ -324,6 +338,8 @@ def goal_cells(r, i, label, p, ms):
   elif m:
     late = int(m.group(1))
   verdict("g_loadstand", ["摔倒"] if m and late > LOADSTAND_FALLS else [], not m)
+  pv = posture_vals(p)
+  verdict("g_posture", ["偏离站姿"] if pv is not None and pv > POSTURE_BAR else [], pv is None)
   # Stopping.
   tags = []
   if "rest" in g:
