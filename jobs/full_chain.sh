@@ -45,6 +45,7 @@ if { [ $STAGE = all ] || [ $STAGE = blind ]; } && grep -q "$R BLIND DELIVERY log
   log "$R $STAGE $TAG: the blind round already delivered, not run again"
 elif [ $STAGE = all ] || [ $STAGE = blind ]; then
   BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
+  BL_M_ITERS=${RECIPE_M_ITERS:-5000} BL_P_ITERS=${RECIPE_P_ITERS:-2000} \
   BL_EXTRA= BL_P_EXTRA= BL_DROP= \
     bash jobs/blind_chain.sh $R $TAG || { log "$R $STAGE $TAG: blind chain failed (logs/jobs/blind_$r.txt)"; exit 1; }
 fi

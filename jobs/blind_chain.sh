@@ -15,6 +15,8 @@
 #      500 from +500, then the tinynav acceptance (blind ONNX; FE_TN_GATE via check/tn_gate_watch.sh)
 # Restarts: BL_T_PICK (+ BL_T_RUN) skips T; BL_T_FROM_RUN + BL_T_FROM_K resume T; BL_M_FROM_RUN + BL_M_FROM_K (with
 # BL_T_PICK) resume M from a raw checkpoint; BL_M_PICK + BL_M_RUN (with BL_T_PICK) skip M; BL_M_END sets M's last iteration;
+# BL_M_ITERS / BL_P_ITERS (2026-11-11, jobs/recipes RECIPE_M_ITERS / RECIPE_P_ITERS): M's / P's length after the pick
+# before them (default 5000 / 2000);
 # BL_P_EXTRA adds polish keys; BL_EXTRA adds keys to every phase run; BL_DROP removes keys; BL_ANCHOR_COEFF overrides 0;
 # BL_NUM_ENVS (4096).
 # then the delivery package logs/pkg/<r>_bl2_<TAG>_<K> (model, policy.onnx, deploy.yaml, blind_pilot.txt, md5s) for
@@ -158,7 +160,7 @@ export BLIND_PHASE_START_IT=$TK BLIND_ANCHOR_CHECKPOINT=$PWD/$T
 export BLIND_ANCHOR_COEFF=${BL_ANCHOR_COEFF:-0}
 unset BLIND_CONS_INIT; [ -n "$V2_CONS" ] && export BLIND_CONS_INIT=$V2_CONS
 log "$R blind M/P anchor coeff $BLIND_ANCHOR_COEFF (checkpoint $T)"
-MEND=${BL_M_END:-$((TK + 5000))}   # BL_M_END: M's last iteration (default T's pick + 5000)
+MEND=${BL_M_END:-$((TK + ${BL_M_ITERS:-5000}))}   # BL_M_END: M's last iteration (default T's pick + BL_M_ITERS)
 if [ -n "${BL_M_PICK:-}" ]; then
   M=$BL_M_PICK MRUN=$BL_M_RUN
   log "$R blind M PICK (given) $M"
@@ -185,8 +187,9 @@ export BLIND_PILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}   # BL_P_
 [ -n "${BL_PILOT_P:-}" ] && export BLIND_PILOT=$BL_PILOT_P   # the recipe's whole P pilot (2026-11-10)
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 log "$R blind P pilot $BLIND_PILOT"
-P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $MRUN $MK 2000 500 full "0 1 2" | tail -n 1)
-[ -n "$P" ] || { log "$R blind P: no checkpoint passed by +2000"; exit 1; }
+PIT=${BL_P_ITERS:-2000}
+P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $MRUN $MK $PIT 500 full "0 1 2" | tail -n 1)
+[ -n "$P" ] || { log "$R blind P: no checkpoint passed by +$PIT"; exit 1; }
 PK=$(basename $P .pt | cut -d_ -f2)
 log "$R blind P PICK $P"
 OUT=logs/pkg/${r}_bl2_${TAG}_$PK
