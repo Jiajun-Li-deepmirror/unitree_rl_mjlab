@@ -15,7 +15,7 @@ through `~/.cache/go2-depth-work/ssh/r PORT CMD` (t1 30714, t2 31365).
 
 | Script | What it does |
 |---|---|
-| `tn_gate_watch.sh PORT` | Serves the chains' tinynav gate: for each `logs/accept/<run>_<K>.req` on the box without a `.verdict`, exports the checkpoint there (`jobs/probe_export.sh`, or the blind export + `scripts/import_blind_policy.py`), pulls it, runs the acceptance below and writes the verdict back (PASS / FAIL: items). Log: `$GO2_DEPTH_STATE/accept_watch.txt`. Run one per box, in the background. |
+| `tn_gate_watch.sh PORT` | Serves the chains' tinynav gate: for each `logs/accept/<run>_<K>.req` on the box without a `.verdict`, exports the checkpoint there (`jobs/probe_export.sh`, or the blind export + `scripts/import_blind_policy.py`), pulls it, runs the acceptance below and writes the verdict back (PASS / FAIL: items). Log: `$GO2_DEPTH_STATE/accept_watch.txt`. Run one per box, in the background; the two run at once (one lock per box, `TN_LOCK`). |
 | `slide_gate.sh ROBOT ONNX` | Wheeled slide-back gate on map3 L0 (12 climbs, 12 more when close; `stair_wheels.py`). |
 | `accept_stairs.py ROBOT ONNX [RUNS]` | The user's stairs requirements on map3 and the pyramid scene: legged kicks / mid-tread / slips / roll, wheeled slide-back / idle steps / roll / heading, falls; `PAYLOAD=kg,x,y,z` for the payload runs, `NOSLIP=10` for MuJoCo's static friction. |
 | `accept_map3.py ROBOT ONNX [RUNS]` | All 18 map3 flights plus the stairs posture (info). |

@@ -17,6 +17,10 @@ C=${GO2_DEPTH_STATE:-$HOME/.cache/go2-depth-work/check}
 mkdir -p $C
 WT=${TINYNAV_MUJOCO:-/home/dm/.cache/go2-depth-work/tnsim-wheeled/mujoco}
 PY=/home/dm/miniconda3/envs/unitree_rl_mjlab/bin/python
+# One tinynav run at a time per box (TN_LOCK; 2026-11-10, the user: the two boxes' requests may run at once on this
+# workstation's 16 cores). Until then one lock for both watchers (11-08), because they composed the scene into the same
+# assets/.compose/scene.xml and one read it empty mid-write; tinynav-sim's sim/plant.py now writes it atomically.
+TNL=${TN_LOCK:-$C/tinynav_$P.lock}
 OUT=$C/accept_watch.txt
 mkdir -p $C/accept_base $C/gate_pull
 while true; do
@@ -45,7 +49,7 @@ while true; do
       [ -s $C/gate_pull/$n.onnx ] || { echo "FAIL: blind export / import" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"; continue; }
       X2=$C/gate_pull/$n.onnx
       # wheeled blind too (2026-11-10, doc/acceptance.md): the L0 slide gate is the one measure of the top landing
-      [[ $R == *W ]] && flock $C/tinynav.lock bash $HERE/slide_gate.sh $r $X2 > /dev/null 2>&1
+      [[ $R == *W ]] && flock $TNL bash $HERE/slide_gate.sh $r $X2 > /dev/null 2>&1
     else
       # the chain's package context beside the request (fe_chain.sh, 2026-11-10: the reproducible run's own packages)
       timeout 900 $SSH $P "cd $D && { [ -f ${q%.req}.env ] && source ${q%.req}.env; } ; bash jobs/probe_export.sh $R $CK $X $EXTRA 2>&1 | tail -n 1" < /dev/null > /dev/null
@@ -54,7 +58,7 @@ while true; do
       fi
       mv $C/gate_pull/$n.onnx.new $C/gate_pull/$n.onnx
       if [[ $R == *W ]]; then
-        flock $C/tinynav.lock bash $HERE/slide_gate.sh $r $C/gate_pull/$n.onnx > /dev/null 2>&1
+        flock $TNL bash $HERE/slide_gate.sh $r $C/gate_pull/$n.onnx > /dev/null 2>&1
       else
         # legged depth (11-06): no wheeled slide gate; the deploy metadata of the robot's registered depth student when the
         # export has none (slide_gate.sh's rule for the wheeled), then accept_stairs at the deployed depth's level
@@ -85,15 +89,14 @@ PYEOF
       B2) PAY=40,0.15,0,0.30 ;;
       *) PAY=40,0.30,0,0.30 ;;
     esac
-    # one tinynav run at a time on this workstation (11-08): the watchers of both boxes compose the scene into the same
-    # assets/.compose/scene.xml (two at once: "empty scene.xml")
+    # one tinynav run at a time per box (TNL above)
     ( flock 9; cd $WT && export ROBOT_ASSETS=/home/dm/.cache/go2-depth-work/model_stage MUJOCO_GL=egl OMP_NUM_THREADS=2
       LEGGED_BARS=$LB $PY $HERE/accept_stairs.py $r $X2 4 > $C/accept_base/$n.log 2>&1
       PR=2; [ $R = B2 ] && PR=4
       LEGGED_BARS=$LBP PAYLOAD=$PAY $PY $HERE/accept_stairs.py $r $X2 $PR > $C/accept_base/${n}_pay.log 2>&1
       [ $R = B2 ] && ONLY=top_18n_down PAYLOAD=40,0.30,0,0.30 $PY $HERE/accept_stairs.py $r $X2 8 > $C/accept_base/${n}_corner.log 2>&1
       # info only (11-06): every map3 flight with the stairs posture (accept_map3.py), not judged
-      $PY $HERE/accept_map3.py $r $X2 2 > $C/accept_base/${n}_map3.log 2>&1 ) 9> $C/tinynav.lock
+      $PY $HERE/accept_map3.py $r $X2 2 > $C/accept_base/${n}_map3.log 2>&1 ) 9> $TNL
     gate=$(grep "$n " $C/slide_gate.txt | tail -n 1)
     st=$(grep "^TOTAL" $C/accept_base/$n.log | tail -n 1)
     pay=$(grep "^TOTAL" $C/accept_base/${n}_pay.log | tail -n 1)
@@ -121,5 +124,5 @@ PYEOF
       echo "  map3 flights (info): $(grep '^TOTAL ' $C/accept_base/${n}_map3.log | sed 's/^[^:]*: //')"
       echo "  posture up (info): $(grep '^POSTURE-up' $C/accept_base/${n}_map3.log | sed 's/^[^:]*: //')"; } >> $OUT
   done
-  sleep 120
+  sleep 30
 done
