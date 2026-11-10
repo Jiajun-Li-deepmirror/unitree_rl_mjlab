@@ -34,11 +34,13 @@ CLOCK=""
 # State_RLBase + config.yaml).
 DRIFTA=""
 # and the linear part too (same day, go2-home: a sideways step start, never seen on these controllers).
-[[ $R == B2 || $R == B2W || $R == As2W ]] && DRIFTA="--yaw-accel 3.0 --lin-accel 2.0"
+# Every robot since 2026-11-10 (the user: "改成所有机型都按这个加速度给"): commands come in at 2 m/s² / 3 rad/s²,
+# as tinynav-sim's sim/accel.py and the B2 / B2-W / As2-W controllers bring the stick in.
+DRIFTA="--yaw-accel 3.0 --lin-accel 2.0"
 # and its stop test's start as deployed (user 2026-11-02): the command comes in at max_accel 2.0 m/s² / 3 rad/s², the
 # release stays a step (the brake key); go2-home: B2 students' back-1.0 stop falls came from the stand -> -1.0 step.
 STANDA=""
-[[ $R == B2 || $R == B2W || $R == As2W ]] && STANDA="--lin-accel 2.0 --yaw-accel 3.0"
+STANDA="--lin-accel 2.0 --yaw-accel 3.0"   # every robot (2026-11-10, as DRIFTA)
 # and the flat acceptance matrix's starts (same day: B2W s1 fell spinning up to 1.5 from rest there).
 AMA=$STANDA
 [ -f "$CK" ] || { echo "$(date '+%m-%d %T') $KIND $R $CK s$SEED: no checkpoint" >> $O/checks.out; exit 1; }
