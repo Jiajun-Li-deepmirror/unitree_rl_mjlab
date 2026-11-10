@@ -2769,7 +2769,7 @@ class standing_pose_load(standing_position_hold):
   distance from its default beyond `deadband` (rad, clamped to `max_dev`), squared and summed, times
   1 + `load_gain` * payload / `load_ref` (env.payload_kg from mdp.base_payload_point; light draws below 0 kg
   count as 0), while the standing anchor is locked (standing_position_hold's rule with the same params: settled,
-  or the push window over). After a hard stop with 12 kg the delivered Go2W blind_v3 stood 0.18-0.19 rad off its
+  or the push window over), not in the first `grace_s` of an episode. After a hard stop with 12 kg the delivered Go2W blind_v3 stood 0.18-0.19 rad off its
   default (FL thigh) in tinynav-sim for 8 s, unloaded 0.07-0.09; the deploy's posture reset marches at 0.15."""
 
   def __call__(
@@ -2788,6 +2788,7 @@ class standing_pose_load(standing_position_hold):
     max_dev: float = 0.4,
     load_ref: float = 0.0,
     load_gain: float = 1.0,
+    grace_s: float = 0.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> torch.Tensor:
     self._follow(
@@ -2802,4 +2803,9 @@ class standing_pose_load(standing_position_hold):
     kg = getattr(env, "payload_kg", None)
     if kg is not None and load_ref > 0.0:
       cost = cost * (1.0 + load_gain * (kg / load_ref).clamp(min=0.0))
+    if grace_s > 0.0:
+      # not in the first grace_s of an episode (2026-11-10: charged from the reset's random joint pose, the Go2 o6
+      # mixed run learned to snap its legs to the default right after a reset, chin / hips touching the ground at
+      # ~0.18 s in 3-8 of 128 robots; o2 without the term 0)
+      cost = cost * (env.episode_length_buf.float() * env.step_dt >= grace_s).float()
     return self.locked.float() * cost

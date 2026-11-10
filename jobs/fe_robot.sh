@@ -27,6 +27,12 @@ case $1 in
        export BLIND_CONS_INIT=back_drift:1.35 ;;
   *) echo "fe_robot.sh: unknown robot $1" >&2; return 2 ;;
 esac
+# FE_PKG / FE_N / FE_PH / FE_PSTART (2026-11-10, jobs/full_chain.sh): the blind delivery the depth chain starts from,
+# for any robot (the reproducible run's own package instead of the robot's earlier one)
+[ -n "${FE_PKG:-}" ] && PKG=$FE_PKG
+[ -n "${FE_N:-}" ] && N=$FE_N
+[ -n "${FE_PH:-}" ] && PH=$FE_PH
+[ -n "${FE_PSTART+x}" ] && PSTART=$FE_PSTART
 # Payload (pilot payload, 2026-11-05; the user: up to the Unitree documented limits, a wide payload CoM): max kg, the
 # payload point's range in the base frame (+-x, +-y, 0..z m). unitree.com: Go2 / Go2-W MAX ~12 kg, B2 / B2-W walking load
 # > 40 kg (standing 120 kg, not used for walking). As2 / As2W: no official figure found (our models 20.7 / 26.0 kg, not

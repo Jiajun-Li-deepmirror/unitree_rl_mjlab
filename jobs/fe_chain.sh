@@ -181,13 +181,14 @@ SFRIC=${DEPTH_STUDENT_FRICTION:-}; unset DEPTH_STUDENT_FRICTION
 # 2026-11-02, likewise.
 SSPIN=${DEPTH_STUDENT_SPIN_LEFT:-}; unset DEPTH_STUDENT_SPIN_LEFT
 SSTAND=${DEPTH_STUDENT_STAND_LONG:-}; unset DEPTH_STUDENT_STAND_LONG
-[ -f $SFROM ] || { log "$R: no warm-start student $SFROM"; exit 1; }
+# FE_STUDENT_FROM=none (2026-11-10, the reproducible run): the student distils from a fresh network
+[ "$SFROM" = none ] || [ -f $SFROM ] || { log "$R: no warm-start student $SFROM"; exit 1; }
 # FE_STUDENT_FREE (MiB, 2026-11-04): B2W's hard-command student OOM'd twice at start with 14.3 GB free beside a teacher
 # (it holds 14.4 GB); two students do not fit one 24 GB box.
 wait_free ${FE_STUDENT_FREE:-12000}  # a 1024-env depth student holds ~11.1 GB (Go2W, 11-01); 14000 never came beside a teacher
 env ${SHARD:+DEPTH_STUDENT_HARD=$SHARD} ${SDRE:+DEPTH_STUDENT_DR_EDGE=$SDRE} ${SFRIC:+DEPTH_STUDENT_FRICTION=$SFRIC} \
   ${SSPIN:+DEPTH_STUDENT_SPIN_LEFT=$SSPIN} ${SSTAND:+DEPTH_STUDENT_STAND_LONG=$SSTAND} $PY scripts/train.py $STASK --env.scene.num-envs=1024 --agent.max-iterations=$SITERS \
-  --agent.run-name=$SRUN --agent.teacher-checkpoint=$TEACHER --agent.student-checkpoint=$SFROM \
+  --agent.run-name=$SRUN --agent.teacher-checkpoint=$TEACHER $([ "$SFROM" = none ] || echo --agent.student-checkpoint=$SFROM) \
   --agent.algorithm.learning-rate=$SLR --agent.learning-rate-final=$SLRF ${FE_STUDENT_ARGS:-} > logs/jobs/fe_${r}_student_$SRUN.log 2>&1 &
 SP=$!
 log "$R student started (pid $SP; $STASK, run name $SRUN, $SITERS it, lr $SLR -> $SLRF, hard commands ${SHARD:-off}, DR edges ${SDRE:-off}, foot friction ${SFRIC:-as the task}, spin left ${SSPIN:-0.5}, long stands ${SSTAND:-off}, args ${FE_STUDENT_ARGS:-none}; teacher $TEACHER; from $SFROM; free $(free_mib) MiB before)"

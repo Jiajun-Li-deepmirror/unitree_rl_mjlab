@@ -1782,6 +1782,8 @@ def apply_blind_phased(cfg: ManagerBasedRlEnvCfg, phase: str, swing_weight: floa
         **{k: hold[k] for k in keys if k in hold},
         "deadband": 0.05,
         "load_ref": float(spec.get("max", 0.0)),
+        # not right after a reset (its random joint pose): the Go2 o6 run snapped its legs to the default there
+        "grace_s": 2.0,
         "asset_cfg": SceneEntityCfg("robot", joint_names=legs),
       },
     )

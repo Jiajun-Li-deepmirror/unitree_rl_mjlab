@@ -4,3 +4,5 @@ export PYTHONPATH=/root/gpufree-data/go2-depth/depth_fe
 export LD_LIBRARY_PATH=/root/gpufree-data/envs/g1-dance/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 export MUJOCO_GL=egl
 PY=/root/gpufree-data/envs/g1-dance/bin/python
+# This box's own settings (FE_LOCK, FE_MPS, ...; not in git, 2026-11-10)
+[ -f /root/gpufree-data/go2-depth/depth_fe/env.local.sh ] && source /root/gpufree-data/go2-depth/depth_fe/env.local.sh

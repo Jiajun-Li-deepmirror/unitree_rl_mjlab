@@ -24,6 +24,8 @@ R=$1 TAG=$2 AFTER=${3:-}
 r=${R,,}
 cd /root/gpufree-data/go2-depth/depth_fe && source env.sh
 source jobs/v2_robot.sh $R || exit 2
+# BL_CONS (2026-11-10, jobs/full_chain.sh): the recipe's constraint multipliers at the T and M starts ("" = all at 1)
+[ -n "${BL_CONS+x}" ] && V2_CONS=$BL_CONS
 export $V2_PKG_VAR=$V2_PKG
 V2_BLIND_EXTRA=$([ $V2_KIND = wheeled ] && echo $V2_WHEELED_BLIND_EXTRA || echo $V2_LEGGED_BLIND_EXTRA)
 # T / M without the stairs-quality keys (V2_STAIR_KEYS), P with them (see v2_robot.sh)
@@ -34,6 +36,9 @@ done
 # BL_EXTRA: more keys for every phase this run trains (11-06: sidecmd for Go2W's M / P, the B2W fix of the sideways
 # overshoot: with the side-drift multiplier at its cap the robots walked sideways 125-128% of the command)
 export BLIND_PILOT=$(cat $V2_PKG/blind_pilot.txt)$KEEP${BL_EXTRA:+,$BL_EXTRA}
+# BL_PILOT_TM / BL_PILOT_P (2026-11-10, jobs/full_chain.sh with jobs/recipes/<r>.sh): the T / M and the P pilot given
+# whole, not built from an earlier package's blind_pilot.txt (the reproducible run)
+[ -n "${BL_PILOT_TM:-}" ] && { export BLIND_PILOT=$BL_PILOT_TM; POLISH_KEYS=""; }
 # BL_DROP (11-07): keys taken out of the package's recipe (e.g. the Go2W leg hold: loaded robots fell standing with it)
 drop_keys() { local p=$1 k; for k in ${BL_DROP:+${BL_DROP//,/ }}; do p=$(echo "$p" | tr ',' '\n' | grep -v -x "$k" | paste -sd,); done; echo "$p"; }
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
@@ -163,6 +168,7 @@ else
 fi
 MK=$(basename $M .pt | cut -d_ -f2)
 export BLIND_PILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}   # BL_P_EXTRA: more polish keys (e.g. sidew6l)
+[ -n "${BL_PILOT_P:-}" ] && export BLIND_PILOT=$BL_PILOT_P   # the recipe's whole P pilot (2026-11-10)
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 log "$R blind P pilot $BLIND_PILOT"
 P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $MRUN $MK 2000 500 full "0 1 2" | tail -n 1)
@@ -171,7 +177,7 @@ PK=$(basename $P .pt | cut -d_ -f2)
 log "$R blind P PICK $P"
 OUT=logs/pkg/${r}_bl2_${TAG}_$PK
 mkdir -p $OUT
-cp $P $OUT/model_$PK.pt && cp -r $V2_PKG/params $OUT/ 2> /dev/null
+cp $P $OUT/model_$PK.pt && { cp -r $(new_run bl2P_$TAG)/params $OUT/ 2> /dev/null || cp -r $V2_PKG/params $OUT/ 2> /dev/null; }
 echo "$BLIND_PILOT" | sed 's/^,//' > $OUT/blind_pilot.txt
 md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5
 $PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/model_$PK.pt --out $OUT > logs/jobs/blind_${r}_export.log 2>&1 \

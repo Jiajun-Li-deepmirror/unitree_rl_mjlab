@@ -20,6 +20,10 @@ source jobs/v2_robot.sh $R || exit 2
 # V2_TF / V2_SF (11-06) override the robot's teacher fine-tune start and stage-1 warm start (B2: the v2 teacher
 # avg10000 fine-tuned with feetedgew3, the students from the best stage-2 average so far).
 V2_TEACHER_FROM=${V2_TF:-$V2_TEACHER_FROM} V2_STUDENT_FROM=${V2_SF:-$V2_STUDENT_FROM}
+# V2_PKG_FROM / V2_CONS_FORCE (2026-11-10, jobs/full_chain.sh): the blind delivery and constraint start of the
+# reproducible run; V2_SF=none distils the stage-1 student from scratch
+[ -n "${V2_PKG_FROM:-}" ] && V2_PKG=$V2_PKG_FROM
+[ -n "${V2_CONS_FORCE+x}" ] && V2_CONS=$V2_CONS_FORCE
 case $MODE in
   short) TFROM=$V2_TEACHER_FROM TKS="400" S1=800 S2=800 S2KS="799" RAMP=4800 ;;
   full) TFROM= TKS="500 1000 1500 2000 2500 3000" S1=2000 S2=1500 S2KS="500 1000 1499" RAMP=24000 ;;
@@ -39,6 +43,7 @@ export $V2_PKG_VAR=$V2_PKG PAYLOAD_RAMP=$RAMP
 # Legged (11-06): the legged recipe (V2_LEGGED_EXTRA) and fe_chain's own speed margin (0.05; the wheeled 0.08 is for
 # the B2W students' slower descents).
 if [ $V2_KIND = wheeled ]; then V2_EXTRA=$V2_WHEELED_EXTRA MARGIN=0.08; else V2_EXTRA=$V2_LEGGED_EXTRA MARGIN=0.05; fi
+[ -n "${V2_EXTRA_FORCE:-}" ] && V2_EXTRA=$V2_EXTRA_FORCE   # the recipe's whole depth extras (2026-11-10)
 # V2_DROP (2026-11-09): keys taken out of the v2 extras (e.g. endwall for Go2W: its teacher slowed every map3 climb
 # 0.03-0.08 learning to slow at the end walls, up 0.874 -> 0.814; Go2W never had it, the deploy caps the command at walls)
 for k in ${V2_DROP:+${V2_DROP//,/ }}; do V2_EXTRA=$(echo "$V2_EXTRA" | tr ',' '\n' | grep -v -x "$k" | paste -sd,); done
@@ -50,7 +55,7 @@ export FE_PICKS=$PK FE_CONS_INIT=$V2_CONS FE_PILOT_EXTRA=$V2_EXTRA$V2_ROBOT_EXTR
 echo "$(date '+%m-%d %H:%M:%S') v2_chain $R $MODE $TAG: pilot +$FE_PILOT_EXTRA, teacher from ${TFROM:-the widened blind}, student from $V2_STUDENT_FROM" >> logs/jobs/fe_$r.txt
 [ -n "${V2_ONLY_S2:-}" ] || env ${TFROM:+FE_TEACHER_FROM=$TFROM} FE_TEACHER_KS="$TKS" \
   FE_STUDENT_RUN=v2s1_$TAG FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge FE_STUDENT_FROM=$V2_STUDENT_FROM \
-  FE_STUDENT_ITERS=$S1 FE_STUDENT_LR=2e-4 FE_STUDENT_LR_FINAL=1e-4 FE_STUDENT_FREE=14000 FE_STUDENT_CHECK=0 \
+  FE_STUDENT_ITERS=$S1 FE_STUDENT_LR=${V2_S1_LR:-2e-4} FE_STUDENT_LR_FINAL=1e-4 FE_STUDENT_FREE=14000 FE_STUDENT_CHECK=0 \
   DEPTH_STUDENT_HARD=1 ${AFTER:+FE_AFTER_PID=$AFTER} bash jobs/fe_chain.sh $R || { echo "v2_chain: stage A failed"; exit 1; }
 S1CK=${V2_S2_FROM:-$(cat $PK/${r}_student_stage1)}
 env FE_STUDENT_RUN=v2s2_$TAG${V2_S2_SUFFIX:-} FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge-RL FE_STUDENT_FROM=$PWD/$S1CK \
