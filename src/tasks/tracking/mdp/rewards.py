@@ -8,6 +8,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.utils.lab_api.math import quat_error_magnitude
 
 from .commands import MotionCommand
+from .foot_contact import foot_contact_state
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -111,6 +112,74 @@ def motion_global_body_angular_velocity_error_exp(
     dim=-1,
   )
   return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_foot_contact_slip(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  body_names: tuple[str, ...],
+  contact_height: float = 0.05,
+  contact_speed: float = 0.3,
+) -> torch.Tensor:
+  """Penalize robot foot sliding while the reference foot is planted.
+
+  A reference foot counts as planted when its body is within
+  ``contact_height`` of the ground and moving slower than ``contact_speed``
+  horizontally. The cost is the squared horizontal speed of the matching
+  robot foot, summed over feet -- the same form as mjlab's locomotion
+  ``feet_slip``, but with contact taken from the reference motion rather than
+  a contact sensor, so it targets dragging a foot the reference keeps still.
+  The body-tracking terms only reward foot *position*, so a policy can trade
+  small position errors for shuffling; this closes that gap.
+  """
+  command = cast(MotionCommand, env.command_manager.get_term(command_name))
+  body_indexes = _get_body_indexes(command, body_names)
+  ref_height = (
+    command.body_pos_w[:, body_indexes, 2] - env.scene.env_origins[:, None, 2]
+  )
+  ref_speed = torch.norm(command.body_lin_vel_w[:, body_indexes, :2], dim=-1)
+  planted = ((ref_height < contact_height) & (ref_speed < contact_speed)).float()
+  robot_speed = torch.norm(command.robot_body_lin_vel_w[:, body_indexes, :2], dim=-1)
+  cost = torch.sum(torch.square(robot_speed) * planted, dim=-1)
+  env.extras["log"]["Metrics/ref_contact_slip_velocity_mean"] = torch.sum(
+    robot_speed * planted
+  ) / torch.clamp(torch.sum(planted), min=1)
+  return cost
+
+
+def motion_joint_position_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float,
+  joint_names: tuple[str, ...],
+) -> torch.Tensor:
+  """Track a named subset without diluting its errors across the whole body."""
+  command = env.command_manager.get_term(command_name)
+  ids = [command.robot.joint_names.index(name) for name in joint_names]
+  error = (command.joint_pos[:, ids] - command.robot_joint_pos[:, ids]).square()
+  return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_measured_contact_slip(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+  """Penalize horizontal velocity at a loaded contact point, including dragged swings.
+
+  A rolling foot can have a moving ankle but a stationary contact point. This
+  cost only uses actual ground contacts (>1 N), regardless of reference phase.
+  """
+  state = foot_contact_state(env, env.command_manager.get_term(command_name))
+  velocity = state["foot_contact_point_velocity_world"][..., :2]
+  return velocity.square().sum(dim=-1).sum(dim=-1)
+
+
+def motion_swing_height_error_exp(
+  env: ManagerBasedRlEnv, command_name: str, std: float,
+  body_names: tuple[str, ...], swing_height: float = 0.06,
+) -> torch.Tensor:
+  """Reward matching lifted reference feet; grounded feet get a neutral value."""
+  command = env.command_manager.get_term(command_name)
+  ids = _get_body_indexes(command, body_names)
+  reference = command.body_pos_w[:, ids, 2] - env.scene.env_origins[:, None, 2]
+  actual = command.robot_body_pos_w[:, ids, 2] - env.scene.env_origins[:, None, 2]
+  error = (actual - reference).square() * (reference > swing_height)
+  return torch.exp(-error / std**2).mean(-1)
 
 
 def self_collision_cost(

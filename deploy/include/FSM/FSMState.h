@@ -35,6 +35,7 @@ public:
                 unitree::common::dsl::Parser p(condition);
                 auto ast = p.Parse();
                 auto func = unitree::common::dsl::Compile(*ast);
+                registered_check_labels[registered_checks.size()] = condition;
                 registered_checks.emplace_back(
                     std::make_pair(
                         [func]()->bool{ return func(FSMState::lowstate->joystick); },
@@ -45,6 +46,7 @@ public:
         }
 
         // register for all states
+        registered_check_labels[registered_checks.size()] = "lowstate_timeout";
         registered_checks.emplace_back(
             std::make_pair(
                 []()->bool{ return lowstate->isTimeout(); },
@@ -57,6 +59,7 @@ public:
     {
         lowstate->update();
         if(keyboard) keyboard->update();
+        lowcmd->lock();
     }
 
     void post_run()

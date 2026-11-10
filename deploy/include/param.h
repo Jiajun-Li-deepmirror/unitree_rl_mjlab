@@ -43,6 +43,9 @@ inline std::filesystem::path bin_path;
 inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
+inline std::filesystem::path resolve_path(std::filesystem::path path) {
+    return path.is_relative() ? proj_dir / path : path;
+}
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -130,6 +133,8 @@ inline po::variables_map helper(int argc, char** argv)
         ("version,v", "show version")
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
+        ("domain-id", po::value<int>()->default_value(0), "DDS domain; isolated simulation uses a nonzero domain")
+        ("config", po::value<std::string>(), "configuration file (relative to current working directory)")
         ;
 
     po::variables_map vm;
@@ -146,6 +151,10 @@ inline po::variables_map helper(int argc, char** argv)
         std::cout << "Version: " << VERSION << std::endl;
         exit(0);
     }
+
+    if (vm.count("config")) config = YAML::LoadFile(vm["config"].as<std::string>());
+    if (!config["FSM"] || vm["domain-id"].as<int>() < 0 || vm["domain-id"].as<int>() > 232)
+        throw std::runtime_error("Invalid controller configuration or DDS domain");
 
 #ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);

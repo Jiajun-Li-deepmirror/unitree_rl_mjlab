@@ -19,5 +19,5 @@ deploy/robots/go2w/build
 deploy/robots/b2w/build
 deploy/robots/as2w/build
 src/assets/motions/g1/dance1_subject2.npz
+__pycache__/
 simulate/build
-__pycache__

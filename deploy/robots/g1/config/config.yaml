@@ -1,5 +1,5 @@
 FSM:
-  _: # enabled fsms
+  _: # Use deploy.sh prepare to validate and select a dance before starting.
     Passive:
       id: 1
     FixStand:
@@ -7,10 +7,22 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
-
-    Mimic_Dance1_subject2:
+    HandShake:
+      id: 4
+      type: Mimic
+    Jojo:
       id: 5
       type: Mimic
+    Dance1:
+      id: 6
+      type: Mimic
+    Dance2:
+      id: 7
+      type: Mimic
+    Dance3:
+      id: 8
+      type: Mimic
+
 
 
   Passive:
@@ -66,17 +78,55 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
-      Mimic_Dance1_subject2: RB + A.on_pressed
+      HandShake: RB + A.on_pressed
+      Jojo: RB + Y.on_pressed
+      Dance1: RB + up.on_pressed
+      Dance2: RB + left.on_pressed
+      Dance3: RB + right.on_pressed
 
     policy_dir: config/policy/velocity
 
-
-  Mimic_Dance1_subject2:
+  HandShake:
     transitions:
       Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
-
-    motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
-    policy_dir: config/policy/mimic/dance1_subject2/
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/hand_shake/deploy/hand_shake
+    motion_file: ../../../../../output/hand_shake/deploy/hand_shake/params/hand_shake.npz
     time_start: 0.0
-    time_end: 1000.0
+    end_state: Velocity
+
+  Jojo:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/jojo/deploy/jojo
+    motion_file: ../../../../../output/jojo/deploy/jojo/params/jojo.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance1:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance1/deploy/dance1
+    motion_file: ../../../../../output/dance1/deploy/dance1/params/dance1.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance2:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance2/deploy/dance2
+    motion_file: ../../../../../output/dance2/deploy/dance2/params/dance2.npz
+    time_start: 0.0
+    end_state: Velocity
+
+  Dance3:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RB + X.on_pressed
+    policy_dir: ../../../../../output/dance3/deploy/dance3
+    motion_file: ../../../../../output/dance3/deploy/dance3/params/dance3.npz
+    time_start: 0.0
+    end_state: Velocity

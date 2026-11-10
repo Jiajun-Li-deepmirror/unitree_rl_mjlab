@@ -5,13 +5,14 @@ from setuptools import setup, find_packages
 # Minimum dependencies required prior to installation
 INSTALL_REQUIRES = [
     "mjlab==1.2.0",
-    "mujoco-warp==3.5.0",
-    # mjlab 1.2.0 only declares lower bounds; newer releases of these break it.
     "mujoco==3.5.0",
-    "warp-lang==1.12.1",
-    "wandb<0.25",
+    "mujoco-warp==3.5.0",
+    # mjlab 1.2.0 only declares lower bounds; pinned to the env the boxes train in
+    # (warp-lang 1.12.0, mujoco 3.5.0, 2026-11-10)
+    "warp-lang==1.12.0",
     # Imported by mjlab.terrains but not declared by mjlab.
-    "scipy",
+    "scipy>=1.15.0",  # for supporting Python >= 3.10
+    "pillow>=10.1.0",  # readable comparison legend in policy videos
 ]
 
 # Installation operation

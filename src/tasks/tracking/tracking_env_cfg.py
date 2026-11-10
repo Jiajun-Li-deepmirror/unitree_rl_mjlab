@@ -239,6 +239,16 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
       weight=1.0,
       params={"command_name": "motion", "std": 3.14},
     ),
+    "foot_contact_slip": RewardTermCfg(
+      func=mdp.motion_foot_contact_slip,
+      weight=-0.1,
+      params={
+        "command_name": "motion",
+        "body_names": (),  # Set per-robot; empty disables the term.
+        "contact_height": 0.05,
+        "contact_speed": 0.3,
+      },
+    ),
     "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1e-1),
     "joint_limit": RewardTermCfg(
       func=mdp.joint_pos_limits,

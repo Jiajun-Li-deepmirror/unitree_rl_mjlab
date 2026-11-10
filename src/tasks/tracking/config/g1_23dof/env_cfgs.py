@@ -95,6 +95,7 @@ def unitree_g1_23dof_flat_tracking_env_cfg(
     # Disable RSI randomization.
     motion_cmd.pose_range = {}
     motion_cmd.velocity_range = {}
+    motion_cmd.joint_position_range = (0.0, 0.0)
 
     motion_cmd.sampling_mode = "start"
 

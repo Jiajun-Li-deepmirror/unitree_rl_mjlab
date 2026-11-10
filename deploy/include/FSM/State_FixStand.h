@@ -32,9 +32,10 @@ public:
 
 
         // set initial position
+        std::lock_guard<std::mutex> state_lock(lowstate->mutex_);
         std::vector<float> q0;
         for(int i(0); i < kp.size(); ++i) {
-            q0.push_back(lowcmd->msg_.motor_cmd()[i].q());
+            q0.push_back(lowstate->msg_.motor_state()[i].q());
         }
         qs_[0] = q0;
         t0_ = (double)unitree::common::GetCurrentTimeMillisecond() * 1e-3;

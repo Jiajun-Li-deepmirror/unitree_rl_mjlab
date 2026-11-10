@@ -65,8 +65,8 @@ public:
     {
         episode_length += 1;
         robot->update();
-        auto obs = observation_manager->compute();
-        auto action = alg->act(obs);
+        last_observation = observation_manager->compute();
+        auto action = alg->act(last_observation);
         action_manager->process_action(action);
         const bool zero = std::all_of(velocity_command.begin(), velocity_command.end(),
                                       [](float v) { return v == 0.0f; });
@@ -106,6 +106,7 @@ public:
     // keeps running, so a policy trained to march in place (deploy.yaml
     // gait_march) steps on the spot instead of standing still.
     std::atomic<bool> march{false};
+    std::unordered_map<std::string, std::vector<float>> last_observation;
 };
 
 };

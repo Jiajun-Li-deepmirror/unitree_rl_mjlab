@@ -4,6 +4,7 @@
 #pragma once
 
 #include "isaaclab/assets/articulation/articulation.h"
+#include <optional>
 
 namespace unitree
 {
@@ -15,12 +16,15 @@ public:
     BaseArticulation(LowStatePtr lowstate_)
     : lowstate(lowstate_)
     {
-        data.joystick = &lowstate->joystick;
+        joystick_snapshot_.emplace();
+        data.joystick = &*joystick_snapshot_;
     }
 
     void update() override
     {
         std::lock_guard<std::mutex> lock(lowstate->mutex_);
+        joystick_snapshot_.emplace(lowstate->joystick);
+        data.joystick = &*joystick_snapshot_;
         // base_angular_velocity
         for(int i(0); i<3; i++) {
             data.root_ang_vel_b[i] = lowstate->msg_.imu_state().gyroscope()[i];
@@ -41,6 +45,8 @@ public:
     }
 
     LowStatePtr lowstate;
+private:
+    std::optional<unitree::common::UnitreeJoystick> joystick_snapshot_;
 };
 
 }

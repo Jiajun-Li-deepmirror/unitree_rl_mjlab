@@ -1,5 +1,7 @@
 from typing import Any
 
+import project_paths  # noqa: F401; make local task imports independent of cwd
+
 import numpy as np
 import torch
 import tyro

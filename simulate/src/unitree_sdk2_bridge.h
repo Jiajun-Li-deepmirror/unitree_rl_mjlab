@@ -186,6 +186,7 @@ public:
             }
         }
 
+        if (!publish_state) return;
         // lowstate
         if(lowstate->trylock()) {
             for(int i(0); i<num_motor_; i++) {
@@ -246,6 +247,7 @@ public:
     }
 
     std::unique_ptr<HighState_t> highstate;
+    bool publish_state = true; // fault injection in the loopback-only integration runner
     std::unique_ptr<WirelessController_t> wireless_controller;
     std::shared_ptr<LowCmd_t> lowcmd;
     std::unique_ptr<LowState_t> lowstate;

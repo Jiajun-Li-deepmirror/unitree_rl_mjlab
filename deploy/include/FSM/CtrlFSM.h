@@ -7,6 +7,7 @@
 #include "BaseState.h"
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
+#include <atomic>
 
 class CtrlFSM
 {
@@ -72,37 +73,46 @@ public:
     
     ~CtrlFSM()
     {
+        fsm_thread_.reset();
+        if (currentState) currentState->exit();
         states.clear();
     }
+
+    void request_passive() { passive_requested = true; }
 
     std::vector<std::shared_ptr<BaseState>> states;
 private:
     const double dt = 0.001;
+    std::atomic<bool> passive_requested{false};
 
     void run_()
     {
         currentState->pre_run();
-        currentState->run();
-        currentState->post_run();
         
         // Check if need to change state
         int nextStateMode = 0;
+        std::string reason;
         for(int i(0); i<currentState->registered_checks.size(); i++)
         {
             if(currentState->registered_checks[i].first())
             {
                 nextStateMode = currentState->registered_checks[i].second;
+                reason = currentState->registered_check_labels[i];
                 break;
             }
         }
 
+        if (passive_requested) {
+            nextStateMode = FSMStringMap.right.at("Passive");
+            reason = "process_shutdown";
+        }
         if(nextStateMode != 0 && !currentState->isState(nextStateMode))
         {
             for(auto & state : states)
             {
                 if(state->isState(nextStateMode))
                 {
-                    spdlog::info("FSM: Change state from {} to {}", currentState->getStateString(), state->getStateString());
+                    spdlog::info("FSM: Change state from {} to {} reason={}", currentState->getStateString(), state->getStateString(), reason);
                     currentState->exit();
                     currentState = state;
                     currentState->enter();
@@ -110,6 +120,8 @@ private:
                 }
             }
         }
+        currentState->run();
+        currentState->post_run();
     }
 
     std::shared_ptr<BaseState> currentState;

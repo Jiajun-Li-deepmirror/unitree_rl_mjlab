@@ -7,6 +7,7 @@
 #include <string>
 #include <any>
 #include <utility>
+#include <map>
 
 inline boost::bimap<int, std::string> FSMStringMap;
 
@@ -30,6 +31,7 @@ public:
     int getState() {return state_; }
     bool isState(int state) { return state_ == state; }
     std::vector<std::pair<std::function<bool()>, int>> registered_checks;
+    std::map<size_t, std::string> registered_check_labels;
 private:
     int state_;
 };
