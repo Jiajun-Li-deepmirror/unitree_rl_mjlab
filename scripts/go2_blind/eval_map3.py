@@ -56,7 +56,7 @@ from mjlab.terrains.terrain_generator import (
 )
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityCommandCfg
 
-TASK = "Unitree-Go2-Blind"
+TASK = "Unitree-Go2-Blind-Scratch"
 MAP3_DIR = Path(__file__).resolve().parents[2] / "src" / "assets" / "terrains" / "map3"
 # Shift map3 world coordinates into a positive tile.
 MAP3_OFFSET = np.array([13.0, 1.0, 0.0])

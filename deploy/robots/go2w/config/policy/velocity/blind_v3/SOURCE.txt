@@ -1,0 +1,4 @@
+go2w blind_v3: the go2-depth depth_fe blind chain's Go2W delivery go2w_bl2_g27b_19800 (P phase average model_19300..19800,
+checkpoint md5 b20fe1a4, policy.onnx md5 f709b889; tinynav-sim go2w_blind_v3). mjlab seeds 0 1 2 PASS (loaded stand judged
+after 3 s); tinynav (its trained solver, elliptic / 10): slide-back 4.3% (blind_v2 9.5%), heading 2.9 deg, falls 0; 12 kg
+slide-back 5.3% (blind_v2 52% + 1 fall), falls 0. deploy.yaml byte-identical to blind_v2's (the shared history holds).

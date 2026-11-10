@@ -29,7 +29,7 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
-    policy_dir: config/policy/velocity/blind_v0
+    policy_dir: config/policy/velocity/blind_v4
     
 
 # Leg motor thermal guard while the policy runs (include/FSM/ThermalGuard.h):

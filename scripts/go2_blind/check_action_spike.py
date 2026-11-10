@@ -25,7 +25,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--task", default="Unitree-Go2-Blind-Flat", help="Blind task whose play config matches the policy.")
+  parser.add_argument("--task", default="Unitree-Go2-Blind-Flat-Scratch", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoints", nargs="+")
   parser.add_argument("--num-envs", type=int, default=2048)
   parser.add_argument("--obs-noise", action="store_true", help="Keep the training observation noise.")

@@ -1,0 +1,8 @@
+as2w_depth_v6_mg4: the As2-W depth student of 2026-11-10 (go2-depth depth_fe v2 pipeline, run a3m + backcons + gaitw4).
+Student v2s2_a3mg4 avg500 (stage 2 from v2s2_a3mgw avg699 <- mix of v2s2_a3mbc avg300 / avg599 <- v2s2_a3m avg500; stage 1
+v2s1_a3m_avg1999), teacher v2_a3_avg12000 (the widened blind as2w_bl2_mixfg_11000 + the v2 wheeled recipe, +1000).
+Export t1 logs/exports/as2w_fe_student_v2s2_a3mg4_avg500.onnx (md5 68786b15; weights = the tinynav-accepted probe, metadata
+and inputs identical to depth_v5_ns). params/deploy.yaml = the blind package's (= blind_v2's but for the header comment).
+Acceptance: depth_fe seeds 0 1 2 PASS (map3 99.9-100%, up 0.915 / 0.924 / 0.907, down 0.817 / 0.817 / 0.821; right strafe
+gait clock 82%, bar 80%); tinynav map3 L0 climbs (12): slide-back 2.9%, start-landing steps 0.2, top-landing 0.2 per climb
+(v5_ns 3.2), falls 0; stairs acceptance slide-back 5.0% (v5_ns 5.3%), heading 2.7 deg, falls 0; 13 kg slide-back 2.6%, falls 0.

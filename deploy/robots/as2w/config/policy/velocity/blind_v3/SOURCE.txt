@@ -1,0 +1,4 @@
+as2w blind_v3: the go2-depth depth_fe blind chain's As2W delivery as2w_bl2_mixfg_11000 (actor average of a1f avg10500 and
+a1g avg11000; checkpoint md5 1faf9ec7, policy.onnx md5 f5a9c478; tinynav-sim as2w_blind_v3). mjlab seeds 0 1 2 PASS;
+tinynav (its trained solver, elliptic / 10): slide-back 2.8%, 13 kg 0.0%, falls 0. deploy.yaml = blind_v2's but for the
+header comment (Polish vs Mixed task name); the shared history holds.

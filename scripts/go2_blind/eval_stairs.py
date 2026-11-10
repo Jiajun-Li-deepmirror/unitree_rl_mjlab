@@ -30,7 +30,7 @@ STEP_RANGE = (0.05, 0.18)
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--task", default="Unitree-Go2-Blind", help="Blind task whose play config matches the policy.")
+  parser.add_argument("--task", default="Unitree-Go2-Blind-Scratch", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoint")
   parser.add_argument("--vx", type=float, default=0.5)
   parser.add_argument("--wz", type=float, default=0.0)

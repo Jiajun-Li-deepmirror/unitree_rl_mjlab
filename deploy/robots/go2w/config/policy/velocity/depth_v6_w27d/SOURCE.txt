@@ -1,0 +1,10 @@
+go2w_depth_v6_w27d: the Go2-W depth student of 2026-11-09 (go2-depth depth_fe v2 pipeline, run w27d; the user: "按方案 1 交付这个模型").
+Student v2s2_w27d avg500 (model_0..500 of go2w_depth_student/2026-11-09_08-03-35_v2s2_w27d, PPO fine-tune against its teacher,
+behavior cloning 1.0; checkpoint md5 e9fd0b61), stage 1 v2s1_w27d_avg1999; teacher v2_w27d_avg21300 (the widened blind g27b
+19800 + the v2 wheeled recipe without endwall + stairspeed5). Export t2 logs/exports/go2w_fe_student_v2s2_w27d_avg500.onnx
+(md5 26c08cf6; weights = the tinynav-accepted probe, metadata and inputs identical to depth_v5_ws). params/deploy.yaml =
+the blind package's (byte-identical to blind_v2's and depth_v5_ws's).
+Acceptance: depth_fe seeds 0 1 2 PASS (map3 99.8-100%, up 0.910 / 0.917 / 0.902, down 0.846 / 0.846 / 0.844);
+tinynav map3 L0 climbs (12): slide-back 3.2% (v5_ws 11.4%), start-landing steps 0.0, top-landing steps 2.8 per climb
+(bar 1.0, v5_ws 2.6; delivered with the user's OK), falls 0; stairs acceptance slide-back 2.2% (v5_ws 8.6%), heading
+2.3 deg, falls 0; 12 kg slide-back 2.1%, heading 2.2 deg, falls 0.

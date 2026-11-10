@@ -92,11 +92,15 @@ Acceptance clips of the 10-21 blind finals (flat ground, map3 stairwell tour, 4x
 
 ### Deployment
 
-`deploy/robots/<robot>` holds the Unitree-style controllers for the six quadrupeds
-(wheel brake, march in place, thermal guard, heading input). The controllers that run
-on the robots' Jetson (`./run.sh <robot>`: depth student with blind fallback, wall
-guard, thermal guard with the posture reset, full logging) are kept in a separate
-`robot_ctrl` tree, not in this repository.
+`deploy/robots/<robot>/config/policy/velocity/` holds only the models deployed on the
+robots (the table above): `depth_*` (the depth student) and `blind_*` (the blind
+policy), each with `exported/policy.onnx`, `params/deploy.yaml` and `SOURCE.txt`
+(where it came from and its acceptance). The Unitree-style controllers in
+`deploy/robots/<robot>` (wheel brake, march in place, thermal guard, heading input)
+run the blind policy (`config.yaml` points at it). The depth students run in the
+robots' Jetson controllers (`./run.sh <robot>`: depth student with blind fallback, wall
+guard, thermal guard with the posture reset, full logging), which are kept in a
+separate `robot_ctrl` tree, not in this repository.
 
 ## 💃 G1 Motion Tracking (Dance)
 
@@ -149,8 +153,10 @@ Available velocity tracking tasks:
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
-  - Unitree-Go2-Blind: proprioception-only Go2 for joystick control and stairs up to 18 cm;
-    see [doc/go2_blind.md](doc/go2_blind.md) for its training recipe, evaluation and deployment.
+  - Unitree-<Robot>-Blind-Teacher / -Mixed / -Polish (Go2, As2, B2, Go2W, As2W, B2W): the blind
+    policies' phased training, see [doc/blind_phased_training.md](doc/blind_phased_training.md)
+  - Unitree-<Robot>-Depth-Mixed / -Polish (depth teacher), -Depth-Student-Edge and
+    -Depth-Student-Edge-RL (depth student): the perception policies (jobs/fe_chain.sh, jobs/v2_chain.sh)
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:

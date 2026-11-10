@@ -3,37 +3,10 @@ from src.tasks.velocity.blind_rl_cfg import make_blind_ppo_runner_cfg
 from src.tasks.velocity.blind_env_cfg import PHASE_CLIP_ACTIONS, PHASE_FINAL, phase_entropy_coef
 from src.tasks.velocity.rl.anchor import PhasedAnchoredRunner
 from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner
-from src.tasks.velocity.rl.anchor import AnchoredMirrorVelocityOnPolicyRunner
 
 from .blind_env_cfgs import (
-  unitree_as2w_blind_heading_env_cfg,
   unitree_as2w_blind_scratch_env_cfg,
 )
-
-
-class As2WFlatAnchoredHeadingRunner(AnchoredMirrorVelocityOnPolicyRunner):
-  """Anchored on flat ground to the v5 flat model widened for the heading input,
-  sideways commands included, straight forward / backward ones at 0.3."""
-
-  ANCHOR_CHECKPOINT = "logs/rsl_rl/as2w_blind/2026-10-20_02-01-07_flat_v5_gbrake/model_5300_widened.pt"
-  ANCHOR_SKIP_SIDEWAYS = False
-  # Straight forward / backward too, lightly (see rl.anchor).
-  ANCHOR_STRAIGHT_COEFF = 0.3
-
-# Stairs with the heading-error input: training (map3, anchored) and evaluation
-# (stairs, flat) tasks.
-for task_id, terrain, runner in (
-  ("Unitree-As2W-Blind-Map3-Heading", "map3", As2WFlatAnchoredHeadingRunner),
-  ("Unitree-As2W-Blind-Heading", "stairs", MirrorVelocityOnPolicyRunner),
-  ("Unitree-As2W-Blind-Flat-Heading", "flat", MirrorVelocityOnPolicyRunner),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_as2w_blind_heading_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_as2w_blind_heading_env_cfg(play=True, terrain=terrain),
-    rl_cfg=make_blind_ppo_runner_cfg("as2w_blind", max_iterations=20000),
-    runner_cls=runner,
-  )
 
 
 # Evaluation tasks of the phased training below (stairs, flat; also the trainers' acceptance).
@@ -104,7 +77,6 @@ for phase, task_id, runner in (
   )
 
 for task_id, terrain in (
-  ("Unitree-As2W-Depth-Stairs-Scratch", "map3"),
   ("Unitree-As2W-Depth-Scratch", "stairs"),
   ("Unitree-As2W-Depth-Flat-Scratch", "flat"),
 ):
@@ -115,49 +87,6 @@ for task_id, terrain in (
     rl_cfg=make_blind_ppo_runner_cfg("as2w_depth_teacher", max_iterations=PHASE_FINAL),
     runner_cls=MirrorVelocityOnPolicyRunner,
   )
-
-register_mjlab_task(
-  task_id="Unitree-As2W-Depth-Student",
-  env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_as2w_blind_scratch_env_cfg(terrain="map3", phase="polish")),
-    camera_pos=NAVCORE_CAMERA_POS["as2w"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-    real_camera=True,
-  ),
-  play_env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_as2w_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
-    play=True,
-    camera_pos=NAVCORE_CAMERA_POS["as2w"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-  ),
-  rl_cfg=make_depth_student_runner_cfg("as2w_depth_student", "as2w_depth_v4"),
-  runner_cls=DepthDistillationRunner,
-)
-
-# The student's robustness fine-tune (user 2026-10-29, step 2a): the same, plus things in
-# front of the lens and a covered lens (REAL_CAMERA_OCCLUSION); warm-started from a student.
-register_mjlab_task(
-  task_id="Unitree-As2W-Depth-Student-Occ",
-  env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_as2w_blind_scratch_env_cfg(terrain="map3", phase="polish")),
-    camera_pos=NAVCORE_CAMERA_POS["as2w"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-    real_camera=True,
-    occlusion=True,
-  ),
-  play_env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_as2w_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
-    play=True,
-    camera_pos=NAVCORE_CAMERA_POS["as2w"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-  ),
-  rl_cfg=make_depth_student_runner_cfg("as2w_depth_student", "as2w_depth_v4"),
-  runner_cls=DepthDistillationRunner,
-)
 
 # Stair-edge fine-tune (user 2026-10-30): the -Occ randomization plus the real camera's
 # smoothing of depth edges (REAL_CAMERA_EDGE_BLUR); warm-started from the -Occ student.

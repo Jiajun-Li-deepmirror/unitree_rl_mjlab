@@ -5,7 +5,7 @@ input `obs` [1, 470], plus metadata), then 20 steps x 64 robots comparing the ON
 reference evaluator with the torch policy.
 
   python scripts/go2_blind/export_onnx.py logs/rsl_rl/go2_blind/<run>/model_N.pt \
-    --out deploy/robots/go2/config/policy/velocity/blind_v0/exported
+    --out deploy/robots/go2/config/policy/velocity/blind_v4/exported
 """
 
 import argparse
@@ -28,7 +28,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 def main() -> None:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  parser.add_argument("--task", default="Unitree-Go2-Blind", help="Blind task whose play config matches the policy.")
+  parser.add_argument("--task", default="Unitree-Go2-Blind-Polish", help="Blind task whose play config matches the policy.")
   parser.add_argument("checkpoint")
   parser.add_argument("--out", required=True, help="Output directory; the file is policy.onnx.")
   args = parser.parse_args()

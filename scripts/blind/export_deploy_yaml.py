@@ -8,7 +8,7 @@ for position terms and +-8 raw actions for velocity terms; it only catches
 anomalous outputs.
 
   python scripts/blind/export_deploy_yaml.py Unitree-As2-Blind-Polish --robot as2 \
-    --out deploy/robots/as2/config/policy/velocity/blind_v0/params/deploy.yaml
+    --out deploy/robots/as2/config/policy/velocity/blind_v3/params/deploy.yaml
 """
 
 import argparse

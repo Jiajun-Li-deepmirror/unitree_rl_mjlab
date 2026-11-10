@@ -1,0 +1,13 @@
+b2w_depth_v7_ew: the B2-W depth student of 2026-11-05 (go2-depth "noslide" round; the user: front wheels step on the top
+landing, wheels roll back down a step). Student average model_300..1000 of b2w_depth_student/2026-11-05_08-38-45_fe_edge_tf3e:
+PPO fine-tune with BC 1.0 against teacher tf_v3_avg15900 (v6_ns's teacher fine-tuned with the top-landing lift charged
+per airborne second, 1.4 m exit runs, slide / riser-contact charges doubled), from fe_edge_tf3d avg1500 (distilled 2000 it
+under the same teacher), in flights closed by an end wall 1.3 m past the last riser like map3's stairwell (pilot endwall:
+the earlier students had never seen one and lifted their front wheels in front of it). depth_fe checks: seeds 0 1 2 PASS
+(up 1.042 / 1.037 / 1.038, down 0.826 / 0.812 / 0.816). Export t2 logs/exports/b2w_fe_student_tf3e_avg1000.onnx
+(md5 1ba08819), metadata and inputs identical to depth_v6_ns.
+tinynav-sim map3 L0 climbs (12): slid back 4.2% (v6_ns 12.3%), start-landing steps 0, top-landing steps 0.8 per climb
+(v6_ns 5.0; ~3 cm each), 0 falls. Stops on stairs 0.2-1.7 cm, flat 93-101%.
+Known: bare (no wall guard) it climbs into tall boxes (5 of 6 walk_box_go scenarios fell; v6_ns 1); with the guard
+(always on while the student drives) it stops ~0.48 m before every box. Keep the wall guard on.
+params/deploy.yaml = depth_v6_ns's (= blind_v2's, leg hold). Rollback: depth_v6_ns or depth_v5_ws (config.yaml policy_dir).

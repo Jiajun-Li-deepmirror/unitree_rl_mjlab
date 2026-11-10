@@ -6,7 +6,7 @@ widened policy acts exactly like the old one until training uses the new inputs.
 The observation normalizers get mean 0 and std --new-std for the new inputs (their
 counts stay, so they hardly move: pick a std of the input's typical size).
 
-  python scripts/blind/widen_obs.py --task Unitree-As2-Blind-Map3-Heading \
+  python scripts/blind/widen_obs.py --task Unitree-As2-Blind-Polish \
     logs/rsl_rl/as2_blind/<run>/model_8500.pt
 
 writes model_8500_widened.pt next to the checkpoint.

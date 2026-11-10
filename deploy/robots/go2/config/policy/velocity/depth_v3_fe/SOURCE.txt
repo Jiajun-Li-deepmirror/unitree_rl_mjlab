@@ -1,0 +1,6 @@
+go2_depth_v3_fe: the Go2 depth student of 2026-10-31 (go2-depth depth_fe round), model_2500 of
+go2_depth_student/2026-10-31_12-16-20_fe_edge_v1 (teacher fe_v1_avg12700 from go2-home's feetedge Go2 polish 10000),
+-Edge task (navcore camera on the Go2 head). Seeds 0 1 2 passed the depth_fe checks. Export t1
+logs/exports/go2_fe_student_2500.onnx = tinynav-sim go2_depth_v3_fe.onnx (md5 6127921a...). Inputs proprio 48 /
+proprio_history 480 (deploy.yaml's term order) / depth_history 2 x 80 x 68 / memory 128; outputs actions 12 / memory.
+params/deploy.yaml = blind_v4's (go2_fe_polish_10000: the same actions, gains and observation terms).

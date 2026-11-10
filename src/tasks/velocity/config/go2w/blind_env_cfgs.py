@@ -96,25 +96,6 @@ def unitree_go2w_blind_heading_env_cfg(
   return apply_blind_heading(apply_blind_fix(cfg, GO2W_FIX, training=terrain == "map3"))
 
 
-def unitree_go2w_blind_v10_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks as commit 9628ce6 built them, before the second fix round
-  (no apply_blind_fix): the recipe of go2w_blind stairs_v10_air model_9497, the
-  model on the real Go2W (resumed from stairs_v9_fix model_8100 on Map3-Heading,
-  4096 envs; go2-home, 2026-10-29). Its params/env.yaml equals this config except
-  dump artefacts, and the code it reaches equals 9628ce6's with the later options
-  at their defaults. `terrain` as for unitree_go2w_blind_heading_env_cfg."""
-  if terrain == "map3":
-    cfg = unitree_go2w_blind_straight_env_cfg(play=play)
-  else:
-    cfg = make_wheeled_blind_env_cfg(GO2W_BLIND_STAIRS, play=play, stairs=terrain == "stairs")
-  return apply_blind_heading(cfg)
-
-
-# Fourth round (user 2026-10-22 ~07:30): no wheel-lift waiver (As2W drove with its
-# wheels lifted through it), a five times stronger splay penalty (driving, the hip PD
-# yields 13-15 deg under the load although the policy aims inward, so the third
-# round cut the driving hip torque only 6-17%), and the brake engaging after 1 s at
-# the zero command and releasing only above 3x the brake speed.
 GO2W_HIP2 = BlindHipCfg(hip_default=-0.17, torque_ref=3.7, splay_weight=-100.0, reset_splay_prob=0.3)
 GO2W_R4 = BlindR4Cfg(brake_after_s=1.0, brake_release_ratio=3.0)
 

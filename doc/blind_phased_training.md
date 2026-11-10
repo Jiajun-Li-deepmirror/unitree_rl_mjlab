@@ -59,7 +59,7 @@ python scripts/train.py Unitree-As2W-Blind-Polish ... --agent.load-run='^<mixed 
 
 ### 验收
 
-测试脚本在 `scripts/blind/eval/` 和 `scripts/go2_blind/eval_map3.py`、`eval_stairs.py`，表格和判分在 `scripts/blind/acceptance/`（accept_tables.py、gate_flat.py）。一个检查点的完整验收在 4090 上约 15–40 分钟，同一台机器一次只跑一个验收。
+测试脚本在 `scripts/blind/eval/` 和 `scripts/go2_blind/eval_map3.py`、`eval_stairs.py`，表格和判分在 `scripts/blind/acceptance/`（accept_tables.py；判分 jobs/fe_pass.py）。一个检查点的完整验收在 4090 上约 15–40 分钟，同一台机器一次只跑一个验收。
 
 几个评测上的坑：
 - **map3 不带操作员的 bug（10-28 修复）**：eval_map3 设置指令时，没关掉轮式 play 配置里 20% 的"带一点转向"指令，18/64 台走的是弧线，撞上扶手。10-28 之前轮式所有不带操作员的数字都偏低（As2W 的约 78% 主要是这个原因）。

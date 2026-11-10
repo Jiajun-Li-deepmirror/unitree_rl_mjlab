@@ -5,24 +5,8 @@ from src.tasks.velocity.rl.anchor import PhasedAnchoredRunner
 from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner
 
 from .blind_env_cfgs import (
-  unitree_b2_blind_heading_env_cfg,
   unitree_b2_blind_scratch_env_cfg,
 )
-
-# With the heading-error input (resume from the Straight model widened by
-# scripts/blind/widen_obs.py): training (map3) and evaluation (stairs, flat) tasks.
-for task_id, terrain in (
-  ("Unitree-B2-Blind-R1-Map3-Heading", "map3"),
-  ("Unitree-B2-Blind-R1-Heading", "stairs"),
-  ("Unitree-B2-Blind-Flat-R1-Heading", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_b2_blind_heading_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_b2_blind_heading_env_cfg(play=True, terrain=terrain),
-    rl_cfg=make_blind_ppo_runner_cfg("b2_blind", max_iterations=20000),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
 
 # Evaluation tasks of the phased training below (stairs, flat; also the trainers' acceptance).
 for task_id, terrain in (
@@ -87,7 +71,6 @@ for phase, task_id, runner in (
   )
 
 for task_id, terrain in (
-  ("Unitree-B2-Depth-Stairs-Scratch", "map3"),
   ("Unitree-B2-Depth-Scratch", "stairs"),
   ("Unitree-B2-Depth-Flat-Scratch", "flat"),
 ):
@@ -98,49 +81,6 @@ for task_id, terrain in (
     rl_cfg=make_blind_ppo_runner_cfg("b2_depth_teacher", max_iterations=PHASE_FINAL),
     runner_cls=MirrorVelocityOnPolicyRunner,
   )
-
-register_mjlab_task(
-  task_id="Unitree-B2-Depth-Student",
-  env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_b2_blind_scratch_env_cfg(terrain="map3", phase="polish")),
-    camera_pos=NAVCORE_CAMERA_POS["b2"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-    real_camera=True,
-  ),
-  play_env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_b2_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
-    play=True,
-    camera_pos=NAVCORE_CAMERA_POS["b2"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-  ),
-  rl_cfg=make_depth_student_runner_cfg("b2_depth_student", "b2_depth_v3"),
-  runner_cls=DepthDistillationRunner,
-)
-
-# The student's robustness fine-tune (user 2026-10-29, step 2a): the same, plus things in
-# front of the lens and a covered lens (REAL_CAMERA_OCCLUSION); warm-started from a student.
-register_mjlab_task(
-  task_id="Unitree-B2-Depth-Student-Occ",
-  env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_b2_blind_scratch_env_cfg(terrain="map3", phase="polish")),
-    camera_pos=NAVCORE_CAMERA_POS["b2"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-    real_camera=True,
-    occlusion=True,
-  ),
-  play_env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_b2_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
-    play=True,
-    camera_pos=NAVCORE_CAMERA_POS["b2"],
-    camera_quat=NAVCORE_CAMERA_QUAT,
-    camera=NAVCORE_DEPTH_CAMERA,
-  ),
-  rl_cfg=make_depth_student_runner_cfg("b2_depth_student", "b2_depth_v3"),
-  runner_cls=DepthDistillationRunner,
-)
 
 # Stair-edge fine-tune (user 2026-10-30): the -Occ randomization plus the real camera's
 # smoothing of depth edges (REAL_CAMERA_EDGE_BLUR); warm-started from the -Occ student.
