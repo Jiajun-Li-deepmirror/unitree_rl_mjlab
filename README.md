@@ -4,7 +4,8 @@
 ## ✳️ Overview
 Unitree RL Mjlab is a reinforcement learning project built upon the
 [mjlab](https://github.com/mujocolab/mjlab.git), using MuJoCo as its 
-physics simulation backend, currently supporting Unitree Go2, A2, As2, G1, R1, H1_2 and H2.
+physics simulation backend, currently supporting Unitree Go2, A2, As2, B2, the
+wheel-legged Go2-W, As2-W and B2-W, G1, R1, H1_2 and H2.
 
 Mjlab combines [Isaac Lab](https://github.com/isaac-sim/IsaacLab)'s proven API
 with best-in-class [MuJoCo](https://github.com/google-deepmind/mujoco_warp)
@@ -20,40 +21,67 @@ and sim-to-real deployment.
 </div>
 
 
-## 🦿 Blind Locomotion (Proprioception Only)
+## 🦿 Quadruped Locomotion: Depth Students and Blind Policies
 
-Joystick velocity policies for Go2, As2, B2 and the wheel-legged Go2W, As2W and B2W
-that walk in every direction on flat ground and go up and down stairs (risers up to
-18 cm) without any terrain sensing. The actor sees only the IMU, joint states, the
-command and a heading error (the heading integrated from the commanded yaw rate minus
-the IMU heading), so it walks straight under a forward command with nobody steering.
-The wheel-legged robots drive forward and backward on all four wheels and step only to
-turn, move sideways or climb.
-Training tasks are `Unitree-<Robot>-Blind-Map3-Heading`
-(`src/tasks/velocity/blind_env_cfg.py`).
+Joystick velocity policies for Go2, As2, B2 and the wheel-legged Go2-W, As2-W and B2-W
+that walk in every direction on flat ground and climb stairs (risers up to 18 cm),
+deployed on the robots' Jetson and in [tinynav-sim](https://github.com/Jiajun-Li-deepmirror/tinynav-sim).
+Each robot runs two policies:
 
-| Robot | Final model | map3 flights (no operator / operator) | Flat commands within 20% |
+- **depth student** (default): proprioception plus the navcore depth camera on the
+  head (2 x 80 x 68 frames), distilled from a scan-based teacher and PPO-fine-tuned;
+- **blind policy** (fallback): IMU, joint states, the command and a heading error
+  only. The controller hands over to it while the depth frame is untrustworthy
+  (no frame, stale, something filling the view up close).
+
+The wheel-legged robots drive on all four wheels and step only to turn, move sideways
+or climb.
+
+### Deployed models (2026-11-10)
+
+| Robot | Depth student | Blind policy | Payload in training |
 |---|---|---|---|
-| Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
-| As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
-| B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
-| Go2W | `go2w_blind` stairs_v10_air model_9497 | 86.8% / 99.0% | 39 / 44 |
-| As2W | `as2w_blind` stairs_v4_air model_8200 | 81.0% / 100.0% | 36 / 44 |
-| B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
+| Go2 | `depth_v3_fe` (10-31) | `blind_v4` = feetedge polish 10000 (10-31) | no (base mass noise only) |
+| As2 | `depth_v3_fe` (10-31) | `blind_v3` = feetedge polish 12000 (10-31) | no |
+| B2 | `depth_v4_n4b` (11-09) | `blind_v3` = blind chain l10, P 11800-12300 average (11-09) | up to 40 kg |
+| Go2-W | `depth_v6_w27d` (11-09) | `blind_v3` = blind chain g27b 19800 (11-09) | up to 12 kg |
+| As2-W | `depth_v6_mg4` (11-10) | `blind_v3` = blind chain mixfg 11000 (11-10) | up to 13 kg |
+| B2-W | `depth_v7_ew` (11-05) | `blind_v2` = polish 9000 (11-01) | no (base mass -5..+10 kg) |
 
-map3 flights: share of runs that reach the goal over all 18 flights of the
-[map3](src/assets/terrains/map3) stairwell, up and down (64 robots each, 1.6x the
-nominal time), without and with an operator who steers back to the flight's
-centerline. Flat commands: the 44 acceptance commands (forward, backward, sideways,
-diagonal, turning, arcs) tracked within 20%.
+In training now: Go2 and As2 blind policies with the payload (blind chain M phase,
+then the depth chain); B2-W follows.
 
-Acceptance videos of each final model: commands in every direction on flat ground,
-then a map3 tour (up L0, turn on the landing, up R1, turn around, down R1 and L0,
-stand) driven by an autopilot that steers back to each flight's centerline like a
-person with a joystick. B2W steps sideways on R1's top landing to turn around: it is
-longer than the 0.46 m from R1's centerline to the landing wall.
+**Payload.** `mdp.base_payload_point` puts a point mass on the base at every reset
+(mass, centre of mass and inertia of the base): half the robots in the light range,
+half uniform up to the robot's documented limit, at a point within ±0.15 m forward,
+±0.08 m sideways and 0..0.20 m up (B2 / B2-W ±0.30 / ±0.15 / 0..0.30 m).
+`standpose` (`mdp.standing_pose_load`) charges the legs' distance from the default
+stance once the robot has come to rest, weighted by the payload.
 
-| Robot | Flat ground (4x speed) | map3 stairwell tour (4x speed) |
+### Training pipeline
+
+All training runs on the GPU boxes from `jobs/` (paths under
+`/root/gpufree-data/go2-depth/depth_fe`); per-robot settings in `jobs/fe_robot.sh`
+and `jobs/v2_robot.sh`.
+
+1. **Blind chain** (`jobs/blind_chain.sh R TAG`): T = `Unitree-<R>-Blind-Teacher` from
+   scratch on flat ground, M = `-Blind-Mixed` (stairs ramped in, payload),
+   P = `-Blind-Polish`; each phase stops at its first checkpoint (average of the last
+   8) that passes the acceptance. Recipe keys come in `BLIND_PILOT`
+   (`src/tasks/velocity/blind_env_cfg.py`). The package goes to `logs/pkg/<r>_bl2_<TAG>_<K>`.
+2. **Depth chain** (`jobs/fe_chain.sh`, `jobs/v2_chain.sh`): a scan teacher fine-tuned
+   from the blind package, a depth student distilled from it (stage 1) and
+   PPO-fine-tuned with behaviour cloning (stage 2), exported to ONNX for the Jetson
+   and tinynav-sim.
+3. **Acceptance** (`jobs/fe_check.sh`, `scripts/blind/acceptance`, `scripts/blind/eval`):
+   flat commands in every direction, stops and creep, standing with the payload,
+   alternating turns, map3 stairwell flights, three seeds; then tinynav-sim (map3 and
+   the pyramid scene: riser kicks, slide-back, idle steps, roll, falls, with and
+   without the payload limit).
+
+Acceptance clips of the 10-21 blind finals (flat ground, map3 stairwell tour, 4x speed):
+
+| Robot | Flat ground | map3 stairwell tour |
 |---|---|---|
 | Go2 | <img src="doc/gif/blind/go2_flat.gif" width="400"> | <img src="doc/gif/blind/go2_map3_tour.gif" width="400"> |
 | As2 | <img src="doc/gif/blind/as2_flat.gif" width="400"> | <img src="doc/gif/blind/as2_map3_tour.gif" width="400"> |
@@ -61,6 +89,22 @@ longer than the 0.46 m from R1's centerline to the landing wall.
 | Go2W | <img src="doc/gif/blind/go2w_flat.gif" width="400"> | <img src="doc/gif/blind/go2w_map3_tour.gif" width="400"> |
 | As2W | <img src="doc/gif/blind/as2w_flat.gif" width="400"> | <img src="doc/gif/blind/as2w_map3_tour.gif" width="400"> |
 | B2W | <img src="doc/gif/blind/b2w_flat.gif" width="400"> | <img src="doc/gif/blind/b2w_map3_tour.gif" width="400"> |
+
+### Deployment
+
+`deploy/robots/<robot>` holds the Unitree-style controllers for the six quadrupeds
+(wheel brake, march in place, thermal guard, heading input). The controllers that run
+on the robots' Jetson (`./run.sh <robot>`: depth student with blind fallback, wall
+guard, thermal guard with the posture reset, full logging) are kept in a separate
+`robot_ctrl` tree, not in this repository.
+
+## 💃 G1 Motion Tracking (Dance)
+
+`src/tasks/tracking` trains G1 / G1-23dof motion imitation, including the
+`Unitree-G1-Tracking-Tight-Legs` task and its `-Latency<ms>` variants; the G1
+controller (`deploy/robots/g1`) adds a fall guard (`deploy/include/FallGuard.h`:
+torso / pelvis tilt, joint error and speed limits switch to Passive) and Dance1-3
+states. See section 2 below for the motion files and training commands.
 
 
 ## 📦 Installation and Configuration
