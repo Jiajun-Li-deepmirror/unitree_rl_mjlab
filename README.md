@@ -20,6 +20,49 @@ and sim-to-real deployment.
 </div>
 
 
+## 🦿 Blind Locomotion (Proprioception Only)
+
+Joystick velocity policies for Go2, As2, B2 and the wheel-legged Go2W, As2W and B2W
+that walk in every direction on flat ground and go up and down stairs (risers up to
+18 cm) without any terrain sensing. The actor sees only the IMU, joint states, the
+command and a heading error (the heading integrated from the commanded yaw rate minus
+the IMU heading), so it walks straight under a forward command with nobody steering.
+The wheel-legged robots drive forward and backward on all four wheels and step only to
+turn, move sideways or climb.
+Training tasks are `Unitree-<Robot>-Blind-Map3-Heading`
+(`src/tasks/velocity/blind_env_cfg.py`).
+
+| Robot | Final model | map3 flights (no operator / operator) | Flat commands within 20% |
+|---|---|---|---|
+| Go2 | `go2_blind` map3_heading_fwd model_23400 | 87.4% / 95.1% | 42 / 44 |
+| As2 | `as2_blind` stairs_v2_fwd model_9500 | 85.3% / 99.9% | 40 / 44 |
+| B2 | `b2_blind` stairs_r1_heading model_8999 | 93.3% / 95.1% | 44 / 44 |
+| Go2W | `go2w_blind` stairs_v10_air model_9497 | 86.8% / 99.0% | 39 / 44 |
+| As2W | `as2w_blind` stairs_v4_air model_8200 | 81.0% / 100.0% | 36 / 44 |
+| B2W | `b2w_blind` stairs_v2_deficit model_8700 | 78.4% / 99.1% | 43 / 44 |
+
+map3 flights: share of runs that reach the goal over all 18 flights of the
+[map3](src/assets/terrains/map3) stairwell, up and down (64 robots each, 1.6x the
+nominal time), without and with an operator who steers back to the flight's
+centerline. Flat commands: the 44 acceptance commands (forward, backward, sideways,
+diagonal, turning, arcs) tracked within 20%.
+
+Acceptance videos of each final model: commands in every direction on flat ground,
+then a map3 tour (up L0, turn on the landing, up R1, turn around, down R1 and L0,
+stand) driven by an autopilot that steers back to each flight's centerline like a
+person with a joystick. B2W steps sideways on R1's top landing to turn around: it is
+longer than the 0.46 m from R1's centerline to the landing wall.
+
+| Robot | Flat ground (4x speed) | map3 stairwell tour (4x speed) |
+|---|---|---|
+| Go2 | <img src="doc/gif/blind/go2_flat.gif" width="400"> | <img src="doc/gif/blind/go2_map3_tour.gif" width="400"> |
+| As2 | <img src="doc/gif/blind/as2_flat.gif" width="400"> | <img src="doc/gif/blind/as2_map3_tour.gif" width="400"> |
+| B2 | <img src="doc/gif/blind/b2_flat.gif" width="400"> | <img src="doc/gif/blind/b2_map3_tour.gif" width="400"> |
+| Go2W | <img src="doc/gif/blind/go2w_flat.gif" width="400"> | <img src="doc/gif/blind/go2w_map3_tour.gif" width="400"> |
+| As2W | <img src="doc/gif/blind/as2w_flat.gif" width="400"> | <img src="doc/gif/blind/as2w_map3_tour.gif" width="400"> |
+| B2W | <img src="doc/gif/blind/b2w_flat.gif" width="400"> | <img src="doc/gif/blind/b2w_map3_tour.gif" width="400"> |
+
+
 ## 📦 Installation and Configuration
 
 Please refer to [setup.md](doc/setup_en.md) for installation and configuration steps.
@@ -62,6 +105,8 @@ Available velocity tracking tasks:
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat
   - Unitree-R1-Flat
+  - Unitree-Go2-Blind: proprioception-only Go2 for joystick control and stairs up to 18 cm;
+    see [doc/go2_blind.md](doc/go2_blind.md) for its training recipe, evaluation and deployment.
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:

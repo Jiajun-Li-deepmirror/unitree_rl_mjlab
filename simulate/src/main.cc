@@ -594,7 +594,11 @@ void *UnitreeSdk2BridgeThread(void *arg)
   param::config.band_attached_link = 6 * body_id;
   
   std::unique_ptr<UnitreeSDK2BridgeBase> interface = nullptr;
-  if (m->nu > NUM_MOTOR_IDL_GO) {
+  // As2 and As2W use the unitree_hg IDL like G1 despite having <= 20 motors
+  // (same rule as upstream unitree_mujoco).
+  const bool use_hg = m->nu > NUM_MOTOR_IDL_GO ||
+                      param::config.robot == "as2" || param::config.robot == "as2w";
+  if (use_hg) {
     interface = std::make_unique<G1Bridge>(m, d);
   } else {
     interface = std::make_unique<Go2Bridge>(m, d);
