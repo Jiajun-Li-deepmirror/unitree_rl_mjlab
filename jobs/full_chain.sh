@@ -24,6 +24,9 @@ source jobs/recipes/$r.sh || exit 2
 L=logs/jobs/repro_$r.txt
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
 case $STAGE in all|blind|teacher|s1|s2) ;; *) echo "full_chain.sh: stage blind, teacher, s1, s2 or all" >&2; exit 2 ;; esac
+# Hand-off (2026-11-10, the user: go2-home's own GPU helps with the run): logs/jobs/repro_away_<r> names where this
+# robot's rounds run instead; here they are skipped (exit 3)
+if [ -f logs/jobs/repro_away_$r ]; then log "$R $STAGE $TAG: runs elsewhere ($(cat logs/jobs/repro_away_$r)), skipped here"; exit 3; fi
 log "$R $STAGE $TAG: code $(cat REPO_COMMIT 2> /dev/null || echo '?'), recipe jobs/recipes/$r.sh (md5 $(md5sum < jobs/recipes/$r.sh | cut -c1-8))"
 if [ $STAGE = all ] || [ $STAGE = blind ]; then
   BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_EXTRA= BL_P_EXTRA= BL_DROP= \
