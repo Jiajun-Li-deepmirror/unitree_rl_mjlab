@@ -9,7 +9,7 @@ cd /root/gpufree-data/go2-depth/depth_fe
 L=logs/jobs/blind_$r.txt
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> logs/jobs/repro_$r.txt; }
 if grep -q "$R BLIND DELIVERY logs/pkg/${r}_bl2_${TAG}_" $L 2> /dev/null; then log "$R t_handoff $TAG: delivered already, nothing to do"; exit 0; fi
-start=$(grep -n "$R blind chain $TAG:" $L | tail -n 1 | cut -d: -f1)
+start=$(grep -n "$R blind chain $TAG:" $L | head -n 1 | cut -d: -f1)
 [ -n "$start" ] || { log "$R t_handoff $TAG: no $TAG chain, nothing to do"; exit 0; }
 if ! tail -n +$start $L | grep -q "$R blind T: no checkpoint passed the flat goals"; then
   log "$R t_handoff $TAG: its T did not end at the limit without a pass, nothing to do"; exit 0

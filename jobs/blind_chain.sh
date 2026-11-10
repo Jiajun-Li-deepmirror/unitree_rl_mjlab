@@ -52,6 +52,10 @@ L=logs/jobs/blind_$r.txt C=logs/checks TD=logs/rsl_rl/${r}_blind
 mkdir -p logs/jobs $C logs/pkg
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
 new_run() { ls -d $TD/*_$1 2> /dev/null | sort | tail -n 1; }
+# new_run_wait RUN PID BEFORE: the run dir the training just launched writes (other than BEFORE, the newest one of that
+# name before the launch), waiting up to 20 min while it lives. 2026-11-10: a fixed 120 s missed B2 rp3's M, whose dir
+# came later; the empty dir then ended the phase ("$3: unbound variable") and the training went on unsupervised.
+new_run_wait() { local d w=0; while [ $w -lt 1200 ]; do d=$(new_run $1); [ -n "$d" ] && [ "$d" != "$3" ] && { echo $d; return 0; }; kill -0 $2 2> /dev/null || return 1; sleep 15; w=$((w + 15)); done; return 1; }
 stop_train() { kill -INT $1 2> /dev/null; for _ in $(seq 60); do kill -0 $1 2> /dev/null || return 0; sleep 2; done; kill $1 2> /dev/null; }
 last8() {
   local k0=$(( $2 / 100 * 100 )) out=""
@@ -69,14 +73,16 @@ phase() {
   # BL_NUM_ENVS (11-06): fewer robots to share a GPU (Go2W g16 at 2048 beside B2 l5's 12.4 GB on t1)
   local args="--env.scene.num-envs=${BL_NUM_ENVS:-4096} --agent.run-name=$run --agent.max-iterations=$maxit"
   [ -n "$frun" ] && args="$args --agent.resume=True --agent.load-run=^$(basename $frun)\$ --agent.load-checkpoint=^model_$fk\.pt\$"
+  local before=$(new_run $run) rd=""
   $PY scripts/train.py $task $args > logs/jobs/blind_${r}_$run.log 2>&1 &
   local tp=$!
   log "$R $name started (pid $tp; $task, $maxit it from ${frun:-zero}${fk:+ model_$fk}, checks $mode from +$first every 500, seeds $seeds)"
-  sleep 120
-  local rd=$(new_run $run)
+  rd=$(new_run_wait $run $tp "$before") || {
+    log "$R $name: no new run dir for $run (training $(kill -0 $tp 2> /dev/null && echo alive || echo ended)): phase stopped"
+    stop_train $tp; echo ""; return; }
   local base=${fk:-0} pick=""
   for K in $(seq $((base + first)) 500 $((base + maxit - 1))); do
-    wait_ck $rd $K $tp || { log "$R $name ended before model_$K"; break; }
+    wait_ck "$rd" $K $tp || { log "$R $name ended before model_$K"; break; }
     local A=$TD/${run}_avg$K/model_$K.pt ok=1 lucky=""
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $rd $K) >> $L 2>&1 || cp $rd/model_$K.pt $A

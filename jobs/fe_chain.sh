@@ -55,6 +55,9 @@ stop_train() {  # PID
 new_run() {  # EXP NAME: the newest run dir
   ls -d logs/rsl_rl/$1/*_$2 2> /dev/null | sort | tail -n 1
 }
+# new_run_wait EXP NAME PID BEFORE (2026-11-10, as blind_chain.sh's): the new run dir of the training just launched,
+# up to 20 min while it lives, in place of a fixed 120 s
+new_run_wait() { local d w=0; while [ $w -lt 1200 ]; do d=$(new_run $1 $2); [ -n "$d" ] && [ "$d" != "$4" ] && { echo $d; return 0; }; kill -0 $3 2> /dev/null || return 1; sleep 15; w=$((w + 15)); done; return 1; }
 last8() {  # RUN K: the last 8 checkpoints up to model_K (every 100; a run's final save is K = ...99)
   local k0=$(( $2 / 100 * 100 )) out=""
   for k in $(seq $((k0 - 700 + ($2 % 100 ? 100 : 0))) 100 $k0); do [ -f $1/model_$k.pt ] && out="$out $1/model_$k.pt"; done  # short runs: only those saved
@@ -99,13 +102,13 @@ if [ ! -f $PK/${r}_teacher ]; then
     mkdir -p $TD/$LRUN && cp $FE_TEACHER_FROM $TD/$LRUN/model_$T0.pt || { log "$R: cannot copy $FE_TEACHER_FROM"; exit 1; }
   fi
   wait_free 12000
+  TBEFORE=$(new_run ${r}_depth_teacher $TRUN)
   $PY scripts/train.py Unitree-$R-Depth-$PH --env.scene.num-envs=4096 --agent.run-name=$TRUN --agent.resume=True \
     --agent.load-run="^$LRUN\$" --agent.load-checkpoint="^model_$T0\.pt\$" --agent.max-iterations=$TITERS \
     > logs/jobs/fe_${r}_teacher$TTAG.log 2>&1 &
   TP=$!
   log "$R teacher started (pid $TP; from $LRUN/model_$T0.pt, $TITERS it, pilot $BLIND_PILOT, constraints init ${BLIND_CONS_INIT:-1x}; free $(free_mib) MiB before)"
-  sleep 120
-  RUN=$(new_run ${r}_depth_teacher $TRUN)
+  RUN=$(new_run_wait ${r}_depth_teacher $TRUN $TP "$TBEFORE") || { log "$R teacher: no new run dir for $TRUN: chain stops"; kill -INT $TP 2> /dev/null; exit 1; }
   log "$R teacher run $RUN"
   # one baseline per blind package and checkpoint (11-07: the B2 chains b2n1-b2n3 had compared their teachers with
   # fe_b2_init of 11-01, an older blind, whatever package they widened)
@@ -202,14 +205,14 @@ SSTAND=${DEPTH_STUDENT_STAND_LONG:-}; unset DEPTH_STUDENT_STAND_LONG
 # FE_STUDENT_FREE (MiB, 2026-11-04): B2W's hard-command student OOM'd twice at start with 14.3 GB free beside a teacher
 # (it holds 14.4 GB); two students do not fit one 24 GB box.
 wait_free ${FE_STUDENT_FREE:-12000}  # a 1024-env depth student holds ~11.1 GB (Go2W, 11-01); 14000 never came beside a teacher
+SBEFORE=$(new_run ${r}_depth_student $SRUN)
 env ${SHARD:+DEPTH_STUDENT_HARD=$SHARD} ${SDRE:+DEPTH_STUDENT_DR_EDGE=$SDRE} ${SFRIC:+DEPTH_STUDENT_FRICTION=$SFRIC} \
   ${SSPIN:+DEPTH_STUDENT_SPIN_LEFT=$SSPIN} ${SSTAND:+DEPTH_STUDENT_STAND_LONG=$SSTAND} $PY scripts/train.py $STASK --env.scene.num-envs=1024 --agent.max-iterations=$SITERS \
   --agent.run-name=$SRUN --agent.teacher-checkpoint=$TEACHER $([ "$SFROM" = none ] || echo --agent.student-checkpoint=$SFROM) \
   --agent.algorithm.learning-rate=$SLR --agent.learning-rate-final=$SLRF ${FE_STUDENT_ARGS:-} > logs/jobs/fe_${r}_student_$SRUN.log 2>&1 &
 SP=$!
 log "$R student started (pid $SP; $STASK, run name $SRUN, $SITERS it, lr $SLR -> $SLRF, hard commands ${SHARD:-off}, DR edges ${SDRE:-off}, foot friction ${SFRIC:-as the task}, spin left ${SSPIN:-0.5}, long stands ${SSTAND:-off}, args ${FE_STUDENT_ARGS:-none}; teacher $TEACHER; from $SFROM; free $(free_mib) MiB before)"
-sleep 120
-RUN=$(new_run ${r}_depth_student $SRUN)
+RUN=$(new_run_wait ${r}_depth_student $SRUN $SP "$SBEFORE") || { log "$R student: no new run dir for $SRUN: chain stops"; kill -INT $SP 2> /dev/null; exit 1; }
 log "$R student run $RUN"
 # This robot's depth trainings only (2026-11-02: dance's G1 trainings share the GPUs and run scripts/train.py too,
 # and a B2W teacher beside an As2W student must not hold its checks for 10 h).
