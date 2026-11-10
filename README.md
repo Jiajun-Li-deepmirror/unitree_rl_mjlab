@@ -99,8 +99,10 @@ policy), each with `exported/policy.onnx`, `params/deploy.yaml` and `SOURCE.txt`
 `deploy/robots/<robot>` (wheel brake, march in place, thermal guard, heading input)
 run the blind policy (`config.yaml` points at it). The depth students run in the
 robots' Jetson controllers (`./run.sh <robot>`: depth student with blind fallback, wall
-guard, thermal guard with the posture reset, full logging), which are kept in a
-separate `robot_ctrl` tree, not in this repository.
+guard, thermal guard with the posture reset, full logging), kept with their sim2sim
+tests in the private `robot_ctrl` repository. The workstation tools around the training
+chains (tinynav acceptance gate, tinynav deploy, comparison videos) are in
+[`tools/go2_depth`](tools/go2_depth/README.md).
 
 ## 💃 G1 Motion Tracking (Dance)
 
