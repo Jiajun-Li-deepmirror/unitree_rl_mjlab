@@ -318,6 +318,10 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     super().__init__(cfg, env)
     self._stair_columns = sub_terrain_column_mask(env, cfg.stair_terrain_names)
     self._corridor_columns = sub_terrain_column_mask(env, cfg.corridor_terrain_names)
+    self._end_wall_columns = sub_terrain_column_mask(env, cfg.end_wall_terrain_names)
+    # the resampled forward command and whether the end-wall slow-down holds it below that
+    self._vx_raw = torch.zeros(self.num_envs, device=self.device)
+    self._wall_cut = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     self.corridor_hold = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
     self.corridor_heading = torch.zeros(self.num_envs, device=self.device)
     self._corridor_needs_heading = torch.zeros_like(self.corridor_hold)
@@ -326,6 +330,9 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     self.cmd_distance = torch.zeros(self.num_envs, device=self.device)
     # Zero commands that march in place (see march_prob).
     self.march = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+    # Turns in place that reverse every _flip_period s (see spin_flip_prob).
+    self._flip_left = torch.full((self.num_envs,), float("inf"), device=self.device)
+    self._flip_period = torch.ones(self.num_envs, device=self.device)
 
   @property
   def is_stair_env(self) -> torch.Tensor:
@@ -353,6 +360,8 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
 
   def _resample(self, env_ids: torch.Tensor) -> None:
     super()._resample(env_ids)
+    self._vx_raw[env_ids] = self.vel_command_b[env_ids, 0]
+    self._wall_cut[env_ids] = False
     stair_env_ids = env_ids[self.is_stair_env[env_ids]]
     if len(stair_env_ids) > 0:
       self.time_left[stair_env_ids] = self.time_left[stair_env_ids].uniform_(
@@ -364,6 +373,18 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
         self.time_left[march_env_ids] = self.time_left[march_env_ids].uniform_(
           *self.cfg.march_resampling_time_range
         )
+    if self.cfg.spin_flip_prob > 0.0:
+      # A share of the flat turns in place reverse every spin_flip_period s and last spin_flip_time_range (draws
+      # only when enabled: tasks without it keep their random stream).
+      c = self.vel_command_b[env_ids]
+      spin = (c[:, :2] == 0.0).all(dim=1) & (c[:, 2] != 0.0) & ~self.march[env_ids] & ~self.is_stair_env[env_ids]
+      flip = spin & (torch.rand(len(env_ids), device=self.device) < self.cfg.spin_flip_prob)
+      period = torch.empty(len(env_ids), device=self.device).uniform_(*self.cfg.spin_flip_period)
+      self._flip_period[env_ids] = period
+      self._flip_left[env_ids] = torch.where(flip, period, torch.full_like(period, float("inf")))
+      flip_ids = env_ids[flip]
+      if len(flip_ids) > 0 and self.cfg.spin_flip_time_range is not None:
+        self.time_left[flip_ids] = self.time_left[flip_ids].uniform_(*self.cfg.spin_flip_time_range)
     if self.cfg.stand_resampling_time_range is not None:
       stand = (self.vel_command_b[env_ids] == 0.0).all(dim=1) & ~self.march[env_ids]
       stand_env_ids = env_ids[stand & ~self.is_stair_env[env_ids]]
@@ -409,12 +430,17 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       # Driving with a gentle turn replaces some moving commands (standing keeps
       # its share): drawn from the combined mode it is under 1% of commands.
       p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
-      steer = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.steer_prob / p_moving)
+      steer = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.steer_prob / max(p_moving, 1e-6))
       back = uniform((0.0, 1.0)) < self.cfg.steer_back_prob
       lo, hi = self.cfg.steer_vx_range
       fwd_max, back_max = ranges.lin_vel_x[1], -ranges.lin_vel_x[0]
       fwd_vx = uniform((min(lo, fwd_max), min(hi, fwd_max)))
       back_vx = -uniform((min(lo, back_max), min(hi, back_max)))
+      if self.cfg.steer_slow_prob > 0.0:
+        slow = uniform((0.0, 1.0)) < self.cfg.steer_slow_prob
+        slo, shi = self.cfg.steer_slow_vx_range
+        fwd_vx = torch.where(slow, uniform((slo, shi)), fwd_vx)
+        back_vx = torch.where(slow, -uniform((slo, shi)), back_vx)
       wz = uniform(self.cfg.steer_wz_range) * torch.where(uniform((0.0, 1.0)) < 0.5, -1.0, 1.0)
       steer_cmd = torch.stack(
         [torch.where(back, back_vx, fwd_vx), torch.zeros_like(wz), wz], dim=1
@@ -424,7 +450,7 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
       # Diagonal walking (vx and vy, no turn) replaces some moving commands:
       # the combined mode draws wz as well, so it rarely walks a straight diagonal.
       p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
-      diag = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.diag_prob / p_moving)
+      diag = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.diag_prob / max(p_moving, 1e-6))
       back = uniform((0.0, 1.0)) < self.cfg.diag_back_prob
       lo, hi = self.cfg.diag_vx_range
       fwd_max, back_max = ranges.lin_vel_x[1], -ranges.lin_vel_x[0]
@@ -439,6 +465,29 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
         [torch.where(back, back_vx, fwd_vx), diag_vy, torch.zeros_like(diag_vy)], dim=1
       )
       flat_cmd = torch.where(diag.unsqueeze(1), diag_cmd, flat_cmd)
+    if self.cfg.fast_side_prob > 0.0:
+      # Fast sideways walking (vy only, near its limit, either way) replaces some
+      # moving commands, so the stand that stop_after_fast puts after it is seen
+      # more often (see fast_side_prob).
+      p_moving = 1.0 - self.cfg.flat_mode_probs[0] / sum(self.cfg.flat_mode_probs)
+      side = (mode != 0) & (uniform((0.0, 1.0)) < self.cfg.fast_side_prob / max(p_moving, 1e-6))
+      share = uniform(self.cfg.fast_side_share)
+      side_vy = torch.where(
+        uniform((0.0, 1.0)) < 0.5, share * ranges.lin_vel_y[1], share * ranges.lin_vel_y[0]
+      )
+      side_cmd = torch.stack([torch.zeros_like(side_vy), side_vy, torch.zeros_like(side_vy)], dim=1)
+      flat_cmd = torch.where(side.unsqueeze(1), side_cmd, flat_cmd)
+    if self.cfg.fast_spin_prob > 0.0:
+      # Turning in place near the wz limit (either way) right after a stand (see
+      # fast_spin_prob).
+      still = (previous == 0.0).all(dim=1)
+      spin = still & (uniform((0.0, 1.0)) < self.cfg.fast_spin_prob)
+      share = uniform(self.cfg.fast_spin_share)
+      spin_wz = torch.where(
+        uniform((0.0, 1.0)) < self.cfg.fast_spin_pos_prob, share * ranges.ang_vel_z[1], share * ranges.ang_vel_z[0]
+      )
+      spin_cmd = torch.stack([torch.zeros_like(spin_wz), torch.zeros_like(spin_wz), spin_wz], dim=1)
+      flat_cmd = torch.where(spin.unsqueeze(1), spin_cmd, flat_cmd)
 
     # Stair terrain: forward-biased, with extra standing.
     stair_ranges = self.cfg.stair_ranges
@@ -452,6 +501,12 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     )
     stair_stand = uniform((0.0, 1.0)) < self.cfg.stair_standing_prob
     stair_cmd[stair_stand] = 0.0
+    if self.cfg.stair_turn_prob > 0.0:
+      # Turns in place on the stairs / landings (see stair_turn_prob; draws only when enabled).
+      turn = ~stair_stand & (uniform((0.0, 1.0)) < self.cfg.stair_turn_prob)
+      share = uniform(self.cfg.stair_turn_share)
+      wz = torch.where(uniform((0.0, 1.0)) < 0.5, share * ranges.ang_vel_z[1], share * ranges.ang_vel_z[0])
+      stair_cmd = torch.where(turn.unsqueeze(1), torch.stack([torch.zeros_like(wz), torch.zeros_like(wz), wz], dim=1), stair_cmd)
     if self.cfg.stair_straight_prob > 0.0:
       stair_cmd[uniform((0.0, 1.0)) < self.cfg.stair_straight_prob, 1:] = 0.0
 
@@ -493,6 +548,60 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
 
   def _update_command(self) -> None:
     super()._update_command()
+    if self.cfg.spin_flip_prob > 0.0:
+      self._flip_left -= self._env.step_dt
+      due = self._flip_left <= 0.0
+      if due.any():
+        self.vel_command_b[due, 2] = -self.vel_command_b[due, 2]
+        self._flip_left[due] = self._flip_period[due]
+    self._corridor_update()
+    if self.cfg.end_wall_terrain_names:
+      self._end_wall_slowdown()
+    if self.cfg.wall_sensor_name is not None:
+      self._wall_slowdown()
+
+  def _wall_slowdown(self) -> None:
+    """Forward speed cut in front of any wall the level ray fan `wall_sensor_name` hits (2026-11-05, generic
+    form of the end-wall slow-down: robots of the neighbouring tiles met the walled flights' end walls from outside
+    at full speed). Rays start above the base (HorizontalFanPatternCfg z_offset) so rising stairs within the ramp
+    do not count. Same ramp as _end_wall_slowdown, on the base-centre distance to the nearest hit."""
+    sensor = self._env.scene[self.cfg.wall_sensor_name]
+    dist = sensor.data.distances
+    d = torch.where(dist >= 0.0, dist, torch.full_like(dist, float("inf"))).amin(dim=1)
+    moving = (self.vel_command_b[:, 0] > 0.0) | self._wall_cut
+    ids = ((self._vx_raw > 0.0) & moving).nonzero(as_tuple=False).flatten()
+    if len(ids) == 0:
+      return
+    scale = ((d[ids] - self.cfg.end_wall_stop_m) / self.cfg.end_wall_slow_m).clamp(0.0, 1.0)
+    self.vel_command_b[ids, 0] = self._vx_raw[ids] * scale   # recovers when the robot backs off
+    self._wall_cut[ids] = scale < 1.0
+
+  def _end_wall_slowdown(self) -> None:
+    """Forward speed cut in front of the wall that closes a flight (2026-11-05, the end walls of walled_up with
+    pilot endwall): like the deployed wall guard (tinynav-sim sim/guard.py, the Jetson controllers) the forward
+    command ramps from full at `end_wall_stop_m + end_wall_slow_m` to zero at `end_wall_stop_m` of base-centre
+    distance to the wall, so robots stop in front of it instead of driving into it (the As2W tf_v7 teacher fell
+    over 5x as often with end walls and no slow-down). The wall sits `end_wall_dist` from the tile centre along the
+    flight the robot heads into (the nearest axis-aligned heading)."""
+    on = spawned_on_sub_terrain(self._env, self.cfg.end_wall_terrain_names, self._end_wall_columns)
+    moving = (self.vel_command_b[:, 0] > 0.0) | self._wall_cut   # not the stands the base class zeroes
+    ids = (on & (self._vx_raw > 0.0) & moving).nonzero(as_tuple=False).flatten()
+    if len(ids) == 0:
+      return
+    heading = self.robot.data.heading_w[ids]
+    quarter = torch.pi / 2
+    axis = torch.round(heading / quarter) * quarter
+    rel = self.robot.data.root_link_pos_w[ids, :2] - self._env.scene.env_origins[ids, :2]
+    along = torch.cos(axis) * rel[:, 0] + torch.sin(axis) * rel[:, 1]
+    lateral = -torch.sin(axis) * rel[:, 0] + torch.cos(axis) * rel[:, 1]
+    d = self.cfg.end_wall_dist - along
+    scale = ((d - self.cfg.end_wall_stop_m) / self.cfg.end_wall_slow_m).clamp(0.0, 1.0)
+    in_flight = lateral.abs() < 1.0   # inside the corridor that runs to that wall
+    raw = self._vx_raw[ids]
+    self.vel_command_b[ids, 0] = torch.where(in_flight, raw * scale, raw)
+    self._wall_cut[ids] = in_flight & (scale < 1.0)
+
+  def _corridor_update(self) -> None:
     ids = self.corridor_hold.nonzero(as_tuple=False).flatten()
     if len(ids) == 0:
       return
@@ -548,6 +657,10 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   steer_vx_range: tuple[float, float] = (0.3, 1.5)
   steer_back_prob: float = 0.25
   steer_wz_range: tuple[float, float] = (0.05, 0.4)
+  steer_slow_prob: float = 0.0
+  """Share of the steering commands whose |vx| comes from `steer_slow_vx_range`
+  instead (slow arcs, which a wheeled robot walks rather than drives)."""
+  steer_slow_vx_range: tuple[float, float] = (0.1, 0.3)
   diag_prob: float = 0.0
   """Share of flat commands that walk diagonally (vx, vy, 0), taken from the
   moving modes after the steering ones. |vx| from `diag_vx_range` (backwards with
@@ -564,6 +677,18 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   corridor_vy_noise: float = 0.05
   corridor_wz_max: float = 0.5
   corridor_vy_max: float = 0.2
+  wall_sensor_name: str | None = None
+  """A forward level ray fan (pilot endwall's "wall_fan"): the forward command slows to zero in front of any wall
+  it hits (TerrainAwareVelocityCommand._wall_slowdown, with end_wall_stop_m / end_wall_slow_m)."""
+  end_wall_terrain_names: tuple[str, ...] = ()
+  """Sub-terrains whose flights end at a wall (walled_up with pilot endwall): the forward command slows to zero
+  in front of it (see TerrainAwareVelocityCommand._end_wall_slowdown)."""
+  end_wall_dist: float = 3.9
+  """Distance of the end wall's face from the tile centre along a flight (an 8 m tile, a 0.1 m wall)."""
+  end_wall_stop_m: float = 0.9
+  """Base-centre distance to the wall where the forward command reaches zero (robot half-length + ~0.5 m)."""
+  end_wall_slow_m: float = 0.5
+  """Length of the ramp before that."""
   stair_resampling_time_range: tuple[float, float] = (1.5, 4.0)
   zero_threshold: float = 0.1
   march_prob: float = 0.0
@@ -584,6 +709,36 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   stop_after_fast_share: float = 0.75
   """A command is fast when one of its parts is at least this share of its
   `ranges` limit on that side."""
+  fast_side_prob: float = 0.0
+  """Share of flat commands that walk sideways only at `fast_side_share` of the vy
+  limit (either way), taken from the moving modes after the diagonal ones. B2
+  feetedge (2026-10-31) fell after stopping from 0.6 m/s to its left at one gait
+  phase (6-11 of 512; none to its right): stuck on its two left feet with both
+  right feet up, it rolled over 1-2 s later. With stop_after_fast_prob 0.5 about
+  1 flat command in 60 was a stand after fast sideways walking (either way)."""
+  fast_side_share: tuple[float, float] = (0.75, 1.0)
+  fast_spin_prob: float = 0.0
+  """Probability that a flat command after a stand turns in place at
+  `fast_spin_share` of the wz limit (either way). B2 feetedge (2026-10-31) fell
+  1-2 of 256 spinning up to 1.5 rad/s from a standstill in most checks from 9000 on
+  (spin_diag.py: 1 of 512 at 1.72 s, illegal contact, foot friction 0.31), where
+  about 1 flat command in 90 was such a spin-up."""
+  fast_spin_share: tuple[float, float] = (0.75, 1.0)
+  stair_turn_prob: float = 0.0
+  """Share of the stair-terrain commands that turn in place at `stair_turn_share` of the wz limit, either way
+  (go2-depth 2026-11-07: the Go2W g14 13600 and g20b 18300 with 12 kg both rolled over turning in place on map3 R1's
+  top edge in the acceptance tour; the stair commands were forward-biased walks and stands)."""
+  stair_turn_share: tuple[float, float] = (0.4, 0.8)
+  spin_flip_prob: float = 0.0
+  """Share of the flat turn-in-place commands that reverse every `spin_flip_period` s (uniform per command) and
+  last `spin_flip_time_range` s (go2-depth 2026-11-06, the user's alternating-spin acceptance, spin_alt.py: 8 turns
+  left / right in turn drifted 16-30 cm where single 10 s spins drifted 3-5; training saw almost no reversals)."""
+  spin_flip_period: tuple[float, float] = (1.0, 3.0)
+  spin_flip_time_range: tuple[float, float] | None = (8.0, 16.0)
+  fast_spin_pos_prob: float = 0.5
+  """Share of those spin-ups turning left (+wz). The B2 depth students (2026-11-02) tilted more spinning up to the
+  left (max tilt p99 25 deg at +1.5 rad/s, 9.4 at -1.5; the teacher, trained with the mirror loss, 13.9 / 9.8) and
+  fell there (DEPTH_STUDENT_SPIN_LEFT in depth_env_cfg.apply_depth_student)."""
   stand_resampling_time_range: tuple[float, float] | None = None
   """How long a zero command off the stairs that does not march holds (s); None:
   like other flat commands. The stop acceptance watches 6 s at zero after a

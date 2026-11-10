@@ -10,7 +10,12 @@ ground, its current clearance and the peak height of its last lift, and at the z
 command the time to stop and the drift since 2 s after the release (wheeled robots:
 also the parking brake state).
 
-  python scripts/blind/record_flat.py --task Unitree-As2-Blind-Flat --foot-radius 0.028 \
+go2-depth additions (2026-11-06, the user: use these scripts for the acceptance videos and add the tests they miss):
+a march in place after the first stand (8 s, the RT+up key; --no-march drops it), --payload kg,x,y,z (the payload
+acceptance's point mass on the base, e.g. Go2W 12,0.15,0,0.20 / B2 40,0.15,0,0.30), command acceleration limits
+--max-accel / --max-yaw-accel (default 2.0 m/s^2 / 3.0 rad/s^2 as tinynav-sim's teleop; 0 = none).
+
+  python scripts/blind/record_flat.py --task Unitree-As2-Blind-Flat-Scratch --foot-radius 0.028 \
     logs/rsl_rl/as2_blind/<run>/model_N.pt --out flat.mp4 --title "As2 model_N"
 
 --foot-radius (alias --wheel-radius) is the radius of the foot sphere / wheel, so
@@ -35,6 +40,39 @@ import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+
+def fixed_payload(cfg, spec):
+  """--payload kg,x,y,z (go2-depth 2026-11-06): the payload acceptance's point mass on the base, fixed (no DR)."""
+  from mjlab.managers.event_manager import EventTermCfg
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+  import src.tasks.velocity.mdp as mdp
+
+  m, x, y, z = (float(v) for v in spec.split(","))
+  cfg.events["base_payload"] = EventTermCfg(
+    mode="reset", func=mdp.base_payload_point,
+    params={"asset_cfg": SceneEntityCfg("robot"), "light_range": (m, m), "heavy_max": 0.0, "heavy_share": 0.0,
+            "pos_ranges": ((x, x), (y, y), (z, z)), "base_com_range": 0.0, "ramp_steps": 0},
+  )
+  cfg.events.pop("base_com", None)
+
+
+def slew(cur, target, dt, lin, ang):
+  """The command moving to `target` by at most `lin` m/s^2 (vx, vy as one planar vector) and `ang` rad/s^2 (wz) per
+  step (go2-depth 2026-11-07, the user: acceleration limits in the acceptance videos; tinynav-sim's sim/accel.py and
+  the B2 / B2W / As2-W controllers: 2.0 / 3.0). lin <= 0 or ang <= 0: no limit for that part."""
+  out = list(cur)
+  d = [target[0] - cur[0], target[1] - cur[1]]
+  n = math.hypot(*d)
+  if lin > 0 and n > lin * dt:
+    d = [x * lin * dt / n for x in d]
+  out[0], out[1] = cur[0] + d[0], cur[1] + d[1]
+  dw = target[2] - cur[2]
+  if ang > 0:
+    dw = max(-ang * dt, min(ang * dt, dw))
+  out[2] = cur[2] + dw
+  return out
+
 
 # (label, (vx, vy, wz), seconds)
 SEGMENTS = [
@@ -84,9 +122,19 @@ p.add_argument("--frames-only", default=None, help="write a few PNG frames here 
 p.add_argument("--distance", type=float, default=1.8)
 p.add_argument("--lookat-z", type=float, default=0.22, help="wide view target height (m)")
 p.add_argument("--reset-demo", action="store_true", help="start with the posture reset (RESET_SEGMENTS)")
+p.add_argument("--no-march", action="store_true", help="no march-in-place segment after the first stand")
+p.add_argument("--first-stand", type=float, default=None,
+               help="s of the first zero-command stand (default 4; the payload video 30, the user 11-07: Go2W fell standing loaded)")
+p.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base")
+p.add_argument("--max-accel", type=float, default=2.0, help="m/s^2, vx and vy together (0: none)")
+p.add_argument("--max-yaw-accel", type=float, default=3.0, help="rad/s^2 (0: none)")
 args = p.parse_args()
 
 cfg = load_env_cfg(args.task, play=True)
+if args.payload or "base_payload" in cfg.events:   # the recipe's payload DR off: 0 kg unless --payload
+  fixed_payload(cfg, args.payload or "0,0,0,0")
+if args.payload:
+  args.title = f"{args.title}  载荷 {args.payload.split(',')[0]} kg"
 cfg.scene.num_envs = 1
 cfg.episode_length_s = 1000.0
 # One 60 m flat tile with the robot in its middle: the sequence drives ~20 m, and
@@ -133,7 +181,13 @@ if wheeled:
 DRIFT = "溜车" if wheeled else "漂移"
 hip_ids, hip_names = robot.find_joints(".*_hip_joint")
 hip_side = torch.tensor([1.0 if n[1] == "L" else -1.0 for n in hip_names], device=env.device)  # outward +
+if args.first_stand is not None:
+  SEGMENTS[0] = (SEGMENTS[0][0], SEGMENTS[0][1], args.first_stand)
 segments = (RESET_SEGMENTS if args.reset_demo else []) + [(*seg, {}) for seg in SEGMENTS]
+if not args.no_march:   # after the first stand (the bar shows each foot's last lift)
+  i = len(RESET_SEGMENTS) if args.reset_demo else 0
+  segments[i + 1:i + 1] = [("原地踏步 8 s（遥控 RT+上）", (0.0, 0.0, 0.0), 8.0, {"march": True}),
+                           ("停止踏步：站立", (0.0, 0.0, 0.0), 3.0, {})]
 
 
 def hip_text():
@@ -271,6 +325,7 @@ t = 0.0
 step = 0
 saved = set()
 summary = []
+cur_cmd = [0.0, 0.0, 0.0]
 for si, (label, c, seconds, opts) in enumerate(segments):
   C = torch.tensor([c], device=env.device, dtype=torch.float32)
   n = int(round(seconds / dt))
@@ -287,7 +342,8 @@ for si, (label, c, seconds, opts) in enumerate(segments):
   pos_release = robot.data.root_link_pos_w[0, :2].clone()
   brake_steps = 0
   for k in range(n):
-    cmd.vel_command_b[:] = C
+    cur_cmd = slew(cur_cmd, c, dt, args.max_accel, args.max_yaw_accel)
+    cmd.vel_command_b[:] = torch.tensor([cur_cmd], device=env.device, dtype=torch.float32)
     cmd.time_left[:] = 1e9
     if hasattr(cmd, "march"):
       cmd.march[:] = march

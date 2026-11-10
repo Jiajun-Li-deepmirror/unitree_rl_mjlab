@@ -24,9 +24,10 @@ from src.tasks.velocity.blind_env_cfg import (
   apply_blind_r5,
   apply_blind_r7,
   apply_blind_phased,
-  apply_blind_staged,
   apply_grip,
+  apply_leg_hold,
   apply_no_hip_load,
+  apply_side_brake,
   apply_speed_clock,
   apply_wheel_stepping_clock,
   apply_blind_straight,
@@ -49,11 +50,6 @@ GO2W_BLIND = WheeledBlindRobotCfg(
   wheel_radius=0.086,
   wheel_action_scale=10.0,
 )
-
-
-def unitree_go2w_blind_env_cfg(play: bool = False, stairs: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Unitree Go2W blind velocity configuration (see make_wheeled_blind_env_cfg)."""
-  return make_wheeled_blind_env_cfg(GO2W_BLIND, play=play, stairs=stairs)
 
 
 # Stairs (2026-10-20): the stairs task plus the stance-leg tilt term of the legged
@@ -100,19 +96,18 @@ def unitree_go2w_blind_heading_env_cfg(
   return apply_blind_heading(apply_blind_fix(cfg, GO2W_FIX, training=terrain == "map3"))
 
 
-# Hip load (third round, user 2026-10-22; see BlindHipCfg): default hips -0.17 rad
-# outward (was 0.00), torque penalty against 3.7 Nm (the static hip torque of the
-# old stance) and the splay penalty. Wheeled: lifting a wheel is free while its hip
-# is splayed 0.08 rad, and 30% of the resets start splayed 0.04-0.15 rad.
-GO2W_HIP = BlindHipCfg(hip_default=-0.17, torque_ref=3.7, wheel_free_splay=0.08, reset_splay_prob=0.3)
-
-
-def unitree_go2w_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks (see unitree_go2w_blind_heading_env_cfg) with the hip-load
-  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
-  and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_go2w_blind_heading_env_cfg(play=play, terrain=terrain)
-  return apply_blind_hip(cfg, GO2W_HIP, training=terrain == "map3")
+def unitree_go2w_blind_v10_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+  """The heading tasks as commit 9628ce6 built them, before the second fix round
+  (no apply_blind_fix): the recipe of go2w_blind stairs_v10_air model_9497, the
+  model on the real Go2W (resumed from stairs_v9_fix model_8100 on Map3-Heading,
+  4096 envs; go2-home, 2026-10-29). Its params/env.yaml equals this config except
+  dump artefacts, and the code it reaches equals 9628ce6's with the later options
+  at their defaults. `terrain` as for unitree_go2w_blind_heading_env_cfg."""
+  if terrain == "map3":
+    cfg = unitree_go2w_blind_straight_env_cfg(play=play)
+  else:
+    cfg = make_wheeled_blind_env_cfg(GO2W_BLIND_STAIRS, play=play, stairs=terrain == "stairs")
+  return apply_blind_heading(cfg)
 
 
 # Fourth round (user 2026-10-22 ~07:30): no wheel-lift waiver (As2W drove with its
@@ -201,16 +196,20 @@ GO2W_FOOT_XY = ((0.186, 0.193), (0.186, -0.193), (-0.2, 0.193), (-0.2, -0.193))
 
 
 def unitree_go2w_blind_scratch_env_cfg(
-  play: bool = False, terrain: str = "map3", gated: bool = False, phase: str | None = None
+  play: bool = False, terrain: str = "map3", phase: str = "teacher"
 ) -> ManagerBasedRlEnvCfg:
-  """unitree_go2w_blind_rest3_env_cfg with the clocked stepping (apply_wheel_stepping_clock)
-  trained from scratch with ramped weights (see apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
-  training task, "stairs" and "flat" the evaluation tasks of the same policy. With `gated` the schedule
-  pauses while training goes badly (see mdp.staged_clock); with `phase` the training
-  task is that phase of apply_blind_phased instead."""
+  """unitree_go2w_blind_rest3_env_cfg with the clocked stepping
+  (apply_wheel_stepping_clock), the speed-dependent gait clock, the grip and the robot's own default
+  stance (apply_speed_clock, apply_grip, apply_no_hip_load): `terrain` "map3" (generated
+  map3-like flights, not map3) trains `phase` of apply_blind_phased, "stairs" and "flat"
+  are the evaluation tasks of the same policies."""
   training = terrain == "map3"
   cfg = apply_wheel_stepping_clock(unitree_go2w_blind_rest3_env_cfg(play=play, terrain=terrain), training=training)
   cfg = apply_no_hip_load(apply_grip(apply_speed_clock(cfg, GO2W_LEG_LENGTH, GO2W_FOOT_XY)), get_go2w_robot_cfg())
+  cfg = apply_side_brake(cfg)
+  # "leghold20" in BLIND_PILOT as the B2W's / As2W's (go2-depth 2026-11-07: the Go2W stop creep after reversing
+  # sat on its 1 cm bar in every polish, 1.2-1.6 cm in g18 / g19); off without it.
+  cfg = apply_leg_hold(cfg)
   if not training:
     return cfg
-  return apply_blind_phased(cfg, phase) if phase else apply_blind_staged(cfg, gated=gated)
+  return apply_blind_phased(cfg, phase)

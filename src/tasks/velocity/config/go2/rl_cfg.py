@@ -64,8 +64,9 @@ def unitree_go2_blind_ppo_runner_cfg(
 
 def unitree_go2_depth_student_runner_cfg():
   """DAgger distillation of the depth student from the depth teacher's actor
-  (go2-depth's depth_student_runner_cfg; contract go2_depth_v2_heading: the
-  proprio carries the heading error last)."""
+  (go2-depth's depth_student_runner_cfg). Contract go2_depth_v3: the inputs of
+  go2_depth_v2_heading (heading error last in the proprio) with go2-blind's final
+  semantics (speed-clock gait phase, hip-0 default stance) and the navcore camera."""
   from src.tasks.velocity.rl.distillation import DepthDistillationRunnerCfg
 
   return DepthDistillationRunnerCfg(
@@ -78,5 +79,5 @@ def unitree_go2_depth_student_runner_cfg():
       "student": ("proprio", "proprio_history", "depth"),
       "teacher": ("actor",),
     },
-    onnx_contract="go2_depth_v2_heading",
+    onnx_contract="go2_depth_v3",
   )

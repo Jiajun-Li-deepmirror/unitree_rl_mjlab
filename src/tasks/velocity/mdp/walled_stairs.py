@@ -81,6 +81,17 @@ class WalledCrossStairsTerrainCfg(SubTerrainCfg):
   max_steps: int = 12
   wall_height: float = 0.8
   """Wall height above the highest walkable surface."""
+  landing_every: int = 0
+  """> 0 (up flights only): every this many steps the tread is a landing `landing_length` long (2026-11-05: front
+  wheels on a landing while the rears still climb, where As2W teachers and students lift their front wheels, came
+  once per climb; tinynav-sim counts those lifts on map3's top landing)."""
+  landing_length: float = 0.8
+  landing_prob: float = 1.0
+  """The share of tiles that get the landings (the others keep one straight flight)."""
+  end_wall_height: float = 0.0
+  """> 0 (up flights only): a wall this high above ground closes each flight at the tile edge, past the exit run,
+  like map3's stairwell wall 1.325 m beyond the top landing (2026-11-05: depth students that never saw it lifted
+  their front wheels on that landing in tinynav-sim, B2W 2.0 per climb; 0.3 with the wall taken out)."""
 
   def function(
     self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
@@ -105,10 +116,18 @@ class WalledCrossStairsTerrainCfg(SubTerrainCfg):
     )
     room = length - self.exit_length
     num_steps = int(min(self.max_steps, max(1, room // (tread + self.step_width_noise))))
+    every = self.landing_every if self.inverted and rng.uniform() < self.landing_prob else 0
+    if every > 0:
+      # The most steps whose treads plus the landings (after every `every` steps but the last) fit the room.
+      extra = max(self.landing_length - tread, 0.0)
+      while num_steps > 1 and num_steps * (tread + self.step_width_noise) + ((num_steps - 1) // every) * extra > room:
+        num_steps -= 1
     flights = []
     for _ in range(4):
       rises = rise + rng.uniform(-self.step_height_noise, self.step_height_noise, num_steps)
       treads = tread + rng.uniform(-self.step_width_noise, self.step_width_noise, num_steps)
+      if every > 0:
+        treads[every - 1 : num_steps - 1 : every] = max(self.landing_length, tread)
       flights.append((np.clip(rises, 0.03, None), treads))
     total = max(float(np.sum(rises)) for rises, _ in flights)
 
@@ -144,6 +163,8 @@ class WalledCrossStairsTerrainCfg(SubTerrainCfg):
         u += tread_k
       if self.inverted:
         add_local(u, length, z_floor, 0.0)
+        if self.end_wall_height > 0.0:
+          add_local(length - 0.1, length, 0.0, self.end_wall_height)
 
     # Solid wall blocks filling each quadrant outside the corridors and junction.
     for qx in (-1.0, 1.0):

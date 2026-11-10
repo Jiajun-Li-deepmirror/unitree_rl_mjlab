@@ -158,6 +158,8 @@ def _build(env: ManagerBasedRlEnv) -> tuple[_Mirror, _Mirror]:
       p, s = [0, 1], [-1.0, -1.0]
     elif name == "heading_error":
       p, s = [0], [-1.0]  # a yaw angle
+    elif name == "stand_time":
+      p, s = [0], [1.0]  # a duration
     elif "scan" in name and "sensor_name" in term_cfg.params:
       p, s = _scan_map(env, term_cfg.params["sensor_name"])
     else:

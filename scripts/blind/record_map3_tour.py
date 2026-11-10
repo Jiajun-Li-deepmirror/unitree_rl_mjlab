@@ -13,7 +13,14 @@ its reason.
 
 Modelled on the go2-depth branch's scripts/go2_depth/record_map3.py.
 
-  python scripts/blind/record_map3_tour.py --task Unitree-As2-Blind \
+go2-depth additions (2026-11-06, the user: use these scripts for the acceptance videos and add the tests they miss):
+--stair-stops (stop 2 s halfway up L0 and halfway down R1, then go on: the stairs stop item), --payload kg,x,y,z (the
+payload acceptance's point mass on the base), --max-accel / --max-yaw-accel (command acceleration limits, default
+2.0 m/s^2 / 3.0 rad/s^2 as tinynav-sim's teleop; 0 = none), --contact-goes-on (a base / thigh touching the stairs no longer ends the
+tour, only fell_over does; the touches are counted on screen: the Go2W g14 13600 with 12 kg touched the first steps of
+L0 with its body at 3.7 s, upright).
+
+  python scripts/blind/record_map3_tour.py --task Unitree-As2-Blind-Scratch \
     logs/rsl_rl/as2_blind/<run>/model_N.pt --out map3_tour.mp4 --title "As2 model_N"
 """
 
@@ -41,7 +48,7 @@ SPAWN, SPAWN_YAW = (-10.34, 5.75, 0.431), -90.0
 R1_TOP_Y = 5.0
 
 
-def make_route(r1_top_y: float, r1_turn_x: float | None = None):
+def make_route(r1_top_y: float, r1_turn_x: float | None = None, stair_stops: bool = False):
   """(label, kind, args) in map3 coordinates, headings in degrees:
     pause  seconds
     turn   heading                  (turn in place)
@@ -58,22 +65,62 @@ def make_route(r1_top_y: float, r1_turn_x: float | None = None):
       ("原地掉头", "turn", -90.0),
       ("横移回 R1", "strafe", ((-8.80, r1_top_y), -90.0)),
     ]
+  l0_up = [("L0 上楼", "follow", ((-10.34, 1.15), -90.0, 0.5))]
+  r1_down = [("R1 下楼", "follow", ((-8.80, 1.15), -90.0, 0.4))]
+  if stair_stops:   # halfway: L0 runs y 5.3 -> 1.5, R1 y 1.5 -> 5.1
+    l0_up = [("L0 上楼到一半", "follow", ((-10.34, 3.4), -90.0, 0.5)), ("楼梯中间停住（零指令）", "pause", 2.5),
+             ("L0 继续上楼", "follow", ((-10.34, 1.15), -90.0, 0.5))]
+    r1_down = [("R1 下楼到一半", "follow", ((-8.80, 3.3), -90.0, 0.4)), ("楼梯中间停住（零指令）", "pause", 2.5),
+               ("R1 继续下楼", "follow", ((-8.80, 1.15), -90.0, 0.4))]
   return [
     ("站立", "pause", 1.5),
-    ("L0 上楼", "follow", ((-10.34, 1.15), -90.0, 0.5)),
+    *l0_up,
     ("平台上转身", "turn", 0.0),
     ("横穿平台到 R1", "follow", ((-8.80, 1.15), 0.0, 0.4)),
     ("转向 R1", "turn", 90.0),
     (f"R1 上楼到 y = {r1_top_y:g} m", "follow", ((-8.80, r1_top_y), 90.0, 0.5)),
     ("站立", "pause", 1.5),
     *turn_around,
-    ("R1 下楼", "follow", ((-8.80, 1.15), -90.0, 0.4)),
+    *r1_down,
     ("平台上转身", "turn", 180.0),
     ("横穿平台到 L0", "follow", ((-10.34, 1.15), 180.0, 0.4)),
     ("转向 L0", "turn", 90.0),
     ("L0 下楼", "follow", ((-10.34, 5.60), 90.0, 0.4)),
     ("站立", "pause", 2.0),
   ]
+
+
+def fixed_payload(cfg, spec):
+  """--payload kg,x,y,z (go2-depth 2026-11-06): the payload acceptance's point mass on the base, fixed (no DR)."""
+  from mjlab.managers.event_manager import EventTermCfg
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+  import src.tasks.velocity.mdp as mdp
+
+  m, x, y, z = (float(v) for v in spec.split(","))
+  cfg.events["base_payload"] = EventTermCfg(
+    mode="reset", func=mdp.base_payload_point,
+    params={"asset_cfg": SceneEntityCfg("robot"), "light_range": (m, m), "heavy_max": 0.0, "heavy_share": 0.0,
+            "pos_ranges": ((x, x), (y, y), (z, z)), "base_com_range": 0.0, "ramp_steps": 0},
+  )
+  cfg.events.pop("base_com", None)
+
+
+def slew(cur, target, dt, lin, ang):
+  """The command moving to `target` by at most `lin` m/s^2 (vx, vy as one planar vector) and `ang` rad/s^2 (wz) per
+  step (go2-depth 2026-11-07, the user: acceleration limits in the acceptance videos; tinynav-sim's sim/accel.py and
+  the B2 / B2W / As2-W controllers: 2.0 / 3.0). lin <= 0 or ang <= 0: no limit for that part."""
+  out = list(cur)
+  d = [target[0] - cur[0], target[1] - cur[1]]
+  n = math.hypot(*d)
+  if lin > 0 and n > lin * dt:
+    d = [x * lin * dt / n for x in d]
+  out[0], out[1] = cur[0] + d[0], cur[1] + d[1]
+  dw = target[2] - cur[2]
+  if ang > 0:
+    dw = max(-ang * dt, min(ang * dt, dw))
+  out[2] = cur[2] + dw
+  return out
 
 
 FOLLOW_TIMEOUT, TURN_TIMEOUT = 30.0, 15.0  # s
@@ -99,6 +146,7 @@ class Autopilot:
 
   def reset(self):
     self.steps = 0
+    self.offset = None   # the follow line's offset to the robot's left (m), None outside follow steps
     self.settled = 0
 
   def pose(self):
@@ -136,6 +184,7 @@ class Autopilot:
     rel = np.asarray(target) - pos
     remaining = float(rel @ axis)
     left = float(-axis[1] * rel[0] + axis[0] * rel[1])  # offset of the line to the robot's left
+    self.offset = left
     vy = float(np.clip(left, -0.2, 0.2))
     wz = float(np.clip(wrap(h - yaw), -0.5, 0.5))
     timed_out = t > FOLLOW_TIMEOUT
@@ -159,11 +208,21 @@ def main() -> None:
   p.add_argument("--r1-top-y", type=float, default=R1_TOP_Y, help="map3 y where the robot stops on R1 and turns around")
   p.add_argument("--r1-turn-x", type=float, default=None, help="step sideways to this map3 x on R1's top landing to turn around (B2W: -9.3)")
   p.add_argument("--seed", type=int, default=0)
+  p.add_argument("--stair-stops", action="store_true", help="stop 2.5 s halfway up L0 and halfway down R1")
+  p.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base")
+  p.add_argument("--contact-goes-on", action="store_true", help="count base / thigh touches instead of ending the tour")
+  p.add_argument("--max-accel", type=float, default=2.0, help="m/s^2, vx and vy together (0: none)")
+  p.add_argument("--max-yaw-accel", type=float, default=3.0, help="rad/s^2 (0: none)")
   args = p.parse_args()
-  route = make_route(args.r1_top_y, args.r1_turn_x)
+  route = make_route(args.r1_top_y, args.r1_turn_x, args.stair_stops)
+  if args.payload:
+    args.title = f"{args.title}  载荷 {args.payload.split(',')[0]} kg"
 
   scenario = eval_map3.Scenario("tour", SPAWN, SPAWN_YAW, [(600.0, 0.0, 0.0, 0.0)], "track")
   cfg = eval_map3.make_env_cfg(scenario, eval_map3.load_map3_boxes(), 1, args.seed, args.task)
+  if args.payload or "base_payload" in cfg.events:   # the recipe's payload DR off: 0 kg unless --payload
+    fixed_payload(cfg, args.payload or "0,0,0,0")
+  touch_cfg = cfg.terminations.pop("illegal_contact", None) if args.contact_goes_on else None
   env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
   venv, policy = eval_map3.load_policy(env, args.checkpoint, args.task)
   env.reset()
@@ -238,18 +297,34 @@ def main() -> None:
   z0 = float(robot.data.root_link_pos_w[0, 2])
   writer = imageio.get_writer(args.out, fps=FPS, codec="libx264", quality=8, macro_block_size=8)
   t, step, falls, last = 0.0, 0, 0, None
+  cur_cmd = [0.0, 0.0, 0.0]
   log = []
+  touches, touch_off = 0, 1e9
+  touch_fn = None
+  if touch_cfg is not None:
+    f = touch_cfg.func
+    touch_fn = (f(touch_cfg, env) if isinstance(f, type) else f)
   for k, (label, kind, seg) in enumerate(route):
     pilot.reset()
     finished, timed_out = False, False
     while not finished:
       c, finished, timed_out = pilot.command(kind, seg)
-      term.vel_command_b[0] = torch.tensor(c, device=env.device)
+      cur_cmd = slew(cur_cmd, c, dt, args.max_accel, args.max_yaw_accel)
+      term.vel_command_b[0] = torch.tensor(cur_cmd, device=env.device)
       term.time_left[:] = 1e9
       with torch.no_grad():
         obs, _, dones, extras = venv.step(policy(obs))
       t += dt
       step += 1
+      if touch_fn is not None:
+        if bool(touch_fn(env, **touch_cfg.params)[0]):
+          if touch_off > 0.2:
+            touches += 1
+            log.append(f"{k + 1}/{len(route)} {label}: body / thigh touch {touches} at t={t:.1f} s")
+            print(log[-1], flush=True)
+          touch_off = 0.0
+        else:
+          touch_off += dt
       if bool(dones[0]):
         tm = env.termination_manager
         why = [n for n in tm.active_terms if bool(tm.get_term(n)[0])]
@@ -270,7 +345,9 @@ def main() -> None:
         f"{args.title}  map3 巡游  {k + 1}/{len(route)} {label}",
         (f"指令  vx {c[0]:+.2f}  vy {c[1]:+.2f}  wz {c[2]:+.2f}", (150, 200, 255)),
         (f"实际  vx {act[0]:+.2f}  vy {act[1]:+.2f}  wz {act[2]:+.2f}", (140, 255, 220)),
-        (f"相对起点高度 {dz:+.2f} m    t = {t:5.1f} s    摔倒 {falls}", (255, 230, 120)),
+        (("中线修正：开    偏离中线 " + (f"{-100 * pilot.offset:+.0f} cm（+ 偏左）" if pilot.offset is not None else "—")), (200, 200, 200)),
+        (f"相对起点高度 {dz:+.2f} m    t = {t:5.1f} s    摔倒 {falls}"
+         + (f"    机身/大腿碰台阶 {touches} 次" if touch_fn is not None else ""), (255, 230, 120)),
       ]
       img = render()
       last = (img, lines)
@@ -286,7 +363,8 @@ def main() -> None:
     print(log[-1], flush=True)
   writer.close()
   renderer.close()
-  print(f"wrote {args.out}: {t:.1f} s of sim time, falls {falls}")
+  print(f"wrote {args.out}: {t:.1f} s of sim time, falls {falls}"
+        + (f", body / thigh touches {touches}" if touch_fn is not None else ""))
   env.close()
 
 

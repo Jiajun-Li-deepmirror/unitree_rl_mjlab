@@ -184,6 +184,37 @@ class heading_error:
     return error.unsqueeze(1)
 
 
+class stand_time:
+  """How long the command has been zero (standing, not marching in place), over `horizon_s`, clamped to 1.
+
+  A blind policy sees 0.2 s of history: half a second after a stop, still settling the brake's lean, looks to it
+  much like three seconds on, when it should hold still. The B2W v13wo teacher brought its body back over its
+  braked wheels for ~5 s after stopping from reversing (6.5 cm in the stop acceptance's last 4 s, bar 1) though
+  its training rewards paid 0.25-0.65 per second for holding still from 2 s on (2026-11-01, scratchpad
+  w20/back_trace.py, rew_attr2.py). Zero from a reset on until the first control step; on the robot the same is
+  counted from the deadzoned stick command (deploy: observation stand_time).
+  """
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.time = torch.zeros(env.num_envs, device=env.device)
+    self.last_step = -1
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    self.time[slice(None) if env_ids is None else env_ids] = 0.0
+
+  def __call__(self, env: ManagerBasedRlEnv, command_name: str, horizon_s: float = 2.0) -> torch.Tensor:
+    if env.common_step_counter != self.last_step:  # Once per control step, however often computed.
+      self.last_step = env.common_step_counter
+      term = env.command_manager.get_term(command_name)
+      command = env.command_manager.get_command(command_name)
+      still = torch.norm(command, dim=1) < 0.1
+      march = getattr(term, "march", None)
+      if march is not None:
+        still &= ~march
+      self.time = torch.where(still, self.time + env.step_dt, torch.zeros_like(self.time))
+    return (self.time / horizon_s).clamp(max=1.0).unsqueeze(1)
+
+
 def _reward_term(env: ManagerBasedRlEnv, name: str):
   """The instance of class-based reward term `name`, or None (no such term, or the
   observation manager is sizing its terms before the reward manager exists)."""
@@ -218,6 +249,47 @@ def hold_offsets(
   return torch.cat(out, dim=1)
 
 
+def spin_hold_offsets(
+  env: ManagerBasedRlEnv, term_name: str = "spin_position_hold", asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+) -> torch.Tensor:
+  """Critic only (go2-depth 2026-11-06): the base's offset from the spin hold's anchor in the base yaw frame (m), zero
+  while the anchor follows (no turn in place, or not settled yet). The heading is left out: it turns by design."""
+  term = _reward_term(env, term_name)
+  if term is None:
+    return torch.zeros(env.num_envs, 2, device=env.device)
+  asset: Entity = env.scene[asset_cfg.name]
+  d = asset.data.root_link_pos_w[:, :2] - term.anchor_pos
+  yaw = asset.data.heading_w
+  c, s = torch.cos(yaw), torch.sin(yaw)
+  v = torch.stack([c * d[:, 0] + s * d[:, 1], -s * d[:, 0] + c * d[:, 1]], dim=1)
+  return v * getattr(term, "locked", torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)).float().unsqueeze(1)
+
+
+def standing_lock_offsets(
+  env: ManagerBasedRlEnv,
+  pose_term: str,
+  target_term: str,
+  hold_term: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Critic only: whether the standing hold `hold_term` holds its anchor, then (zero unless it does) the
+  joints' offset from the pose the posture term `pose_term` keeps since the lock (its lock_pos, "restlock") and
+  the low-passed position targets' offset from the leg-target hold `target_term`'s anchor, over `asset_cfg`'s
+  joints (the posture terms' joints). Those rewards depend on poses no other observation shows (B2W v13wo,
+  2026-11-01: the teacher crept 1.3-3 cm per 4 s after stops though the training rewards charged it)."""
+  asset: Entity = env.scene[asset_cfg.name]
+  q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+  zero = torch.zeros_like(q)
+  hold, pose, target = (_reward_term(env, n) for n in (hold_term, pose_term, target_term))
+  locked = hold.locked if hold is not None else torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  lock_pos = getattr(pose, "lock_pos", None)
+  pose_off = q - lock_pos if lock_pos is not None else zero
+  avg, anchor = getattr(target, "avg", None), getattr(target, "anchor_target", None)
+  target_off = avg - anchor if avg is not None and anchor is not None else zero
+  m = locked.float().unsqueeze(1)
+  return torch.cat([m, pose_off * m, target_off * m], dim=1)
+
+
 def drift_offsets(
   env: ManagerBasedRlEnv, term_names: tuple[str, ...], asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -240,3 +312,100 @@ def drift_offsets(
     turn = torch.atan2(torch.sin(heading - term.ref_heading), torch.cos(heading - term.ref_heading))
     out.append(torch.stack([side, along, turn], dim=1) * term.active.float().unsqueeze(1))
   return torch.cat(out, dim=1)
+
+
+def _model_rows(env: ManagerBasedRlEnv, field: str, idx: torch.Tensor | int) -> torch.Tensor:
+  """A model field at `idx` for every env: randomized fields have a world axis, the others one shared row."""
+  value = getattr(env.sim.model, field)
+  if value.shape[0] == env.num_envs:
+    return value[:, idx]
+  row = value[0, idx] if value.shape[0] == 1 else value[idx]
+  return row.unsqueeze(0).expand(env.num_envs, *row.shape)
+
+
+def dr_params(
+  env: ManagerBasedRlEnv,
+  friction_cfg: SceneEntityCfg,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Critic only: the robot's randomized base CoM offset (x, y, z) and payload against
+  the model's defaults, and its foot friction (friction_cfg's geoms, mean), scaled to
+  about +-1.5 for the blind tasks' ranges (CoM / 0.05 m, payload / 2 kg, (friction -
+  1) / 0.5), so a checkpoint widened for them (scripts/blind/widen_obs.py --new-std 1)
+  starts near the right normalization.
+
+  The actor cannot see them, but it can tell the load from how its legs give under
+  their targets; the critic seeing them separates a robot's own CoM from noise in
+  the returns. As2W v13wh (2026-10-30): its sideways drift and its slow arcs, the
+  gate misses, both followed the base CoM offset (scratchpad
+  w18/kit/go2-blind/tools/flat_items_dr.py).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  root = asset.indexing.root_body_id
+  com = _model_rows(env, "body_ipos", root) - env.sim.get_default_field("body_ipos")[root]
+  mass = _model_rows(env, "body_mass", root) - env.sim.get_default_field("body_mass")[root]
+  geoms = asset.indexing.geom_ids[friction_cfg.geom_ids].long()
+  friction = _model_rows(env, "geom_friction", geoms)[..., 0].mean(dim=1)
+  return torch.cat([com / 0.05, (mass / 2.0).unsqueeze(1), ((friction - 1.0) / 0.5).unsqueeze(1)], dim=1)
+
+
+class teacher_scan_camlike:
+  """The teacher's height scan made more like what the depth student sees (2026-11-05, the new pipeline's
+  "teacher the student can learn": students climbed 0.04-0.12 slower than their teachers and slid back 2-3 points
+  more). On mjlab's height_scan of `sensor_name` (rows = lateral, columns = forward with ray_alignment "yaw"):
+  a Gaussian blur along the heading with a per-episode sigma from `sigma_cells` (the real camera smooths risers
+  into ~14 cm ramps, REAL_CAMERA_EDGE_BLUR), a per-episode height bias and forward slope (camera height / pitch
+  calibration, `bias_m`, `slope`), and `dropout` of the cells holding their previous value (stale rays).
+  The term's own noise / clip / scale apply after this."""
+
+  def __init__(self, cfg, env):
+    p = cfg.params
+    self.nx, self.ny = int(p["nx"]), int(p["ny"])
+    n = env.num_envs
+    self.sigma = torch.zeros(n, device=env.device)
+    self.bias = torch.zeros(n, device=env.device)
+    self.slope = torch.zeros(n, device=env.device)
+    self.prev = None
+    xs = torch.arange(self.nx, device=env.device, dtype=torch.float) - (self.nx - 1) / 2.0
+    self.x_m = xs * float(p.get("resolution", 0.1))
+    self.reset(None, p, env)
+
+  def reset(self, env_ids=None, params=None, env=None):
+    p = params or getattr(self, "_p", {})
+    self._p = p
+    if not p:
+      return
+    ids = slice(None) if env_ids is None else env_ids
+    k = self.sigma[ids].shape[0]
+    dev = self.sigma.device
+    lo, hi = p.get("sigma_cells", (0.0, 0.8))
+    self.sigma[ids] = lo + torch.rand(k, device=dev) * (hi - lo)
+    b = float(p.get("bias_m", 0.02))
+    self.bias[ids] = (torch.rand(k, device=dev) * 2 - 1) * b
+    s = float(p.get("slope", 0.05))
+    self.slope[ids] = (torch.rand(k, device=dev) * 2 - 1) * s
+
+  def __call__(self, env, sensor_name: str, nx: int, ny: int, resolution: float = 0.1,
+               sigma_cells=(0.0, 0.8), bias_m: float = 0.02, slope: float = 0.05, dropout: float = 0.05,
+               offset: float = 0.0, miss_value: float | None = None) -> torch.Tensor:
+    from mjlab.envs.mdp import observations as _obs
+    h = _obs.height_scan(env, sensor_name, offset=offset, miss_value=miss_value)
+    B = h.shape[0]
+    g = h.view(B, ny, nx)
+    # per-env Gaussian blur along x (taps -2..2)
+    taps = torch.arange(-2, 3, device=h.device, dtype=h.dtype)
+    sig = self.sigma.clamp(min=1e-3)[:, None]
+    w = torch.exp(-0.5 * (taps[None, :] / sig) ** 2)
+    w = torch.where(self.sigma[:, None] < 0.05, (taps[None, :] == 0).to(h.dtype), w)
+    w = w / w.sum(dim=1, keepdim=True)
+    pad = torch.nn.functional.pad(g, (2, 2), mode="replicate")
+    blurred = sum(w[:, i, None, None] * pad[:, :, i:i + nx] for i in range(5))
+    out = blurred + self.bias[:, None, None] + self.slope[:, None, None] * self.x_m[None, None, :]
+    out = out.reshape(B, -1)
+    if self.prev is None or self.prev.shape != out.shape:
+      self.prev = out.clone()
+    if dropout > 0.0:
+      stale = torch.rand_like(out) < dropout
+      out = torch.where(stale, self.prev, out)
+    self.prev = out.clone()
+    return out

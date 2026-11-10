@@ -7,7 +7,6 @@ the heavier body.
 
 from dataclasses import replace
 
-from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 
 from src.assets.robots import get_b2_robot_cfg
@@ -26,7 +25,6 @@ from src.tasks.velocity.blind_env_cfg import (
   apply_blind_r6,
   apply_blind_r7,
   apply_blind_phased,
-  apply_blind_staged,
   apply_grip,
   apply_no_hip_load,
   apply_speed_clock,
@@ -60,43 +58,6 @@ def unitree_b2_blind_env_cfg(
   """Create the Unitree B2 blind velocity configuration (see make_blind_env_cfg)."""
   return make_blind_env_cfg(robot, play=play, stairs=stairs)
 
-
-# Gait clock pilots (2026-10-18). With the Go2 trot clock (0.6 s) neither flat run
-# moved (0-2% of the commanded speed); the second marched in place, feet down 80%
-# of the time at 0.8 touchdowns/s instead of the clock's 1.67, legs not swinging
-# fore and aft. B2 legs are 1.6x Go2's, so a dynamically similar period is
-# ~0.76 s; robot_lab's B2 turns its gait reward off.
-B2_BLIND_GAIT08 = replace(B2_BLIND, gait_period=0.8)
-B2_BLIND_NO_CLOCK = replace(B2_BLIND, gait_clock=False)
-
-# Both clock pilots failed too (2026-10-19): error_vel_xy stayed at ~1.17 from
-# iteration 100 (As2 0.61 by 300). In the first iterations B2 fell 6-8x as often
-# as As2. robot_lab's B2 neither ends episodes on body contact nor penalizes
-# termination, halves the hip action scale and tracks with weights 3.0 / 1.5.
-B2_BLIND_P1 = replace(
-  B2_BLIND, hip_action_scale=0.125, body_contact_termination=False, termination_weight=0.0
-)
-B2_BLIND_P2 = replace(B2_BLIND, tracking_weights=(3.0, 1.5))
-B2_BLIND_P3 = replace(B2_BLIND_P1, tracking_weights=(3.0, 1.5))
-
-
-# These failed too (2026-10-19), and an open-loop trot moves B2 as well as Go2. But
-# on two diagonal legs with zero action B2's stance hips splay 0.62 rad and the
-# base sinks to 0.23 m (Go2 0.26 rad): its default pose puts the feet 0.1 rad
-# outward. B2W, with the same legs, trains from hips 0 and all thighs 0.8.
-def _b2_robot_cfg_b2w_stance() -> EntityCfg:
-  cfg = get_b2_robot_cfg()
-  return replace(
-    cfg,
-    init_state=replace(
-      cfg.init_state,
-      joint_pos={".*_hip_joint": 0.0, ".*_thigh_joint": 0.8, ".*_calf_joint": -1.5},
-    ),
-  )
-
-
-B2_BLIND_Q1 = replace(B2_BLIND, robot_cfg=_b2_robot_cfg_b2w_stance)
-B2_BLIND_Q2 = replace(B2_BLIND, hip_action_scale=0.5)
 
 # The go2-depth branch's B2 (2026-10-17) also stood still on the Go2 recipe. There,
 # with the swing clearance penalty at -1 instead of -3 it started stepping (800-it
@@ -140,20 +101,6 @@ def unitree_b2_blind_heading_env_cfg(
   else:
     cfg = unitree_b2_blind_env_cfg(play=play, stairs=terrain == "stairs", robot=B2_BLIND_R1_STAIRS)
   return apply_blind_heading(cfg)
-
-
-# Hip load (third round, user 2026-10-22; see BlindHipCfg): default hips -0.04 rad
-# outward (was +0.10), torque penalty against 30.0 Nm (the static hip torque of the
-# old stance) and the splay penalty.
-B2_HIP = BlindHipCfg(hip_default=-0.04, torque_ref=30.0)
-
-
-def unitree_b2_blind_hip_env_cfg(play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """The heading tasks (see unitree_b2_blind_heading_env_cfg) with the hip-load
-  changes (see apply_blind_hip): `terrain` "map3" is the training task, "stairs"
-  and "flat" the evaluation tasks of the same policy."""
-  cfg = unitree_b2_blind_heading_env_cfg(play=play, terrain=terrain)
-  return apply_blind_hip(cfg, B2_HIP, training=terrain == "map3")
 
 
 # Fourth round (user 2026-10-22 ~07:30, "减半"): half the third round's stance change
@@ -227,16 +174,13 @@ B2_FOOT_XY_HIP0 = ((0.303, 0.192), (0.303, -0.192), (-0.455, 0.192), (-0.455, -0
 
 
 def unitree_b2_blind_scratch_env_cfg(
-  play: bool = False, terrain: str = "map3", gated: bool = False, phase: str | None = None
+  play: bool = False, terrain: str = "map3", phase: str = "teacher"
 ) -> ManagerBasedRlEnvCfg:
-  """unitree_b2_blind_rest3_env_cfg trained from scratch with ramped weights (see
-  apply_blind_staged): `terrain` "map3" (generated map3-like flights, not map3) is the
-  training task, "stairs" and "flat" the evaluation tasks of the same policy. With
-  `gated` the schedule pauses while training goes badly (see mdp.staged_clock); with `phase`
-  the training task is that phase of apply_blind_phased instead."""
+  """unitree_b2_blind_rest3_env_cfg, the speed-dependent gait clock, the grip and the robot's own default
+  stance (apply_speed_clock, apply_grip, apply_no_hip_load): `terrain` "map3" (generated
+  map3-like flights, not map3) trains `phase` of apply_blind_phased, "stairs" and "flat"
+  are the evaluation tasks of the same policies."""
   cfg = apply_no_hip_load(apply_grip(apply_speed_clock(unitree_b2_blind_rest3_env_cfg(play=play, terrain=terrain), B2_LEG_LENGTH, B2_FOOT_XY, B2_FOOT_XY_HIP0)), get_b2_robot_cfg())
   if terrain != "map3":
     return cfg
-  if phase:
-    return apply_blind_phased(cfg, phase, swing_weight=B2_PHASED_SWING_WEIGHT)
-  return apply_blind_staged(cfg, gated=gated)
+  return apply_blind_phased(cfg, phase, swing_weight=B2_PHASED_SWING_WEIGHT)

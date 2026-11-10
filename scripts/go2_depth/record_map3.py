@@ -149,7 +149,35 @@ def main() -> None:
   parser.add_argument("--cam-elevation", type=float, default=-40.0)
   parser.add_argument("--cam-side", type=float, default=0.0, help="Azimuth offset from straight behind (deg).")
   parser.add_argument("--seed", type=int, default=None, help="Env seed (reset randomization: delays, ...).")
+  parser.add_argument("--l0-bottom-y", type=float, default=5.60,
+                      help="map3 y where L0's descent ends before the strafes (B2 2026-11-09: at 5.60 its rear legs were "
+                      "still on the steps and the strafe left brushed the rail; 5.85)")
+  parser.add_argument("--r1-top-y", type=float, default=None, help="map3 y where R1's climb ends (B2: 5.6)")
+  parser.add_argument("--payload", default=None,
+                      help="kg,x,y,z: a fixed point mass on the base (the payload acceptance's, e.g. Go2W 12,0.15,0,0.20)")
+  parser.add_argument("--contact-goes-on", action="store_true",
+                      help="count base / thigh touches (illegal_contact) instead of ending the tour (as the blind tour)")
+  parser.add_argument("--r1-turn-x", type=float, default=None,
+                      help="step sideways to this map3 x on R1's top landing before turning around (B2: -9.3)")
   args = parser.parse_args()
+  for i, (label, kind_, seg) in enumerate(ROUTE):
+    if label == "L0 down the stairs":
+      (x, _y), hd, sp = seg
+      ROUTE[i] = (label, kind_, ((x, args.l0_bottom_y), hd, sp))
+    if label == "R1 up the stairs" and args.r1_top_y is not None:
+      (x, _y), hd, sp = seg
+      ROUTE[i] = (label, kind_, ((x, args.r1_top_y), hd, sp))
+  if args.r1_turn_x is not None:
+    # B2 (2026-11-09): turning in place at R1's top its body brushed the well-side rail (as the blind tour's
+    # --r1-turn-x): step sideways onto the landing first, turn, step back onto R1's line, then descend.
+    dx = args.r1_turn_x - (-8.80)
+    secs = abs(dx) / 0.3
+    j = next(k for k, r in enumerate(ROUTE) if r[0] == "turn around in place")
+    ROUTE[j:j + 1] = [
+      ("step onto the landing", "fixed", ((0.0, -0.3 if dx > 0 else 0.3, 0.0), secs)),   # facing +y, left is -x
+      ROUTE[j],
+      ("step back onto R1", "fixed", ((0.0, 0.3 if dx < 0 else -0.3, 0.0), secs)),       # facing -y, left is +x
+    ]
 
   import mjlab.tasks  # noqa: F401
   import src.tasks  # noqa: F401
@@ -165,6 +193,20 @@ def main() -> None:
   cfg = play_map3.make_env_cfg(task, spawn, yaw, teacher)
   if args.seed is not None:
     cfg.seed = args.seed
+  if args.payload or "base_payload" in cfg.events:
+    # 2026-11-09 (the user: depth acceptance videos with and without the payload): as stop_then_move.py, a fixed
+    # point mass on the base at every reset (0 kg without --payload: no payload randomization in the plain tour),
+    # the base CoM randomization off
+    import src.tasks.velocity.mdp as mdp
+    from mjlab.managers.event_manager import EventTermCfg
+    from mjlab.managers.scene_entity_config import SceneEntityCfg
+    pm, px, py, pz = (float(v) for v in (args.payload or "0,0,0,0").split(","))
+    cfg.events["base_payload"] = EventTermCfg(
+      mode="reset", func=mdp.base_payload_point,
+      params={"asset_cfg": SceneEntityCfg("robot"), "light_range": (pm, pm), "heavy_max": 0.0, "heavy_share": 0.0,
+              "pos_ranges": ((px, px), (py, py), (pz, pz)), "base_com_range": 0.0, "ramp_steps": 0},
+    )
+    cfg.events.pop("base_com", None)
   map3 = cfg.scene.terrain.terrain_generator.sub_terrains["map3"]
   map3.rail_alpha = 0.18
   if args.solid_gaps:
@@ -194,6 +236,12 @@ def main() -> None:
   sim_t = 0.0
   last = None
   terminations = env.unwrapped.termination_manager
+  touches, touching, ic = 0, False, None
+  if args.contact_goes_on and "illegal_contact" in terminations.active_terms:
+    # 2026-11-09 (B2 depth student): the term stops ending the episode; its contacts are counted instead
+    i = terminations._term_names.index("illegal_contact")
+    ic = terminations._term_cfgs[i]
+    del terminations._term_names[i], terminations._term_cfgs[i]
   for label, kind_, seg_args in ROUTE:
     if falls:
       break
@@ -218,6 +266,12 @@ def main() -> None:
             writer.append_data(marked)
         break
       sim_t += env.unwrapped.step_dt
+      if ic is not None:
+        now = bool(ic.func(env.unwrapped, **ic.params)[0])
+        if now and not touching:
+          touches += 1
+          print(f"[record] touch {touches} during '{label}' at t {sim_t:.1f} s", flush=True)
+        touching = now
       if pilot.step % 2 == 0:
         # Chase camera behind (and --cam-side to the side), smoothed.
         target = math.degrees(pilot.pose()[1]) + 180.0 + args.cam_side
@@ -228,14 +282,15 @@ def main() -> None:
         frame = env.unwrapped.render()
         z = float(env.unwrapped.scene["robot"].data.root_link_pos_w[0, 2]) - float(env.unwrapped.scene.env_origins[0, 2]) + spawn[2]
         lines = [
-          f"{robot_name} {kind} on map3{' (gaps filled)' if args.solid_gaps else ''}: {label}",
+          f"{robot_name} {kind} on map3{' (gaps filled)' if args.solid_gaps else ''}"
+          f"{(', payload ' + args.payload.split(',')[0] + ' kg') if args.payload else ', no payload'}: {label}",
           f"cmd vx {cmd[0]:+.2f}  vy {cmd[1]:+.2f}  wz {cmd[2]:+.2f}",
-          f"t {sim_t:5.1f} s   height {z:4.2f} m   falls {falls}",
+          f"t {sim_t:5.1f} s   height {z:4.2f} m   falls {falls}" + (f"   body / thigh touches {touches}" if ic is not None else ""),
         ]
         last = (frame, lines)
         writer.append_data(overlay(frame, lines))
   writer.close()
-  print(f"[record] wrote {args.out} ({sim_t:.1f} s, falls {falls})", flush=True)
+  print(f"[record] wrote {args.out} ({sim_t:.1f} s, falls {falls}" + (f", body / thigh touches {touches}" if ic is not None else "") + ")", flush=True)
 
 
 if __name__ == "__main__":

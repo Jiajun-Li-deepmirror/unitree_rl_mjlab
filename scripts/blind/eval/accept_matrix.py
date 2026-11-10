@@ -6,7 +6,11 @@ velocity on each commanded axis (fallen robots left out), and falls. A command
 fails when any commanded axis is off by more than --tol (default 20%) or a robot
 fell. Uncommanded axes are not judged.
 
-Usage: python accept_matrix.py --task <task> <checkpoint> [--tol 0.2]
+Usage: python accept_matrix.py --task <task> <checkpoint> [--tol 0.2] [--lin-accel L] [--yaw-accel W]
+
+--lin-accel L (m/s², vx and vy as one planar vector) / --yaw-accel W (rad/s²), 2026-11-02: the command comes in from
+rest at most that fast, as the B2 / B2W / As2-W controllers ramp the stick (max_accel 2.0 / max_yaw_accel 3.0);
+the judged last 4 s are past any ramp.
 """
 
 import argparse
@@ -40,6 +44,8 @@ p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--tol", type=float, default=0.2)
 p.add_argument("--envs-per-cmd", type=int, default=32)
+p.add_argument("--lin-accel", type=float, default=0.0)
+p.add_argument("--yaw-accel", type=float, default=0.0)
 args = p.parse_args()
 
 n = args.envs_per_cmd
@@ -60,8 +66,13 @@ steps, start = int(round(8.0 / dt)), int(round(4.0 / dt))
 vel_sum = torch.zeros(len(C), 3, device=dev)
 fell = torch.zeros(len(C), dtype=torch.bool, device=dev)
 obs = venv.get_observations()
+planar = C[:, :2].norm(dim=1, keepdim=True).clamp(min=1e-6)
 for k in range(steps):
   cmd.vel_command_b[:] = C
+  if args.lin_accel > 0:
+    cmd.vel_command_b[:, :2] = C[:, :2] * (args.lin_accel * dt * (k + 1) / planar).clamp(max=1.0)
+  if args.yaw_accel > 0:
+    cmd.vel_command_b[:, 2] = C[:, 2].clamp(-args.yaw_accel * dt * (k + 1), args.yaw_accel * dt * (k + 1))
   cmd.time_left[:] = 1e9
   with torch.no_grad():
     obs, _, dones, _ = venv.step(policy(obs))

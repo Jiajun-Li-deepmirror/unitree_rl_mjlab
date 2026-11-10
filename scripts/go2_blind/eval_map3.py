@@ -226,6 +226,43 @@ def load_map3_boxes(map3_dir: Path = MAP3_DIR) -> list[tuple[str, np.ndarray, np
   return boxes
 
 
+TEACHER_HEADROOM = 0.5   # m above a scenario's highest walking surface kept for a scan teacher
+TEACHER_RAIL_TOP = 1.5   # m above that headroom its rails are cut to
+
+
+def teacher_boxes(boxes, scenario: Scenario):
+  """map3 as a depth teacher's privileged scan can read it (go2-depth, as its own
+  eval_map3 did for teachers): the scan casts down from 8 m above the robot, so
+  the storeys above a flight (slabs up to 16 m, the roof at 19 m) read as a
+  ceiling all round and the 19 m rails as nothing (rays start inside them), and
+  the open stairwell well and east slot beside the flights read as cliffs; in
+  training there is none of it. The well and the slot are filled solid between
+  the landings (go2-depth eval_map3 --solid-gaps keep_landings: y 1.73-5.08, so
+  the F1 entry flight, which crosses the well at y 5.67, stays open), boxes above the scenario's highest walking surface
+  plus TEACHER_HEADROOM go, rails are cut to TEACHER_RAIL_TOP above that. A
+  camera sees ceilings and wells for real: students run on map3 as built."""
+  kind, _, rise = scenario.success.partition(":")
+  top = scenario.spawn[2] + (float(rise) if kind == "climb" else 0.0)
+  keep_below = top + TEACHER_HEADROOM
+  fills = []
+  for name, (x0, x1) in (("rail_fill_well", (-9.86, -9.30)), ("rail_fill_slot", (-8.34, -8.12))):
+    lo, hi = np.array([x0, 1.73, -0.2]), np.array([x1, 5.08, 19.0])
+    fills.append((name, (hi - lo) / 2, (hi + lo) / 2))
+  out = []
+  for name, size, pos in list(boxes) + fills:
+    lo, hi = pos[2] - size[2], pos[2] + size[2]
+    if name.startswith("rail"):
+      hi = min(hi, keep_below + TEACHER_RAIL_TOP)
+      if hi <= lo:
+        continue
+      size = np.array([size[0], size[1], 0.5 * (hi - lo)])
+      pos = np.array([pos[0], pos[1], 0.5 * (hi + lo)])
+    elif hi > keep_below:
+      continue
+    out.append((name, size, pos))
+  return out
+
+
 @dataclass(kw_only=True)
 class Map3TerrainCfg(SubTerrainCfg):
   spawn: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -285,6 +322,12 @@ def set_command(env, vx: float, vy: float, wz: float) -> None:
   term.cfg.stair_ranges = fixed
   term.cfg.flat_mode_probs = (0.0, 0.0, 0.0, 0.0, 1.0)
   term.cfg.stair_standing_prob = 0.0
+  # The training-time replacements must not touch the command either (2026-10-28 ~06:00): the wheeled
+  # configs keep steer_prob 0.2 in play mode, so 20-28% of the no-operator robots drove an arc (vx 0.3-0.5,
+  # wz +-0.05-0.4) into the rails in every wheeled no-operator check (As2W ~78%; scratchpad w13/map3_cmd_check.py).
+  for name in ("steer_prob", "diag_prob", "flat_slow_prob", "stair_straight_prob", "march_prob", "stop_after_fast_prob"):
+    if hasattr(term.cfg, name):
+      setattr(term.cfg, name, 0.0)
   term.time_left[:] = 0.0
 
 
@@ -430,6 +473,11 @@ def main() -> None:
   parser.add_argument("--list", action="store_true", help="Print the scenarios and exit.")
   parser.add_argument("--operator", action=argparse.BooleanOptionalAction, default=True)
   parser.add_argument("--seed", type=int, default=0)
+  parser.add_argument(
+    "--teacher-scan", action="store_true",
+    help="A depth teacher (privileged scan from 8 m up): drop the storeys above each "
+    "scenario and cut the rails (teacher_boxes).",
+  )
   args = parser.parse_args()
 
   boxes = load_map3_boxes()
@@ -447,7 +495,7 @@ def main() -> None:
       s.segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.segments]
       if s.legacy_segments:
         s.legacy_segments = [(d * args.time_scale if vx else d, vx, vy, wz) for d, vx, vy, wz in s.legacy_segments]
-    results.append(run_scenario(args, s, boxes))
+    results.append(run_scenario(args, s, teacher_boxes(boxes, s) if args.teacher_scan else boxes))
     # A closed env's GPU arrays go only when Python collects its reference cycles;
     # without this the trainers failed to capture a later scenario's CUDA graph
     # (~11th of the 18 flights; found by the go2-depth session, 2026-10-20).

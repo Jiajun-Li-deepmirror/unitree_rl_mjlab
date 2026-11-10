@@ -12,11 +12,18 @@ robots that fell left out:
 plus the mean value per second (= per-step value) over the zero-command phase of
 standing_position_hold / standing_speed / standing_feet_air, for weights.
 
-Usage: python eval_standing.py --task <flat task> <checkpoint> [--envs-per-group 64]
+Usage: python eval_standing.py --task <flat task> <checkpoint> [--envs-per-group 256] [--lin-accel A] [--yaw-accel W]
+
+--lin-accel A (m/s², vx and vy as one planar vector) / --yaw-accel W (rad/s²), 2026-11-02 (user: B2's stops as
+deployed): the command rises from rest by at most that much per second, as the B2 controller's velocity_commands
+(config max_accel 2.0 / max_yaw_accel 3.0) brings the stick in; the release stays a step to zero, as its brake key
+(go2-home: B2 students' stop falls came from the stand -> back 1.0 step growing over the 3 s, 0 on 3 seeds with
+the ramped start).
 
 64 robots per group (16 before 2026-10-24 ~19:40): the B2 teachers' creep sits near the 1 cm bar with
 a long tail (v7 2000 after backing at 1 m/s: 1.26 cm over 16 robots, 0.80 cm over 64, p90 1.5-2.6),
-so 16 robots moved the mean by a quarter of the bar from draw to draw.
+so 16 robots moved the mean by a quarter of the bar from draw to draw. 256 since 2026-10-30 (user ~15:15:
+"把横移、停车这类测试从每项 64 台机器人改成 256 台"): results near a bar flipped between reruns of one checkpoint.
 """
 
 import argparse
@@ -44,7 +51,9 @@ GROUPS = [
 p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
-p.add_argument("--envs-per-group", type=int, default=64)
+p.add_argument("--envs-per-group", type=int, default=256)
+p.add_argument("--lin-accel", type=float, default=0.0)
+p.add_argument("--yaw-accel", type=float, default=0.0)
 args = p.parse_args()
 
 n = args.envs_per_group
@@ -81,9 +90,15 @@ speed_sum = torch.zeros(B, device=dev)
 air_term_sum = torch.zeros(B, device=dev)
 zero_steps = 0
 obs = venv.get_observations()
+planar = C[:, :2].norm(dim=1, keepdim=True).clamp(min=1e-6)
 for k in range(total):
   standing = (k >= release) | ~moving_group
-  cmd.vel_command_b[:] = torch.where(standing.unsqueeze(1), 0.0, C)
+  ck = C.clone()
+  if args.lin_accel > 0:
+    ck[:, :2] = C[:, :2] * (args.lin_accel * dt * (k + 1) / planar).clamp(max=1.0)
+  if args.yaw_accel > 0:
+    ck[:, 2] = C[:, 2].clamp(-args.yaw_accel * dt * (k + 1), args.yaw_accel * dt * (k + 1))
+  cmd.vel_command_b[:] = torch.where(standing.unsqueeze(1), 0.0, ck)
   cmd.time_left[:] = 1e9
   with torch.no_grad():
     obs, _, dones, _ = venv.step(policy(obs))
@@ -124,7 +139,8 @@ dyaw = torch.rad2deg(torch.atan2(torch.sin(robot.data.heading_w - yaw_w0), torch
 stop_t = torch.where(stop_step >= 0, (stop_step - release + 1).float() * dt, float("nan"))
 ok = ~fell
 
-print(f"{args.checkpoint}\n{args.task}: {n} robots per group; command 3 s, then zero 6 s; last 4 s for creep")
+ramp = f", the command ramped in at {args.lin_accel:g} m/s² / {args.yaw_accel:g} rad/s² (release a step)" if args.lin_accel > 0 or args.yaw_accel > 0 else ""
+print(f"{args.checkpoint}\n{args.task}: {n} robots per group; command 3 s, then zero 6 s; last 4 s for creep{ramp}")
 print(f"{'group':>12} | {'stop s':>6} {'stop cm':>7} | {'creep cm':>8} {'p90':>5} {'yaw deg':>7} | {'air %':>5} {'flips/s':>7} | {'hold/s':>6} {'speed/s':>7} {'air/s':>6} | falls")
 for gi, (name, _) in enumerate(GROUPS):
   s = slice(gi * n, (gi + 1) * n)

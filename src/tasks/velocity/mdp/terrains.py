@@ -56,12 +56,15 @@ class HorizontalFanPatternCfg:
   """
 
   angles_deg: tuple[float, ...] = (70.0, 80.0, 90.0, 100.0, 110.0, -70.0, -80.0, -90.0, -100.0, -110.0)
+  z_offset: float = 0.0
+  """Height of the ray origins above the frame (m; 2026-11-05: the forward wall fan at 0.8 m clears rising stairs)."""
 
   def generate_rays(self, mj_model, device):
     del mj_model
     angles = torch.deg2rad(torch.tensor(self.angles_deg, device=device, dtype=torch.float32))
     directions = torch.stack([torch.cos(angles), torch.sin(angles), torch.zeros_like(angles)], dim=-1)
     offsets = torch.zeros_like(directions)
+    offsets[:, 2] = self.z_offset
     return offsets, directions
 
 

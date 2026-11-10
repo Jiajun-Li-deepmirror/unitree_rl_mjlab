@@ -13,7 +13,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
-KINDS = ("noop", "op", "am", "stairs", "drift3", "stand", "climb", "hip", "stairhip", "gait", "march", "clock")
+KINDS = ("noop", "op", "am", "stairs", "drift3", "stand", "climb", "hip", "stairhip", "gait", "march", "clock", "spinalt",
+         "loadstand")
 WHEELED = ("Go2W", "As2W", "B2W")
 NA = "—"
 NOT_JUDGED = "不考核"
@@ -103,6 +104,31 @@ def drift_vals(p):
   return out
 
 
+def spinalt_vals(p):
+  """spin_alt.py (go2-depth 2026-11-06): per (wz, s per turn) the end / largest distance from the start (m, p50 p90),
+  the end heading (|deg|, p50 p90) and falls."""
+  out = {}
+  f = lambda s: float(s) if s != "nan" else float("nan")
+  for l in (txt(p.get("spinalt")) or "").splitlines():
+    m = re.match(r"\s*\+-([\d.]+) x ([\d.]+)\s*\|\s*(\S+)\s+(\S+)\s*\|\s*(\S+)\s+(\S+)\s*\|\s*(\S+)\s+(\S+)\s*\|\s*(\d+)/(\d+)", l)
+    if m:
+      g = m.groups()
+      out[(float(g[0]), float(g[1]))] = dict(end=(f(g[2]), f(g[3])), far=(f(g[4]), f(g[5])), head=(f(g[6]), f(g[7])),
+                                            fell=int(g[8]))
+  return out
+
+
+# Alternating turns in place (spin_alt.py, go2-depth 2026-11-06, the user: "左右交替转多次后的累积位移"): the median
+# robot's distance from its start after 8 turns left / right in turn and a 2 s stand, per sequence (+-0.5 / 1.0 /
+# 1.5 rad/s), at most the deployed blind's largest (256 robots, seed 0): Go2W go2w_polish_11300 0.29 m, B2
+# b2_fe_mixed_5000 0.17, B2W b2w_polish_9000 0.28, As2W as2w_mixed_8000 0.31, As2 as2_fe_polish_12000 0.30 (ours
+# then: Go2W g14 13600 0.25, B2 l4 9000 0.30). Go2 0.25 until measured.
+STOP_FEET_BAR = 0.9
+LOADSTAND_FALLS = 0
+LOADSTAND_SETTLE = 3.0   # s: falls before this are the spawn transient, not judged (see goal_cells)
+SPINALT_BAR = {"Go2W": 0.29, "B2": 0.17, "B2W": 0.28, "As2W": 0.31, "As2": 0.30}
+
+
 def pq(x, unit, fmt="{:+.1f}"):
   """p50 (p10 ~ p90)."""
   return f"{fmt.format(x[1])}{unit} ({fmt.format(x[0])}~{fmt.format(x[2])})"
@@ -143,6 +169,11 @@ def hip_vals(p):
 # robot temperatures yet).
 HIP_PEAK = {"Go2": 23.5, "As2": 60.0, "B2": 200.0, "Go2W": 23.5, "As2W": 60.0, "B2W": 200.0}
 HIP_MAX = {0.0: 8.0, 1.0: 12.0}
+# Sideways drift bar per robot (offset along the robot's forward axis as a share of the sideways distance; 5% unless
+# listed). B2W 5.2% (2026-11-01; the user's rule for the wheeled group: its bar may be lowered only where passing is
+# luck): the b2wcons polish average 9000 drifted back 5.13 / 4.98 / 4.65% walking left at 0.6 m/s on env seeds
+# 0 / 1 / 2, every other judged item passing on all three.
+SIDE_DRIFT_BAR = {"B2W": 0.052}
 
 
 def hip_pct(r, x):
@@ -267,12 +298,32 @@ def goal_cells(r, i, label, p, ms):
     off = v["along"] if sideways else v["across"]
     if abs(v["head"][1]) > 3.0 or max(abs(v["head"][0]), abs(v["head"][2])) > 8.0:
       tags.append("转头")
-    if travel > 0 and max(abs(off[0]), abs(off[2])) > 0.05 * travel:
+    bar = SIDE_DRIFT_BAR.get(r, 0.05) if sideways else 0.05
+    if travel > 0 and max(abs(off[0]), abs(off[2])) > bar * travel:
       tags.append("跑偏")
   verdict("g_drift", tags, not d)
   # Turning in place.
   spins = [v for c, v in d.items() if c[0] == c[1] == 0.0 and c[2] != 0.0]
   verdict("g_spin", ["漂移"] if any(v["end"][1] > 0.2 for v in spins) else [], not spins)
+  # Turning in place left and right in turn (spin_alt.py; SPINALT_BAR).
+  sa = spinalt_vals(p)
+  bar = SPINALT_BAR.get(r, 0.25)
+  tags = (["漂移"] if any(v["end"][0] > bar for v in sa.values()) else []) + (["摔倒"] if any(v["fell"] for v in sa.values()) else [])
+  verdict("g_spinalt", tags, not sa)
+  # Standing loaded (long_stand.py, go2-depth 2026-11-07): 60 s at the zero command with the payload limit, no falls
+  # (Go2W g20b 18300 with its leg hold 252 / 256 fell, without it 0; g14 13600 6 at the spawn).
+  # Falls before LOADSTAND_SETTLE s are the spawn transient (the robot appears in its default stance with the payload
+  # already on, unloaded legs taking it at once), not standing: not judged (2026-11-08, the user approved "只统计 3 秒以后的
+  # 摔倒"; Go2W 12 kg at x +0.15: 1-2 / 256 dove at 1.0-2.5 s in every polish, none later). The times are in the output.
+  m = re.search(r"falls (\d+)/(\d+) at t \[([^\]]*)\]", txt(p.get("loadstand")) or "") or re.search(r"falls (\d+)/(\d+)", txt(p.get("loadstand")) or "")
+  late = None
+  if m and m.lastindex == 3:
+    ts = [float(t) for t in m.group(3).split(",") if t.strip()]
+    # long_stand.py lists the first 20 times (sorted): any beyond them came later
+    late = sum(1 for t in ts if t >= LOADSTAND_SETTLE) + max(0, int(m.group(1)) - len(ts))
+  elif m:
+    late = int(m.group(1))
+  verdict("g_loadstand", ["摔倒"] if m and late > LOADSTAND_FALLS else [], not m)
   # Stopping.
   tags = []
   if "rest" in g:
@@ -319,6 +370,13 @@ def goal_cells(r, i, label, p, ms):
         tags.append(n + "快")
   if st and float(st.split("|")[2].strip().rstrip("%")) < 95.0:
     tags.append("停不稳")
+  # Standing on all feet when stopped mid-flight (go2-depth 2026-11-07, the user: B2's right rear leg in the air stopping
+  # mid-descent): eval_stairs' stop "4 feet" share at least STOP_FEET_BAR in every band and direction (B2 l4 9000 1.00
+  # everywhere, l8 11800 0.16-0.39 on 12-18 cm descents).
+  feet = [float(m.group(1)) for m in re.finditer(r"^\s*\d+-\d+cm\s+(?:up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$",
+                                                 txt(p.get("stairs")) or "", re.M)]
+  if feet and min(feet) < STOP_FEET_BAR:
+    tags.append("停住缺脚")
   verdict("g_stairs", tags, not s)
   # Wheeled: all four wheels down driving forward / backward.
   if r in WHEELED:
@@ -425,7 +483,7 @@ def build():
     d = drift_vals(p)
     keys = {"f05": (0.5, 0.0, 0.0), "f10": (1.0, 0.0, 0.0), "b05": (-0.5, 0.0, 0.0)}
     return {f: (f"{pq(d[c]['head'], '°')} / {pq(d[c]['across'], ' m', '{:+.2f}')}" if c in d else PENDING) for f, c in keys.items()}
-  secs.append(dict(id="drift_line", title="4a. 直线跑偏", note="平地，固定指令 10 s，不带操作员，64 台。每格：航向变化 / 侧向偏移（+ 为向左），中位数（10%~90%）。",
+  secs.append(dict(id="drift_line", title="4a. 直线跑偏", note="平地，固定指令 10 s，不带操作员，256 台（10-30 前 64 台）。每格：航向变化 / 侧向偏移（+ 为向左），中位数（10%~90%）。",
     cols=[("model", "模型"), ("f05", "前进 0.5 m/s"), ("f10", "前进 1.0 m/s"), ("b05", "后退 0.5 m/s")],
     rows=rows_of(dline)))
 
@@ -433,7 +491,7 @@ def build():
     d = drift_vals(p)
     keys = {"l03": (0.0, 0.3, 0.0), "r03": (0.0, -0.3, 0.0), "l06": (0.0, 0.6, 0.0), "r06": (0.0, -0.6, 0.0)}
     return {f: (f"{pq(d[c]['head'], '°')} / {pq(d[c]['along'], ' m', '{:+.2f}')}" if c in d else PENDING) for f, c in keys.items()}
-  secs.append(dict(id="drift_side", title="4b. 横向跑偏", note="平地，固定指令 10 s，不带操作员，64 台。每格：航向变化 / 前后偏移（+ 为向前），中位数（10%~90%）。",
+  secs.append(dict(id="drift_side", title="4b. 横向跑偏", note="平地，固定指令 10 s，不带操作员，256 台（10-30 前 64 台）。每格：航向变化 / 前后偏移（+ 为向前），中位数（10%~90%）。",
     cols=[("model", "模型"), ("l03", "向左 0.3 m/s"), ("r03", "向右 0.3 m/s"), ("l06", "向左 0.6 m/s"), ("r06", "向右 0.6 m/s")],
     rows=rows_of(dside)))
 
@@ -444,7 +502,7 @@ def build():
       vs = [d[c] for c in ((0.0, 0.0, w), (0.0, 0.0, -w)) if c in d]
       out[f] = (f"{max(v['end'][0] for v in vs):.2f} / {max(v['end'][1] for v in vs):.2f}，最远 {max(v['far'][1] for v in vs):.2f}" if vs else PENDING)
     return out
-  secs.append(dict(id="drift_spin", title="4c. 原地旋转跑偏", note="平地，固定指令 10 s，64 台。每格：10 s 结束时机身离开原地的距离 m（中位数 / p90），过程中最远（p90）；左右两个方向取较大值。",
+  secs.append(dict(id="drift_spin", title="4c. 原地旋转跑偏", note="平地，固定指令 10 s，256 台（10-30 前 64 台）。每格：10 s 结束时机身离开原地的距离 m（中位数 / p90），过程中最远（p90）；左右两个方向取较大值。",
     cols=[("model", "模型"), ("w05", "0.5 rad/s"), ("w10", "1.0 rad/s"), ("w15", "1.5 rad/s")],
     rows=rows_of(dspin)))
 
@@ -457,7 +515,7 @@ def build():
             "stop": " / ".join(f"{g[k]['stop_cm']:.1f}" if k in g else NA for k in ("fwd 1.0", "back 1.0", "fwd 1.5")),
             "creep": f"{max(v['creep'] for v in moving):.2f}", "yaw": f"{max(v['yaw'] for v in moving):.2f}",
             "falls": str(sum(v["fell"] for v in g.values()))}
-  secs.append(dict(id="parking", title="5. 停车", note="每组 16 台：给指令 3 s 后松杆，零指令 6 s。刹停距离 = 松杆到速度一直低于 0.05 m/s 走过的距离；蠕动 = 最后 4 s 的位移。",
+  secs.append(dict(id="parking", title="5. 停车", note="每组 256 台（10-24 起 64 台，10-30 起 256 台）：给指令 3 s 后松杆，零指令 6 s。刹停距离 = 松杆到速度一直低于 0.05 m/s 走过的距离；蠕动 = 最后 4 s 的位移。",
     cols=[("model", "模型"), ("rest", "静止蠕动 cm"), ("stop", "刹停距离 cm：前进 1.0 / 后退 1.0 / 前进 1.5"), ("creep", "松杆后蠕动 cm（最大组）"),
           ("yaw", "松杆后航向漂 °（最大组）"), ("falls", "摔倒")],
     rows=rows_of(park)))

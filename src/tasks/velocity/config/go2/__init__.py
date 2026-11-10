@@ -10,12 +10,7 @@ from .env_cfgs import (
 from .blind_env_cfgs import (
   unitree_go2_blind_env_cfg,
   unitree_go2_blind_heading_env_cfg,
-  unitree_go2_blind_hip_env_cfg,
-  unitree_go2_blind_hip2_env_cfg,
-  unitree_go2_blind_rest2_env_cfg,
-  unitree_go2_blind_rest3_env_cfg,
   unitree_go2_blind_scratch_env_cfg,
-  unitree_go2_blind_rest_env_cfg,
   unitree_go2_blind_map3_env_cfg,
 )
 from .rl_cfg import unitree_go2_blind_ppo_runner_cfg, unitree_go2_ppo_runner_cfg
@@ -108,89 +103,8 @@ for task_id, terrain in (
     runner_cls=MirrorVelocityOnPolicyRunner,
   )
 
-# The heading tasks with the hip-load changes (third round, 2026-10-22; see
-# BlindHipCfg; resume from a Heading model): training (map3) and evaluation
-# (stairs, flat) tasks.
+# Evaluation tasks of the phased training below (stairs, flat; also the trainers' acceptance).
 for task_id, terrain in (
-  ("Unitree-Go2-Blind-Map3-Hip", "map3"),
-  ("Unitree-Go2-Blind-Hip", "stairs"),
-  ("Unitree-Go2-Blind-Flat-Hip", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_go2_blind_hip_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_go2_blind_hip_env_cfg(play=True, terrain=terrain),
-    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
-
-
-# The fourth round (2026-10-22; see BlindR4Cfg and the robot's *_HIP2 / *_R4;
-# resume from a third-round Hip model, As2W from its Heading model_8200):
-# training (map3) and evaluation (stairs, flat) tasks.
-for task_id, terrain in (
-  ("Unitree-Go2-Blind-Map3-Hip2", "map3"),
-  ("Unitree-Go2-Blind-Hip2", "stairs"),
-  ("Unitree-Go2-Blind-Flat-Hip2", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_go2_blind_hip2_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_go2_blind_hip2_env_cfg(play=True, terrain=terrain),
-    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
-
-
-# The fifth round (2026-10-22; the rest stance, see BlindR5Cfg and the robot's *_R5;
-# resume from the fourth round's model).
-for task_id, terrain in (
-  ("Unitree-Go2-Blind-Map3-Rest", "map3"),
-  ("Unitree-Go2-Blind-Rest", "stairs"),
-  ("Unitree-Go2-Blind-Flat-Rest", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_go2_blind_rest_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_go2_blind_rest_env_cfg(play=True, terrain=terrain),
-    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
-
-# The sixth round (2026-10-22; see BlindR6Cfg and the robot's *_R6; resume from the
-# fifth round's model).
-for task_id, terrain in (
-  ("Unitree-Go2-Blind-Map3-Rest2", "map3"),
-  ("Unitree-Go2-Blind-Rest2", "stairs"),
-  ("Unitree-Go2-Blind-Flat-Rest2", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_go2_blind_rest2_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_go2_blind_rest2_env_cfg(play=True, terrain=terrain),
-    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
-
-# The seventh round (2026-10-22; see BlindR7Cfg and the robot's *_R7; resume from the
-# sixth round's model).
-for task_id, terrain in (
-  ("Unitree-Go2-Blind-Map3-Rest3", "map3"),
-  ("Unitree-Go2-Blind-Rest3", "stairs"),
-  ("Unitree-Go2-Blind-Flat-Rest3", "flat"),
-):
-  register_mjlab_task(
-    task_id=task_id,
-    env_cfg=unitree_go2_blind_rest3_env_cfg(terrain=terrain),
-    play_env_cfg=unitree_go2_blind_rest3_env_cfg(play=True, terrain=terrain),
-    rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=1500, entropy_coef=0.005),
-    runner_cls=MirrorVelocityOnPolicyRunner,
-  )
-
-# Staged training from scratch (2026-10-22; see apply_blind_staged): the same ramped
-# schedule for every robot, no flat anchor.
-for task_id, terrain in (
-  ("Unitree-Go2-Blind-Stairs-Scratch", "map3"),
   ("Unitree-Go2-Blind-Scratch", "stairs"),
   ("Unitree-Go2-Blind-Flat-Scratch", "flat"),
 ):
@@ -201,16 +115,6 @@ for task_id, terrain in (
     rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=15000),
     runner_cls=MirrorVelocityOnPolicyRunner,
   )
-
-# Staged training from scratch with the health-gated schedule (2026-10-23; see
-# mdp.staged_clock): evaluated with the Scratch tasks above.
-register_mjlab_task(
-  task_id="Unitree-Go2-Blind-Stairs-Gated",
-  env_cfg=unitree_go2_blind_scratch_env_cfg(terrain="map3", gated=True),
-  play_env_cfg=unitree_go2_blind_scratch_env_cfg(play=True, terrain="map3", gated=True),
-  rl_cfg=unitree_go2_blind_ppo_runner_cfg(max_iterations=15000),
-  runner_cls=MirrorVelocityOnPolicyRunner,
-)
 
 # Phased training from scratch (user 2026-10-23 ~02:00; see apply_blind_phased): flat
 # teacher, then mixed with the stairs and anchored to the teacher (BLIND_ANCHOR_CHECKPOINT),
@@ -236,7 +140,13 @@ for phase, task_id, runner in (
 # same phases, runners and BLIND_PILOT; evaluated with the Depth-*-Scratch tasks.
 # Student: go2-depth's depth camera and distillation from a teacher checkpoint
 # (--agent.teacher-checkpoint=<model_N.pt>), on the polish-phase terrain and commands.
-from src.tasks.velocity.depth_env_cfg import apply_depth_student, apply_depth_teacher  # noqa: E402
+from src.tasks.velocity.depth_env_cfg import (  # noqa: E402
+  NAVCORE_CAMERA_POS,
+  NAVCORE_CAMERA_QUAT,
+  apply_depth_student,
+  apply_depth_teacher,
+)
+from src.tasks.velocity.mdp.depth import NAVCORE_DEPTH_CAMERA  # noqa: E402
 from src.tasks.velocity.rl.distillation import DepthDistillationRunner  # noqa: E402
 
 from .rl_cfg import unitree_go2_depth_student_runner_cfg  # noqa: E402
@@ -273,14 +183,70 @@ for task_id, terrain in (
     runner_cls=MirrorVelocityOnPolicyRunner,
   )
 
+# The student's camera is the navcore unit's depth (its left lens, the intrinsics of
+# its bag; user 2026-10-27), trained on a real stereo camera's errors (REAL_CAMERA_*).
 register_mjlab_task(
   task_id="Unitree-Go2-Depth-Student",
   env_cfg=apply_depth_student(
-    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(terrain="map3", phase="polish"))
+    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(terrain="map3", phase="polish")),
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
+    real_camera=True,
   ),
   play_env_cfg=apply_depth_student(
     apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
     play=True,
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
+  ),
+  rl_cfg=unitree_go2_depth_student_runner_cfg(),
+  runner_cls=DepthDistillationRunner,
+)
+
+# The student's robustness fine-tune (user 2026-10-29, step 2a): the same, plus things in
+# front of the lens and a covered lens (REAL_CAMERA_OCCLUSION); warm-started from a student.
+register_mjlab_task(
+  task_id="Unitree-Go2-Depth-Student-Occ",
+  env_cfg=apply_depth_student(
+    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(terrain="map3", phase="polish")),
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
+    real_camera=True,
+    occlusion=True,
+  ),
+  play_env_cfg=apply_depth_student(
+    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
+    play=True,
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
+  ),
+  rl_cfg=unitree_go2_depth_student_runner_cfg(),
+  runner_cls=DepthDistillationRunner,
+)
+
+# Stair-edge fine-tune (user 2026-10-30): the -Occ randomization plus the real camera's
+# smoothing of depth edges (REAL_CAMERA_EDGE_BLUR); warm-started from the -Occ student.
+register_mjlab_task(
+  task_id="Unitree-Go2-Depth-Student-Edge",
+  env_cfg=apply_depth_student(
+    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(terrain="map3", phase="polish")),
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
+    real_camera=True,
+    occlusion=True,
+    edge_blur=True,
+  ),
+  play_env_cfg=apply_depth_student(
+    apply_depth_teacher(unitree_go2_blind_scratch_env_cfg(play=True, terrain="map3", phase="polish")),
+    play=True,
+    camera_pos=NAVCORE_CAMERA_POS["go2"],
+    camera_quat=NAVCORE_CAMERA_QUAT,
+    camera=NAVCORE_DEPTH_CAMERA,
   ),
   rl_cfg=unitree_go2_depth_student_runner_cfg(),
   runner_cls=DepthDistillationRunner,

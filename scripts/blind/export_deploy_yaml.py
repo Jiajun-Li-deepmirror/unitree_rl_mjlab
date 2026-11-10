@@ -7,7 +7,7 @@ SDK motor order. The joint-target clip is default +- 2.0 rad (raw action +-8)
 for position terms and +-8 raw actions for velocity terms; it only catches
 anomalous outputs.
 
-  python scripts/blind/export_deploy_yaml.py Unitree-As2-Blind-Flat --robot as2 \
+  python scripts/blind/export_deploy_yaml.py Unitree-As2-Blind-Polish --robot as2 \
     --out deploy/robots/as2/config/policy/velocity/blind_v0/params/deploy.yaml
 """
 
@@ -54,6 +54,7 @@ OBS_NAMES = {
   "joint_vel": "joint_vel_rel",
   "actions": "last_action",
   "heading_error": "heading_error",
+  "stand_time": "stand_time",
 }
 
 
@@ -146,6 +147,18 @@ def main() -> None:
       "offset": FlowList(offset),
       "joint_ids": None if len(ids) == len(order) else FlowList(ids),
     }
+    if isinstance(term, mdp.HeldJointPositionActionCfg) and term.hold_after_s is not None:
+      # Legs hold their targets once the command has been zero this long (s) and every leg joint turns slower
+      # than hold_speed; they let go on a command, a march or a joint faster than hold_release_speed (rad/s).
+      actions[key]["hold_after_s"] = rnd(term.hold_after_s)
+      actions[key]["hold_speed"] = rnd(term.hold_speed)
+      actions[key]["hold_release_speed"] = rnd(term.release_speed)
+      # "holdcalm" (go2-depth 2026-11-07): the base's angular rate (IMU gyro, rad/s) must be below hold_base_rate to
+      # engage, and above hold_release_base_rate lets go
+      if getattr(term, "hold_base_rate", None) is not None:
+        actions[key]["hold_base_rate"] = rnd(term.hold_base_rate)
+      if getattr(term, "release_base_rate", None) is not None:
+        actions[key]["hold_release_base_rate"] = rnd(term.release_base_rate)
     if isinstance(term, mdp.BrakedJointVelocityActionCfg):
       # Wheels brake (targets 0) while the joystick command is zero and every wheel
       # turns slower than brake_below_speed (rad/s), as in training.
@@ -154,6 +167,9 @@ def main() -> None:
       if term.hold_stiffness > 0.0:
         # A braked wheel holds its angle with this kp (Nm/rad).
         actions[key]["brake_hold_kp"] = rnd(term.hold_stiffness)
+      if term.brake_max_forward is not None:
+        # Also brake while |forward command| <= this (m/s): stepping sideways, turning in place.
+        actions[key]["brake_max_forward"] = rnd(term.brake_max_forward)
       if term.brake_after_s is not None:
         # Also brake once the command has been zero this long (s).
         actions[key]["brake_after_s"] = rnd(term.brake_after_s)
@@ -189,6 +205,9 @@ def main() -> None:
     elif name == "heading_error":
       # After velocity_commands, whose deadzoned command it integrates.
       params, dim = {"max_error": term.params.get("max_error", 0.5)}, 1
+    elif name == "stand_time":
+      # After velocity_commands, whose deadzoned command it times.
+      params, dim = {"horizon_s": term.params.get("horizon_s", 2.0)}, 1
     else:
       dim = 3
     assert term.scale is None, f"obs scale not handled: {name}"

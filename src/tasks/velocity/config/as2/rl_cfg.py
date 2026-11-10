@@ -53,3 +53,22 @@ def unitree_as2_blind_ppo_runner_cfg(max_iterations: int) -> RslRlOnPolicyRunner
   cfg.logger = "tensorboard"
   cfg.max_iterations = max_iterations
   return cfg
+
+
+def unitree_as2_depth_student_runner_cfg():
+  """The As2 depth student, as the Go2's (unitree_go2_depth_student_runner_cfg):
+  contract as2_depth_v3."""
+  from src.tasks.velocity.rl.distillation import DepthDistillationRunnerCfg
+
+  return DepthDistillationRunnerCfg(
+    experiment_name="as2_depth_student",
+    logger="tensorboard",
+    num_steps_per_env=24,
+    max_iterations=8000,
+    save_interval=100,
+    obs_groups={
+      "student": ("proprio", "proprio_history", "depth"),
+      "teacher": ("actor",),
+    },
+    onnx_contract="as2_depth_v3",
+  )

@@ -22,6 +22,7 @@ from rsl_rl.runners import DistillationRunner
 from tensordict import TensorDict
 
 from mjlab.rl import RslRlBaseRunnerCfg, RslRlModelCfg
+from src.tasks.velocity.mdp.depth import DEPTH_CAMERAS, DEPTH_MAX_M, FRONT_DEPTH_CAMERA
 from src.tasks.velocity.rl.obs_guard import guard_nan_observations
 from mjlab.rl.exporter_utils import attach_metadata_to_onnx, get_base_metadata
 
@@ -323,7 +324,8 @@ class DepthDistillationRunner(DistillationRunner):
       )
       if unexpected or any(not k.startswith("aux_head.") for k in missing):
         raise RuntimeError(f"Student checkpoint mismatch: {missing=} {unexpected=}")
-      if not missing:  # Same parameters: keep the optimizer state too.
+      # Same parameters: keep the optimizer state too (not from a PPO fine-tune's, rl/student_ppo.py).
+      if not missing and "actor_state_dict" not in loaded:
         self.alg.optimizer.load_state_dict(loaded["optimizer_state_dict"])
       print(f"[INFO] Loaded student from {student_checkpoint} (new: {sorted({k.split('.')[0] for k in missing})})")
 
@@ -373,6 +375,19 @@ class DepthDistillationRunner(DistillationRunner):
     metadata = get_base_metadata(env, "local")
     metadata["observation_names"] = env.observation_manager.active_terms[PROPRIO_GROUP]
     metadata["contract"] = self.onnx_contract
+    # The joints in the order joint_vel reads them, which tinynav-sim takes from
+    # joint_names: go2-blind's wheeled tasks list the legs, then the wheels
+    # (preserve_order), not the model's per-leg order.
+    proprio_terms = list(env.observation_manager.active_terms[PROPRIO_GROUP])
+    if "joint_vel" in proprio_terms:
+      term_cfg = env.observation_manager._group_obs_term_cfgs[PROPRIO_GROUP][proprio_terms.index("joint_vel")]  # noqa: SLF001
+      asset_cfg = term_cfg.params.get("asset_cfg")
+      ids = None if asset_cfg is None else asset_cfg.joint_ids
+      if ids is not None and not isinstance(ids, slice):
+        order = [int(i) for i in ids]
+        assert sorted(order) == list(range(len(metadata["joint_names"]))), "joint_vel must read every joint"
+        for key in ("joint_names", "joint_stiffness", "joint_damping", "default_joint_pos"):
+          metadata[key] = [metadata[key][i] for i in order]
     # The `actions` output is the action terms concatenated in this order,
     # e.g. "joint_pos[position]*0.25:FL_hip_joint,...;wheel_vel[velocity]*10:..."
     # (wheel speed targets have no offset; joint targets add the default pose).
@@ -386,5 +401,59 @@ class DepthDistillationRunner(DistillationRunner):
         # Deploy zeroes these velocity targets at a zero command once all of
         # them are slower than this (mdp/wheel_action.py).
         metadata["wheel_brake_rad_s"] = f"{term.cfg.brake_rad_s:.6g}"
+      elif getattr(term.cfg, "brake_speed", float("inf")) < float("inf"):
+        # go2-blind's brake (mdp/actions.py BrakedJointVelocityAction), the same rule.
+        metadata["wheel_brake_rad_s"] = f"{term.cfg.brake_speed:.6g}"
+        # Its hold, as deploy.yaml's brake_hold_kp / brake_after_s / brake_release_ratio.
+        if term.cfg.hold_stiffness > 0.0:
+          metadata["wheel_brake_hold_kp"] = f"{term.cfg.hold_stiffness:.6g}"
+        if term.cfg.brake_after_s is not None:
+          metadata["wheel_brake_after_s"] = f"{term.cfg.brake_after_s:.6g}"
+        if term.cfg.release_speed_ratio is not None:
+          metadata["wheel_brake_release_ratio"] = f"{term.cfg.release_speed_ratio:.6g}"
+        # brake_max_forward (2026-11-02, As2W / B2W from 10-31): it also brakes up to that forward command.
+        if getattr(term.cfg, "brake_max_forward", None) is not None:
+          metadata["wheel_brake_max_forward"] = f"{term.cfg.brake_max_forward:.6g}"
+      if getattr(term.cfg, "hold_after_s", None) is not None:
+        # go2-blind's standstill leg hold (mdp/actions.py HeldJointPositionAction; B2W from 11-01), as
+        # deploy.yaml's hold_after_s / hold_speed / hold_release_speed; tinynav-sim contract leg_hold_*.
+        metadata["leg_hold_after_s"] = f"{term.cfg.hold_after_s:.6g}"
+        metadata["leg_hold_speed"] = f"{term.cfg.hold_speed:.6g}"
+        metadata["leg_hold_release_speed"] = f"{term.cfg.release_speed:.6g}"
     metadata["action_layout"] = ";".join(layout)
+    # go2-blind's speed clock (its deploy.yaml gait_phase and gait_march, as
+    # scripts/blind/export_deploy_yaml.py writes them; tinynav-sim GaitClock).
+    group = env.observation_manager._group_obs_term_cfgs[PROPRIO_GROUP]  # noqa: SLF001
+    names = list(env.observation_manager.active_terms[PROPRIO_GROUP])
+    if "phase" in names and group[names.index("phase")].params.get("ref_speed") is not None:
+      clock = group[names.index("phase")].params
+      metadata["gait_period"] = repr(float(clock["period"]))
+      metadata["gait_ref_speed"] = repr(float(clock["ref_speed"]))
+      if clock.get("foot_xy") is not None:
+        metadata["gait_foot_xy"] = ";".join(",".join(repr(float(v)) for v in f) for f in clock["foot_xy"])
+      twist = env.command_manager.get_term(clock["command_name"]).cfg
+      metadata["gait_march"] = "1" if getattr(twist, "march_prob", 0.0) > 0.0 else "0"
+      # Wheeled: the phase reads zero under a command the wheels drive.
+      for key in ("drivable_max_lin_vel_y", "drivable_max_ang_vel_z"):
+        if clock.get(key) is not None:
+          metadata[f"gait_{key}"] = repr(float(clock[key]))
+    # The contact solver it trained on (go2-blind's "grip": elliptic, impratio 10);
+    # tinynav-sim sets its model to it.
+    metadata["sim_cone"] = str(env.cfg.sim.mujoco.cone)
+    metadata["sim_impratio"] = f"{float(env.cfg.sim.mujoco.impratio):.6g}"
+    # The depth camera's nominal mount (base frame; training randomizes it around
+    # this): the runtime places its camera there.
+    camera = next(c for c in env.cfg.scene.entities["robot"].cameras if c.name == FRONT_DEPTH_CAMERA)
+    metadata["depth_camera_body"] = camera.body
+    metadata["depth_camera_pos"] = ",".join(repr(float(v)) for v in camera.pos)
+    metadata["depth_camera_quat"] = ",".join(repr(float(v)) for v in camera.quat)
+    # What a depth_history frame holds: width x height pixels of a pinhole with
+    # its principal point at the centre, focal length in pixels, optical Z or ray
+    # distance, normalized to [0.05, max] / max m.
+    spec = DEPTH_CAMERAS[env.cfg.observations[DEPTH_GROUP].terms["depth"].params.get("camera", "pie")]
+    metadata["depth_camera"] = spec.name
+    metadata["depth_size"] = f"{spec.width},{spec.height}"
+    metadata["depth_focal_px"] = repr(spec.focal_px)
+    metadata["depth_kind"] = "optical_z" if spec.optical_z else "ray"
+    metadata["depth_max_m"] = repr(DEPTH_MAX_M)
     attach_metadata_to_onnx(onnx_path, metadata)
