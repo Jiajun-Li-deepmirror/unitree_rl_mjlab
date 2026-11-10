@@ -24,11 +24,26 @@ source jobs/recipes/$r.sh || exit 2
 L=logs/jobs/repro_$r.txt
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
 case $STAGE in all|blind|teacher|s1|s2) ;; *) echo "full_chain.sh: stage blind, teacher, s1, s2 or all" >&2; exit 2 ;; esac
+# Inserted jobs (2026-11-10): logs/jobs/repro_insert, one shell command per line, run before this job (a queue that is
+# already running reads this file at its next job; e.g. jobs/t_handoff.sh for a chain that ended under older code)
+INS=logs/jobs/repro_insert
+if [ -z "${REPRO_INSERTED:-}" ] && [ -s $INS ]; then
+  mv $INS $INS.$$
+  while IFS= read -r job; do
+    [ -n "$job" ] || continue
+    echo "$(date '+%m-%d %H:%M:%S') repro: inserted before $R $STAGE $TAG: $job" >> logs/jobs/repro_queue.txt
+    REPRO_INSERTED=1 bash -c "$job" < /dev/null
+    echo "$(date '+%m-%d %H:%M:%S') repro: inserted job ended (exit $?): $job" >> logs/jobs/repro_queue.txt
+  done < $INS.$$
+  rm -f $INS.$$
+fi
 # Hand-off (2026-11-10, the user: go2-home's own GPU helps with the run): logs/jobs/repro_away_<r> names where this
 # robot's rounds run instead; here they are skipped (exit 3)
 if [ -f logs/jobs/repro_away_$r ]; then log "$R $STAGE $TAG: runs elsewhere ($(cat logs/jobs/repro_away_$r)), skipped here"; exit 3; fi
 log "$R $STAGE $TAG: code $(cat REPO_COMMIT 2> /dev/null || echo '?'), recipe jobs/recipes/$r.sh (md5 $(md5sum < jobs/recipes/$r.sh | cut -c1-8))"
-if [ $STAGE = all ] || [ $STAGE = blind ]; then
+if { [ $STAGE = all ] || [ $STAGE = blind ]; } && grep -q "$R BLIND DELIVERY logs/pkg/${r}_bl2_${TAG}_" logs/jobs/blind_$r.txt 2> /dev/null; then
+  log "$R $STAGE $TAG: the blind round already delivered, not run again"
+elif [ $STAGE = all ] || [ $STAGE = blind ]; then
   BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
   BL_EXTRA= BL_P_EXTRA= BL_DROP= \
     bash jobs/blind_chain.sh $R $TAG || { log "$R $STAGE $TAG: blind chain failed (logs/jobs/blind_$r.txt)"; exit 1; }

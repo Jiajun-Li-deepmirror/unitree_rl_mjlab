@@ -121,7 +121,7 @@ phase() {
 TMAX=${BL_T_MAX:-5000}
 if [ -n "${BL_T_PICK:-}" ]; then
   T=$BL_T_PICK
-  log "$R blind T PICK (given) $T"
+  log "$R blind T PICK (given${BL_T_PICK_WHY:+: $BL_T_PICK_WHY}) $T"
 else
   # BL_T_FROM_RUN + BL_T_FROM_K: T resumes from that raw checkpoint (to 5000 in all, checks every 500 from max(K+500, 2000))
   if [ -n "${BL_T_FROM_RUN:-}" ]; then
@@ -130,7 +130,13 @@ else
   else
     T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG "" "" $TMAX 2000 flat 0 | tail -n 1)
   fi
-  [ -n "$T" ] || { log "$R blind T: no checkpoint passed the flat goals by $TMAX"; exit 1; }
+  if [ -z "$T" ]; then
+    # 2026-11-10 (the user: T at its limit without a pass hands its last check to M, as M does to P; P's whole
+    # acceptance -- 3 seeds + tinynav -- decides)
+    T=$(ls $TD/bl2T_${TAG}_avg*/model_*.pt 2> /dev/null | sort -V | tail -n 1)
+    [ -n "$T" ] || { log "$R blind T: no checkpoint checked by $TMAX"; exit 1; }
+    log "$R blind T: no checkpoint passed the flat goals by $TMAX -> M from the last check $T"
+  fi
   log "$R blind T PICK $T"
 fi
 TK=$(basename $T .pt | cut -d_ -f2)
