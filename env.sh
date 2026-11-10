@@ -1,10 +1,11 @@
 # Source before running go2-depth jobs on this machine.
 export PYTHONPATH=/root/gpufree-data/go2-depth/depth_fe
 # PyTorch bundles cuDNN 9.20; the system one (9.8) on LD_LIBRARY_PATH breaks Conv2d.
-export LD_LIBRARY_PATH=/root/gpufree-data/envs/g1-dance/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/root/gpufree-data/envs/g1-dance/lib/python3.11/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}
 export MUJOCO_GL=egl
 PY=/root/gpufree-data/envs/g1-dance/bin/python
 # go2-depth's run layout logs/rsl_rl/<experiment>/<date>_<run> (scripts/train.py; G1 dance uses output/)
 export TRAIN_LOG_LAYOUT=rsl_rl
 # This box's own settings (FE_LOCK, FE_MPS, ...; not in git, 2026-11-10)
-[ -f /root/gpufree-data/go2-depth/depth_fe/env.local.sh ] && source /root/gpufree-data/go2-depth/depth_fe/env.local.sh
+# (an if, not `[ -f ] && source`: env.sh must return 0 without the file -- tn_gate_watch.sh chains on it; 2026-11-10)
+if [ -f /root/gpufree-data/go2-depth/depth_fe/env.local.sh ]; then source /root/gpufree-data/go2-depth/depth_fe/env.local.sh; fi
