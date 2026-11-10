@@ -29,7 +29,8 @@ case $STAGE in all|blind|teacher|s1|s2) ;; *) echo "full_chain.sh: stage blind, 
 if [ -f logs/jobs/repro_away_$r ]; then log "$R $STAGE $TAG: runs elsewhere ($(cat logs/jobs/repro_away_$r)), skipped here"; exit 3; fi
 log "$R $STAGE $TAG: code $(cat REPO_COMMIT 2> /dev/null || echo '?'), recipe jobs/recipes/$r.sh (md5 $(md5sum < jobs/recipes/$r.sh | cut -c1-8))"
 if [ $STAGE = all ] || [ $STAGE = blind ]; then
-  BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_EXTRA= BL_P_EXTRA= BL_DROP= \
+  BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
+  BL_EXTRA= BL_P_EXTRA= BL_DROP= \
     bash jobs/blind_chain.sh $R $TAG || { log "$R $STAGE $TAG: blind chain failed (logs/jobs/blind_$r.txt)"; exit 1; }
 fi
 BT=${REPRO_BLIND_TAG:-$TAG}

@@ -6,6 +6,8 @@
 RECIPE_BLIND_TM=wheelclock,speedclock,critic,marchsettle,marchw40,standsettle,liftflat,sidew3,straightw3,marchsmooth,standsmooth,marchquiet,speedboth,grip,nohipload,lowent,arcclock,hipzero,marchreset,lowfric,stairboth,stairline,gaitw1,arcstep,sidew6,marchreset2,steptarget,diagaxis,riserprox,stairshare,drivepose,slowarc,drivelp,drcritic,brakeside,slowarc2,stairs50,stairhead,longexit,landings,wumore,payload,consease,sidecmd,sidetgt75,speedw4,straightcmd,trackmin,wheelcons,spinhold,spinflip,marchpose,marchclear,standpose
 RECIPE_BLIND_P=wheelclock,speedclock,critic,marchsettle,marchw40,standsettle,liftflat,sidew3,straightw3,marchsmooth,standsmooth,marchquiet,speedboth,grip,nohipload,lowent,arcclock,hipzero,marchreset,lowfric,stairboth,stairline,gaitw1,arcstep,sidew6,marchreset2,steptarget,diagaxis,riserprox,stairshare,drivepose,slowarc,drivelp,drcritic,brakeside,slowarc2,stairs50,stairhead,longexit,landings,wumore,payload,consease,sidecmd,sidetgt75,speedw4,straightcmd,trackmin,wheelcons,spinhold,spinflip,marchpose,marchclear,wheelstep,wheelstep4,stairspeed2,stairspeed3,noslide,noslide2x,wheelahead,topairup,liftm8,stairhead3,stairhead6,stairroll,tilt3,stairstab,stepclean,stairspeed4,paycorner,idlestep,stairstandw,standpose
 RECIPE_BLIND_CONS=
+# T's last iteration (the flat teacher, checked every 500 from 2000; 2026-11-10)
+RECIPE_T_MAX=5000
 # Depth (jobs/v2_chain.sh full): the pilot extras, the constraint start, the teacher's top-landing gate (% lifted, wheeled;
 # empty = none), stage-1 distillation from scratch (iterations, learning rate).
 RECIPE_DEPTH_EXTRA=,wheelstep,wheelstep4,stairspeed2,stairspeed3,noslide,noslide2x,wheelahead,topairup,longexit,liftm8,endwall,landings,wumore,payload,teachblur,backcons,gaitw4

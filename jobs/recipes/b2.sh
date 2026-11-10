@@ -6,6 +6,8 @@
 RECIPE_BLIND_TM=speedclock,critic,marchsettle,marchw40,standsettle,sidew3,straightw3,marchsmooth,standsmooth,marchquiet,speedboth,grip,nohipload,lowent,arcclock,hipzero,marchreset,lowfric,gaitw1,stairboth,stairline,stairs50,stairpay16,stairshare,standlong,stopfast,feetedge,stopside,spinup,yawslew,payload,landings,wumore,stumble4x,feetmid,footslide,stairstab,sidew6l,stairline2,stairroll,support2,feetonce,edgecons,tilt3,spinhold,spinflip,spintight,feetonce2,standpose
 RECIPE_BLIND_P=speedclock,critic,marchsettle,marchw40,standsettle,sidew3,straightw3,marchsmooth,standsmooth,marchquiet,speedboth,grip,nohipload,lowent,arcclock,hipzero,marchreset,lowfric,gaitw1,stairboth,stairline,stairs50,stairpay16,stairshare,standlong,stopfast,feetedge,stopside,spinup,yawslew,payload,landings,wumore,stumble4x,feetmid,footslide,stairstab,sidew6l,stairline2,stairroll,support2,feetonce,edgecons,tilt3,spinhold,spinflip,spintight,feetonce2,stairstand4,standpose
 RECIPE_BLIND_CONS=
+# T's last iteration (the flat teacher, checked every 500 from 2000; 2026-11-10)
+RECIPE_T_MAX=5000
 # Depth (jobs/v2_chain.sh full): the pilot extras, the constraint start, the teacher's top-landing gate (% lifted, wheeled;
 # empty = none), stage-1 distillation from scratch (iterations, learning rate).
 RECIPE_DEPTH_EXTRA=,longexit,endwall,teachblur

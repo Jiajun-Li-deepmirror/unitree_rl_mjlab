@@ -117,6 +117,8 @@ phase() {
 }
 
 # BL_T_PICK=<T average .pt> (with BL_T_RUN, default the newest *_bl2T_<TAG> run): skip T, start at M from it.
+# BL_T_MAX (2026-11-10, jobs/recipes RECIPE_T_MAX): T's last iteration (default 5000)
+TMAX=${BL_T_MAX:-5000}
 if [ -n "${BL_T_PICK:-}" ]; then
   T=$BL_T_PICK
   log "$R blind T PICK (given) $T"
@@ -124,11 +126,11 @@ else
   # BL_T_FROM_RUN + BL_T_FROM_K: T resumes from that raw checkpoint (to 5000 in all, checks every 500 from max(K+500, 2000))
   if [ -n "${BL_T_FROM_RUN:-}" ]; then
     TF0=$BL_T_FROM_K; TFIRST=$(( TF0 + 500 >= 2000 ? 500 : 2000 - TF0 ))
-    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG $BL_T_FROM_RUN $TF0 $((5000 - TF0)) $TFIRST flat 0 | tail -n 1)
+    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG $BL_T_FROM_RUN $TF0 $((TMAX - TF0)) $TFIRST flat 0 | tail -n 1)
   else
-    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG "" "" 5000 2000 flat 0 | tail -n 1)
+    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG "" "" $TMAX 2000 flat 0 | tail -n 1)
   fi
-  [ -n "$T" ] || { log "$R blind T: no checkpoint passed the flat goals by 5000"; exit 1; }
+  [ -n "$T" ] || { log "$R blind T: no checkpoint passed the flat goals by $TMAX"; exit 1; }
   log "$R blind T PICK $T"
 fi
 TK=$(basename $T .pt | cut -d_ -f2)
