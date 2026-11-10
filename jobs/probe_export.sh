@@ -11,7 +11,7 @@ source jobs/v2_robot.sh $R > /dev/null || exit 2
 export $V2_PKG_VAR=$V2_PKG
 source jobs/fe_robot.sh $R || exit 2
 [ -s $PKG/blind_pilot.txt ] || { echo "probe_export.sh: no $PKG/blind_pilot.txt" >&2; exit 2; }
-export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/blind_init_fe/model_$N.pt
+export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 mkdir -p $(dirname $OUT)
 $PY scripts/go2_depth/export_student.py --task Unitree-$R-Depth-Student-Edge --checkpoint $CK --out $OUT 2>&1 | tail -n 2
 md5sum $OUT

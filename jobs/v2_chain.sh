@@ -36,6 +36,7 @@ RAMP=${V2_RAMP:-$RAMP}
 # V2_MORE adds pilot keys (11-06: feetedgew3 for the B2 student's edge / slip misses); V2_S2_FROM, V2_S2_ITERS and
 # V2_S2_KS start stage 2 from another checkpoint (a stage-2 average) for that many iterations, checked at those K.
 S1=${V2_S1_ITERS:-$S1} S2=${V2_S2_ITERS:-$S2} S2KS=${V2_S2_KS:-$S2KS}
+TKS=${V2_TKS:-$TKS}   # V2_TKS (2026-11-10): the teacher's checked iterations (a mechanics smoke of a new package)
 # V2_S2_BC_FINAL (2026-11-09): stage 2's final behavior-cloning weight (log-linear from 1.0; default 1.0 all along), to
 # let the RL terms move a habit the teacher passed on (Go2W top-landing steps: stage 1 -> stage 2 2.7 -> 2.5-3.1 at 1.0)
 PK=logs/picks_v2_$TAG
@@ -53,10 +54,22 @@ export FE_PICKS=$PK FE_CONS_INIT=$V2_CONS FE_PILOT_EXTRA=$V2_EXTRA$V2_ROBOT_EXTR
 # passes with the margin (checks every 500); stage 2 at its first K whose 3 seeds and tinynav acceptance pass
 # (FE_TN_GATE: scratchpad check/tn_gate_watch.sh on the workstation).
 echo "$(date '+%m-%d %H:%M:%S') v2_chain $R $MODE $TAG: pilot +$FE_PILOT_EXTRA, teacher from ${TFROM:-the widened blind}, student from $V2_STUDENT_FROM" >> logs/jobs/fe_$r.txt
+# V2_STAGE (2026-11-10, the reproducible run in four rounds -- blind, teacher, stage-1 student, stage-2 student; the user:
+# each round passes before the robot's next): teacher = stop at the teacher pick; s1 = the stage-1 student under the
+# picked teacher (exit 3 when there is none); s2 = stage 2 from the stage-1 average (exit 3 when there is none); all.
+V2_STAGE=${V2_STAGE:-all}
+case $V2_STAGE in
+  all|teacher) ;;
+  s1) [ -f $PK/${r}_teacher ] || { echo "v2_chain: no teacher pick in $PK"; exit 3; } ;;
+  s2) [ -f $PK/${r}_student_stage1 ] || { echo "v2_chain: no stage-1 student in $PK"; exit 3; }; V2_ONLY_S2=1 ;;
+  *) echo "v2_chain.sh: V2_STAGE all|teacher|s1|s2" >&2; exit 2 ;;
+esac
 [ -n "${V2_ONLY_S2:-}" ] || env ${TFROM:+FE_TEACHER_FROM=$TFROM} FE_TEACHER_KS="$TKS" \
   FE_STUDENT_RUN=v2s1_$TAG FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge FE_STUDENT_FROM=$V2_STUDENT_FROM \
   FE_STUDENT_ITERS=$S1 FE_STUDENT_LR=${V2_S1_LR:-2e-4} FE_STUDENT_LR_FINAL=1e-4 FE_STUDENT_FREE=14000 FE_STUDENT_CHECK=0 \
+  $([ $V2_STAGE = teacher ] && echo FE_TEACHER_ONLY=1) \
   DEPTH_STUDENT_HARD=1 ${AFTER:+FE_AFTER_PID=$AFTER} bash jobs/fe_chain.sh $R || { echo "v2_chain: stage A failed"; exit 1; }
+case $V2_STAGE in teacher) [ -f $PK/${r}_teacher ]; exit $? ;; s1) [ -f $PK/${r}_student_stage1 ]; exit $? ;; esac
 S1CK=${V2_S2_FROM:-$(cat $PK/${r}_student_stage1)}
 env FE_STUDENT_RUN=v2s2_$TAG${V2_S2_SUFFIX:-} FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge-RL FE_STUDENT_FROM=$PWD/$S1CK \
   FE_STUDENT_ITERS=$S2 FE_STUDENT_LR=1e-4 FE_STUDENT_LR_FINAL=5e-5 FE_STUDENT_FREE=14000 \

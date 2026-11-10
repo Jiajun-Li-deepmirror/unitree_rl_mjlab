@@ -15,7 +15,7 @@ export $V2_PKG_VAR=$V2_PKG PAYLOAD_RAMP=0 FE_LOCK=${FE_LOCK:-/root/gpufree-data/
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 if [ -n "$V2_CONS" ]; then export BLIND_CONS_INIT=$V2_CONS; else unset BLIND_CONS_INIT; fi
 export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 \
-  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/blind_init_fe/model_$N.pt
+  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 [ -f $BLIND_ANCHOR_CHECKPOINT ] || { echo "no $BLIND_ANCHOR_CHECKPOINT"; exit 2; }
 L=logs/jobs/fe_$r.txt
 echo "$(date '+%m-%d %H:%M:%S') manual student $T: $CK seeds $SEEDS, pilot + $EXTRA (md5 $(echo $BLIND_PILOT | md5sum | cut -c1-8))" >> $L

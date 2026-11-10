@@ -47,7 +47,8 @@ while true; do
       # wheeled blind too (2026-11-10, doc/acceptance.md): the L0 slide gate is the one measure of the top landing
       [[ $R == *W ]] && flock $C/tinynav.lock bash $HERE/slide_gate.sh $r $X2 > /dev/null 2>&1
     else
-      timeout 900 $SSH $P "cd $D && bash jobs/probe_export.sh $R $CK $X $EXTRA 2>&1 | tail -n 1" < /dev/null > /dev/null
+      # the chain's package context beside the request (fe_chain.sh, 2026-11-10: the reproducible run's own packages)
+      timeout 900 $SSH $P "cd $D && { [ -f ${q%.req}.env ] && source ${q%.req}.env; } ; bash jobs/probe_export.sh $R $CK $X $EXTRA 2>&1 | tail -n 1" < /dev/null > /dev/null
       if ! timeout 300 $SSH $P "cat $D/$X" < /dev/null > $C/gate_pull/$n.onnx.new || [ ! -s $C/gate_pull/$n.onnx.new ]; then
         echo "FAIL: export / pull" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict" ; continue
       fi

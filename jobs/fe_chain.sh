@@ -64,7 +64,12 @@ last8() {  # RUN K: the last 8 checkpoints up to model_K (every 100; a run's fin
 PILOT=$(cat $PKG/blind_pilot.txt)${FE_PILOT_EXTRA:-}
 export BLIND_PILOT=$PILOT BLIND_ANCHOR_COEFF=0
 TD=logs/rsl_rl/${r}_depth_teacher SD=logs/rsl_rl/${r}_depth_student
-INIT=$TD/blind_init_fe/model_$N.pt
+# FE_INIT_RUN (2026-11-10, the reproducible run): the widened start's run dir, one per blind package (blind_init_<pkg>);
+# the default blind_init_fe holds every earlier package's widened model by iteration alone, so a new package whose
+# pick shares an N with an old one would start from that old widened model.
+IRUN=${FE_INIT_RUN:-blind_init_fe}
+export FE_INIT_RUN=$IRUN
+INIT=$TD/$IRUN/model_$N.pt
 export BLIND_ANCHOR_CHECKPOINT=$PWD/$INIT
 log "$R chain: $PKG model_$N${FE_TEACHER_FROM:+, teacher fine-tuned from $FE_TEACHER_FROM (run $TRUN, checks at +${TKS// /,+}, pick ${FE_TEACHER_PICK:-first})}${FE_PILOT_EXTRA:+, pilot + $FE_PILOT_EXTRA}, picks $PK, Depth-$PH, teacher speed margin $MARGIN, phase start ${BLIND_PHASE_START_IT:-none}, constraints init ${BLIND_CONS_INIT:-1x}, student from $OCC"
 # FE_AFTER_PID (2026-11-05, the new pipeline's scheduling): wait for that process (a training on this GPU) to end
@@ -75,9 +80,12 @@ if [ -n "${FE_AFTER_PID:-}" ]; then
 fi
 
 # 1. Widen and check the widened model.
+if [ -f $INIT ] && [ $IRUN != blind_init_fe ] && ! cmp -s $TD/$IRUN/checkpoint.md5 $PKG/checkpoint.md5; then
+  log "$R: $INIT is not the widened $PKG (checkpoint.md5 differs)"; exit 1
+fi
 if [ ! -f $INIT ]; then
   [ "$(md5sum < $PKG/model_$N.pt | cut -d' ' -f1)" = "$(grep -o '^[0-9a-f]*' $PKG/checkpoint.md5 | head -n 1)" ] || { log "$R: md5 of $PKG/model_$N.pt does not match checkpoint.md5"; exit 1; }
-  mkdir -p $TD/blind_init_fe && cp -r $PKG/params $PKG/blind_pilot*.txt $PKG/checkpoint.md5 $TD/blind_init_fe/
+  mkdir -p $TD/$IRUN && cp -r $PKG/params $PKG/blind_pilot*.txt $PKG/checkpoint.md5 $TD/$IRUN/
   log "$R widen $PKG/model_$N.pt (pilot $PILOT)"
   $PY scripts/go2_depth/widen_scan.py --task Unitree-$R-Depth-$PH $PKG/model_$N.pt --out $INIT > logs/jobs/fe_${r}_widen.log 2>&1 \
     || { log "$R widen failed: $(tail -n 3 logs/jobs/fe_${r}_widen.log)"; exit 1; }
@@ -85,7 +93,7 @@ fi
 
 # 2. Teacher.
 if [ ! -f $PK/${r}_teacher ]; then
-  T0=$N LRUN=blind_init_fe TITERS=3001
+  T0=$N LRUN=$IRUN TITERS=3001
   if [ -n "${FE_TEACHER_FROM:-}" ]; then
     T0=$(basename $FE_TEACHER_FROM .pt | cut -d_ -f2) LRUN=${TRUN}_init TITERS=$(( ${TKS##* } + 1 ))
     mkdir -p $TD/$LRUN && cp $FE_TEACHER_FROM $TD/$LRUN/model_$T0.pt || { log "$R: cannot copy $FE_TEACHER_FROM"; exit 1; }
@@ -146,6 +154,12 @@ if [ ! -f $PK/${r}_teacher ]; then
     fi
   done
   stop_train $TP
+  # FE_TEACHER_STRICT=1 (2026-11-10, the reproducible run's round 2; the user: the teacher gate is the check with the
+  # speed margin): no fall-back to the passing average with the widest margin
+  if [ -z "$pick" ] && [ -n "$best" ] && [ "${FE_TEACHER_STRICT:-}" = 1 ]; then
+    log "$R no teacher average with speed margin $MARGIN (widest passing: $bestm); FE_TEACHER_STRICT=1: no fall-back"
+    best=""
+  fi
   if [ -z "$pick" ] && [ -n "$best" ]; then
     pick=$best
     log "$R no teacher average with speed margin $MARGIN: taking the passing one with the widest ($bestm)"
@@ -158,6 +172,8 @@ if [ ! -f $PK/${r}_teacher ]; then
   log "$R TEACHER PICK $pick (md5 $(md5sum < $pick | cut -c1-8)); training stopped"
 fi
 TEACHER=$PWD/$(cat $PK/${r}_teacher)
+# FE_TEACHER_ONLY=1 (2026-11-10, the reproducible run's round 2): stop at the teacher pick; the students are later rounds
+[ "${FE_TEACHER_ONLY:-}" = 1 ] && { log "$R teacher only (FE_TEACHER_ONLY=1): stops at the pick"; exit 0; }
 
 # 3. Student. A second round (2026-11-01) sets FE_STUDENT_FROM (the warm start instead of OCC), FE_STUDENT_ITERS,
 # FE_STUDENT_LR / FE_STUDENT_LR_FINAL, FE_STUDENT_RUN (run name), DEPTH_STUDENT_HARD (more of the hard commands in the
@@ -249,6 +265,8 @@ for K in $KLIST; do
   if [ $ok = 1 ] && [ "${FE_TN_GATE:-0}" = 1 ]; then
     mkdir -p logs/accept
     Q=logs/accept/${SRUN}_$K
+    # the package context (2026-11-10): probe_export.sh runs from the workstation's watcher, outside this environment
+    echo "export FE_PKG=$(cd $PKG && pwd) FE_N=$N FE_PH=$PH FE_PSTART=${PSTART:-} FE_INIT_RUN=$IRUN" > $Q.env
     echo "$R $A $FE_PILOT_EXTRA" > $Q.req
     log "$R student avg$K: mjlab 3 seeds pass, waiting for the tinynav acceptance ($Q.verdict)"
     w=0

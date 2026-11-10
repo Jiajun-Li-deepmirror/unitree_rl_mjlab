@@ -13,7 +13,7 @@ export $V2_PKG_VAR=$V2_PKG PAYLOAD_RAMP=0
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 if [ -n "$V2_CONS" ]; then export BLIND_CONS_INIT=$V2_CONS; else unset BLIND_CONS_INIT; fi
 export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 \
-  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/blind_init_fe/model_$N.pt
+  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 L=logs/jobs/fe_$r.txt PK=logs/picks_v2_$TAG
 K=$(basename $CK .pt | cut -d_ -f2) RUN=$(basename $(dirname $CK) | sed 's/_avg[0-9]*$//')
 X=logs/exports/${r}_fe_student_${RUN}_avg$K.onnx

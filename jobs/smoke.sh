@@ -15,7 +15,7 @@ export GO2W_PKG AS2W_PKG B2W_PKG
 source jobs/fe_robot.sh $R || exit 2
 [ -f $PKG/blind_pilot.txt ] || { echo "smoke: no $PKG/blind_pilot.txt"; exit 2; }
 export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0
-export BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/blind_init_fe/model_$N.pt
+export BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 T0=$(basename $CK .pt | cut -d_ -f2)
 LRUN=smoke_${TAG}_init
 mkdir -p logs/rsl_rl/${r}_depth_teacher/$LRUN && cp $CK logs/rsl_rl/${r}_depth_teacher/$LRUN/model_$T0.pt

@@ -10,6 +10,6 @@ RECIPE_BLIND_CONS=back_drift:1.7,descent:2.3
 # empty = none), stage-1 distillation from scratch (iterations, learning rate).
 RECIPE_DEPTH_EXTRA=,wheelstep,wheelstep4,stairspeed2,stairspeed3,noslide,noslide2x,wheelahead,topairup,longexit,liftm8,endwall,landings,wumore,payload,teachblur,bdhold
 RECIPE_DEPTH_CONS=back_drift:1.7,descent:2.3
-RECIPE_TOPFLAT=
+RECIPE_TOPFLAT=22
 RECIPE_S1_ITERS=6000
 RECIPE_S1_LR=5e-4

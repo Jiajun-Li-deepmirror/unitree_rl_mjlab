@@ -19,7 +19,7 @@ export $V2_PKG_VAR=$V2_PKG PAYLOAD_RAMP=0
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 if [ -n "$V2_CONS" ]; then export BLIND_CONS_INIT=$V2_CONS; else unset BLIND_CONS_INIT; fi
 export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 \
-  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/blind_init_fe/model_$N.pt
+  BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 case $R in Go2|Go2W) PAY=12,0.15,0,0.20 ;; As2) PAY=10,0.15,0,0.20 ;; As2W) PAY=13,0.15,0,0.20 ;; *) PAY=40,0.15,0,0.30 ;; esac
 TX=""; case $R in B2|B2W) TX="--r1-top-y 5.6 --r1-turn-x -9.3" ;; *) TX="--r1-top-y 5.6" ;; esac
 CLIPS=${CLIPS:-flat,flat_pay,tour,tour_pay}
