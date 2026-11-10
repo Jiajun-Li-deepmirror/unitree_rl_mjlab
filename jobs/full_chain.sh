@@ -24,6 +24,11 @@ source jobs/recipes/$r.sh || exit 2
 L=logs/jobs/repro_$r.txt
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
 case $STAGE in all|blind|teacher|s1|s2) ;; *) echo "full_chain.sh: stage blind, teacher, s1, s2 or all" >&2; exit 2 ;; esac
+# A robot rerun under its own tag (2026-11-11): logs/jobs/repro_tag_<r> names the tag its rounds run under from then on,
+# so a queue started before the rerun (which still says the old tag) runs the robot's later rounds on the rerun's results
+if [ -s logs/jobs/repro_tag_$r ] && [ "$(cat logs/jobs/repro_tag_$r)" != "$TAG" ]; then
+  NT=$(cat logs/jobs/repro_tag_$r); log "$R $STAGE $TAG: runs as $NT (logs/jobs/repro_tag_$r)"; TAG=$NT
+fi
 # Inserted jobs (2026-11-10): logs/jobs/repro_insert, one shell command per line, run before this job (a queue that is
 # already running reads this file at its next job; e.g. jobs/t_handoff.sh for a chain that ended under older code)
 INS=logs/jobs/repro_insert
