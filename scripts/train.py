@@ -173,6 +173,12 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
       raise ValueError("run name must not contain directory separators")
     log_dir_name += f"_{args.agent.run_name}"
   log_dir = log_root_path / log_dir_name
+  # go2-depth's chains (env.sh TRAIN_LOG_LAYOUT=rsl_rl, 2026-11-10): logs/rsl_rl/<experiment>/<date>_<run>, the layout
+  # their run lookups, resumes and checks expect; the default above is the G1 dance layout (output/<name>/training).
+  if os.environ.get("TRAIN_LOG_LAYOUT") == "rsl_rl" and not args.motion_file:
+    log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name
+    log_dir = log_root_path / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                               + (f"_{args.agent.run_name}" if args.agent.run_name else ""))
 
   # Select GPUs based on CUDA_VISIBLE_DEVICES and user specification.
   selected_gpus, num_gpus = select_gpus(args.gpu_ids)
