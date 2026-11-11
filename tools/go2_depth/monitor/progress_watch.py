@@ -13,7 +13,7 @@ not changed, then the alarms:
 Exit 0 always; the alarms are the output's lines starting with those words.
 
 Watched: t1 the unified Go2 teacher (logs/jobs/unified_go2_ufull_s0.log, logs/jobs/unified_go2.txt), t2 the Go2
-payload fine-tune gp1 (logs/jobs/blind_go2_bl2P_gp1.log, logs/jobs/blind_go2_gp1.txt). WATCH in the code lists them.
+payload fine-tune gp2 (logs/jobs/blind_go2_bl2P_gp2.log, logs/jobs/blind_go2_gp2.txt; gp1 until 11-11 18:5x). WATCH in the code lists them.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ IDLE_UTIL, IDLE_MIB = 10, 3000
 # name -> (port, training log, chain log, kind)
 WATCH = {
   "t1 unified Go2": ("30714", "logs/jobs/unified_go2_ufull_s0.log", "logs/jobs/unified_go2.txt", "unified"),
-  "t2 gp1 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp1.log", "logs/jobs/blind_go2_gp1.txt", "blind"),
+  "t2 gp2 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp2.log", "logs/jobs/blind_go2_gp2.txt", "blind"),
 }
 
 
