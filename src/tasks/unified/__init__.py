@@ -61,6 +61,16 @@ def _register() -> None:
         rl_cfg=us.ppo_runner_cfg(robot, kind, clip_actions=PHASE_CLIP_ACTIONS),
         runner_cls=us.UStudentPpoRunner,
       )
+      # the acceptance's checks (scripts/unified/accept.sh, 2026-11-12): the stage-2 student on the blind checks'
+      # terrains (play configs; the checks load the checkpoint's student weights)
+      for tname, terrain in (("Flat", "flat"), ("Stairs", "stairs")):
+        register_mjlab_task(
+          task_id=f"Unitree-{robot.name}-U-Student-{name}-{tname}",
+          env_cfg=us.student_env_cfg(robot, kind, terrain=terrain),
+          play_env_cfg=us.student_env_cfg(robot, kind, play=True, terrain=terrain),
+          rl_cfg=us.ppo_runner_cfg(robot, kind, clip_actions=PHASE_CLIP_ACTIONS),
+          runner_cls=us.UStudentPpoRunner,
+        )
 
 
 

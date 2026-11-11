@@ -57,9 +57,9 @@ S1_ITERATIONS = 4000
 S2_ITERATIONS = 3000
 
 
-def student_env_cfg(robot: URobot, kind: str, play: bool = False):
+def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3"):
   assert kind in STUDENT_GROUPS, kind
-  cfg = unified_teacher_env_cfg(robot, play=play, student=kind)
+  cfg = unified_teacher_env_cfg(robot, play=play, student=kind, terrain=terrain)
   if kind == "depth":
     kw = {} if play else {"real_camera": True, "occlusion": True, "edge_blur": True}
     cfg = apply_depth_student(cfg, play=play, camera_pos=NAVCORE_CAMERA_POS[robot.key],

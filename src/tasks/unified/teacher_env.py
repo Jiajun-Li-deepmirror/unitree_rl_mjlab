@@ -293,19 +293,38 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   cfg.curriculum = new
 
 
+def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
+  """The checks' payload (2026-11-12, doc/redesign.md 2.1): a fixed point mass from U_PAYLOAD ("kg,x,y,z", default
+  0 kg -- the unloaded condition; the acceptance sets the walking payload for the loaded one) instead of the training
+  draw. The other randomization (CoM offset, friction, gains, ...) stays, the same in both conditions."""
+  m, x, y, z = (float(v) for v in os.environ.get("U_PAYLOAD", "0,0,0,0").split(","))
+  # the whole event replaced: on the check terrains the blind builder keeps mjlab's base-mass draw (-1..+2 kg), not
+  # the training's payload point (2026-11-12)
+  cfg.events["base_payload"] = EventTermCfg(
+    mode="reset", func=mdp.base_payload_point,
+    params={"asset_cfg": SceneEntityCfg("robot"), "light_range": (m, m), "heavy_max": 0.0, "heavy_share": 0.0,
+            "pos_ranges": ((x, x), (y, y), (z, z)), "base_com_range": 0.0, "ramp_steps": 0},
+  )
+
+
 def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = False,
-                            student: str | None = None) -> ManagerBasedRlEnvCfg:
+                            student: str | None = None, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
   """student "blind" / "depth" (students.py): the teacher's environment with the scan fixed off / on, the curriculum
   at its end (progress 1) and the constraint scales frozen at the teacher's (restored from its checkpoint)."""
-  cfg = base_env_cfg(robot, play=play)
+  cfg = base_env_cfg(robot, play=play, terrain=terrain)
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
   _add_privileged(cfg)
   _add_scan_mask(cfg)
   _add_joint_dr(cfg)
-  items = constraint_items(robot.kind)
-  constrained, other = _rewards(cfg, robot.kind, items, lean)
-  if not play:
-    _curriculum(cfg, robot, items, constrained, other if lean else [])
+  if terrain == "map3":
+    items = constraint_items(robot.kind)
+    constrained, other = _rewards(cfg, robot.kind, items, lean)
+    if not play:
+      _curriculum(cfg, robot, items, constrained, other if lean else [])
+  # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
+  # observations, actions and physics are the training ones, the rewards and curriculum are not used
+  if terrain != "map3":
+    _fixed_payload(cfg)
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:

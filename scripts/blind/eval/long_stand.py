@@ -72,6 +72,11 @@ touch = air = 0
 nm = 0
 steps = int(args.seconds / env.step_dt)
 tr = []  # (t, z, roll, pitch, vx, wz, legs |q - q0| max) per step over the first --trace s
+# the zero-command stance (2026-11-12, doc/redesign.md 2.2): each robot's largest leg-joint deviation from the default
+# stance after POSTURE_SETTLE s (the real robot's posture reset fires at 0.15 rad, ThermalGuard posture_march_rad)
+POSTURE_SETTLE = 3.0
+leg_ids = [i for i, n in enumerate(robot.joint_names) if "wheel" not in n]
+dev_max = torch.zeros(env.num_envs, device=env.device)
 for k in range(steps):
   cmd.vel_command_b[:] = 0.0
   cmd.time_left[:] = 1e9
@@ -90,6 +95,9 @@ for k in range(steps):
   if new.any():
     fall_t += [round(k * env.step_dt, 1)] * int(new.sum())
   fell |= new
+  if k * env.step_dt >= POSTURE_SETTLE:
+    d = (robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]).abs().amax(dim=1)
+    dev_max = torch.where(fell, dev_max, torch.maximum(dev_max, d))
   if k * env.step_dt < args.trace:
     gq = robot.data.projected_gravity_b
     tr.append((k * env.step_dt, robot.data.root_link_pos_w[:, 2].clone(), torch.rad2deg(torch.atan2(gq[:, 1], -gq[:, 2])),
@@ -107,6 +115,9 @@ q = torch.tensor((0.5, 0.9, 1.0), device=env.device)
 print(f"{args.checkpoint} {args.task} payload {args.payload or 0} wheel hold {args.wheel_hold} leg hold {not args.no_leg_hold}: {args.seconds:.0f} s at the zero command, "
       f"falls {int(fell.sum())}/{env.num_envs} at t {sorted(fall_t)[:20]} | drift cm p50 p90 max "
       f"{' '.join(f'{v:.1f}' for v in drift.quantile(q).tolist())} | tilt deg p50 p90 max {' '.join(f'{v:.1f}' for v in tilt.quantile(q).tolist())}")
+print(f"  posture: leg-joint deviation from the default stance after {POSTURE_SETTLE:g} s, each robot's max: "
+      f"p50 {float(dev_max[~fell].median()) if (~fell).any() else float('nan'):.3f} "
+      f"p90 {float(dev_max[~fell].quantile(0.9)) if (~fell).any() else float('nan'):.3f} rad")
 if args.handover > 0:
   print(f"  handover: the stance held for {args.handover:g} s with the payload, then the policy; "
         f"falls while held {pre}/{env.num_envs} (not counted above; those robots respawn and are judged with the rest)")

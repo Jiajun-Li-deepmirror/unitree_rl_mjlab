@@ -101,7 +101,7 @@ def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
 DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lowent")
 
 
-def base_env_cfg(robot: URobot, play: bool = False) -> ManagerBasedRlEnvCfg:
+def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
   """The blind environment on map3 at the teacher phase's schedule (early cost ramps, legged walk gate) with the
   unified recipe's final keys, plus the depth teacher's elevated height scan in the actor (depth_env_cfg)."""
   from src.tasks.velocity.depth_env_cfg import apply_depth_teacher
@@ -121,6 +121,7 @@ def base_env_cfg(robot: URobot, play: bool = False) -> ManagerBasedRlEnvCfg:
     "BLIND_ANCHOR_COEFF": None,
   }
   with _environ(env):
-    cfg = _factory(robot)(terrain="map3", phase="teacher", play=play)
+    # terrain: "map3" trains; the acceptance's checks (2026-11-12) use the blind builder's "flat" and "stairs"
+    cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
   return cfg

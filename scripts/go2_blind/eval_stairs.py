@@ -12,6 +12,7 @@ Robots are pinned to the stair tiles of Unitree-Go2-Blind (4 step-height bands f
 """
 
 import argparse
+import os
 from dataclasses import asdict
 
 import numpy as np
@@ -36,6 +37,10 @@ def main() -> None:
   parser.add_argument("--wz", type=float, default=0.0)
   parser.add_argument("--envs-per-tile", type=int, default=6)
   parser.add_argument("--seed", type=int, default=0)
+  # 2026-11-12 (doc/redesign.md, the unified acceptance): opt-in, without them the check runs as before
+  parser.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base (payload_opt.py)")
+  parser.add_argument("--metrics", action="store_true",
+                      help="also count kicks / slips / placements with src/metrics (tinynav's counters) while crossing")
   args = parser.parse_args()
 
   env_cfg = load_env_cfg(args.task, play=True)
@@ -49,6 +54,16 @@ def main() -> None:
   env_cfg.events.pop("randomize_terrain")
   num_envs = gen.num_rows * gen.num_cols * args.envs_per_tile
   env_cfg.scene.num_envs = num_envs
+  if args.payload:
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "blind", "eval"))
+    import payload_opt  # noqa: E402
+
+    payload_opt.apply(env_cfg, args.payload)
+  if args.metrics:
+    from src.metrics import mj as metrics_mj
+
+    metrics_mj.add_sensor(env_cfg)
 
   agent_cfg = load_rl_cfg(args.task)
   env = ManagerBasedRlEnv(cfg=env_cfg, device="cuda:0")
@@ -104,12 +119,18 @@ def main() -> None:
   set_cmd((args.vx, 0.0, args.wz))
   alive = torch.ones(num_envs, dtype=torch.bool, device=dev)
   success = torch.zeros_like(alive)
+  meter = None
+  if args.metrics:
+    meter = metrics_mj.StairsMeter(env, torch.arange(num_envs, device=dev), wheeled="wheel_vel" in env_cfg.actions,
+                                   ema_steps=1e12, min_steps=1.0)
   leg_hits = torch.zeros(num_envs, device=dev)
   steps_alive = torch.zeros(num_envs, device=dev)
   max_dist = torch.zeros(num_envs, device=dev)
   for _ in range(int(round(3.6 / max(abs(args.vx), 0.1) * 2.0 / dt))):
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
+    if meter is not None:
+      meter.step(env)
     term = env.termination_manager.terminated
     active = alive & ~success
     leg_hits += (active & (leg_sensor.data.found > 0).flatten(1).any(1)).float()
@@ -174,6 +195,17 @@ def main() -> None:
     m = env_tread == tread
     print(f"tread {tread:>6}: traverse ok {trav_ok[m].mean():.0%}, stop ok {stop_ok[m].mean():.0%}")
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
+  if meter is not None:
+    s = meter.sums
+    if meter.wheeled:
+      ups = s.get("ups", 0.0)
+      print(f"metrics (src/metrics): step-ups {ups:.0f}, slide-back {meter.rate('slide_back') or 0.0:.3f} of step-ups, "
+            f"idle start {meter.rate('idle_start') or 0.0:.3f} / end {meter.rate('idle_end') or 0.0:.3f} per step-up")
+    else:
+      steps = (s.get("ups", 0.0) + s.get("downs", 0.0)) / meter.feet
+      print(f"metrics (src/metrics): steps {steps:.0f}, kicks {meter.rate('kicks') or 0.0:.3f} / step, "
+            f"slips {meter.rate('slips') or 0.0:.4f} / step, mid {meter.rate('mid') or 0.0:.3f}, "
+            f"edge {meter.rate('edge') or 0.0:.3f} of {s.get('placed', 0.0):.0f} placements")
   env.close()
 
 
