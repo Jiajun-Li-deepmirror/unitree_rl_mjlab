@@ -32,8 +32,12 @@ start() {   # SEED
   local res="" before
   [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$"
   if [ "${RESUME_LATEST:-0}" = 1 ]; then
-    local rr=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
-    local rk=$(ls $rr/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
+    # the newest run of this seed that has a checkpoint (a run stopped before its first save has none)
+    local rr="" rk="" d
+    for d in $(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort -r); do
+      rk=$(ls $d/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
+      [ -n "$rk" ] && { rr=$d; break; }
+    done
     [ -n "$rk" ] && res="--agent.resume=True --agent.load-run=^$(basename $rr)\$ --agent.load-checkpoint=^model_${rk}\.pt\$" \
       && log "seed $s resumes from $(basename $rr) model_$rk"
   fi
