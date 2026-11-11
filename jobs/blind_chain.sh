@@ -53,8 +53,10 @@ drop_keys() { local p=$1 k; for k in ${BL_DROP:+${BL_DROP//,/ }}; do p=$(echo "$
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 TPILOT=$BLIND_PILOT MPILOT=$(drop_keys "${BL_PILOT_M:-$BLIND_PILOT}")
 export FE_LOCK=${FE_LOCK:-/root/gpufree-data/go2-depth/ws_check.lock}
-# fe_robot.sh: the payload limit / wall stop (BLIND_PAYLOAD with the teacher phase's ramp: 3000 it of 24 steps)
-export PAYLOAD_RAMP=72000
+# fe_robot.sh: the payload limit / wall stop (BLIND_PAYLOAD with the teacher phase's ramp: 3000 it of 24 steps).
+# BL_PAYLOAD_RAMP (2026-11-11): another ramp in env steps, e.g. 24000 (1000 it) for a P fine-tune from a model trained
+# without payload (each run's ramp restarts at its own step 0: 72000 would reach the limit only after 3000 it of P)
+export PAYLOAD_RAMP=${BL_PAYLOAD_RAMP:-72000}
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 unset BLIND_CONS_INIT BLIND_PHASE_START_IT BLIND_ANCHOR_CHECKPOINT BLIND_ANCHOR_COEFF
 [ -n "$V2_CONS" ] && export BLIND_CONS_INIT=$V2_CONS
