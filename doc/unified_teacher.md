@@ -85,3 +85,12 @@ U_SMOKE=1 bash jobs/unified/teacher.sh Go2 full 0 40
 - 考题环境：拿出 10–15% 的环境专门跑验收那几道固定考题。现在的测量取自训练中自然出现的同类情形。
 - 两个学生（盲走用现有部署契约，深度沿用深度学生），以及学生走现有验收。
 - 计数类门槛和 tinynav 结果之间的换算校准。
+
+## 负载：重载奖励组 + 轻载约束（2026-11-11）
+
+用户定的方案：物理参数不动，带负载的几项按「奖励引导 + 验收只记录」。
+
+- **轻载约束**：停车蠕动、原地踏步漂移、横移 / 直行跑偏、交替原地转，只统计负载 ≤ 3 kg 的机器人（`u_stand_hold_light`、`u_drift_light`、`u_spin_light`），对着无负载的验收门槛，乘子照旧。
+- **重载奖励组**：`u_heavy_creep`、`u_heavy_march`、`u_heavy_side_drift`、`u_heavy_straight_drift`、`u_heavy_spin`（`constraints.heavy_group`）。负载 ≥ 8 kg 的机器人，这几项的代价固定按配方的原始权重算，不受乘子影响；不设门槛，不加压。
+- **记录**：`Curriculum/u_heavy/<项>/{light,heavy,gap}`，看重载和轻载差多少、差距是否在缩小。
+- **验收**：同一组考题再加跑一遍负载上限，结果写进 `<P>_payload_gap.txt`（`scripts/blind/acceptance/payload_gap.py`），只记录，不判。

@@ -70,8 +70,10 @@ def constraint_items(kind: str) -> list[dict]:
     # flat ground, from progress 0.15 (once the robots walk)
     c("clock", "gait_match", "min", 0.85 if legged else 0.82, 0.6, 0.15, ["foot_gait"], {"min_abs_vy": 0.5},
       min_scale=1.0),
-    c("side_drift", "drift_share", "max", drift, 0.2, 0.15, ["side_drift"], {"term": "side_drift"}, stat="p90"),
-    c("straight_drift", "drift_share", "max", drift, 0.2, 0.15, ["straight_drift"], {"term": "straight_drift"},
+    # the flat items on the light robots (<= 3 kg, the acceptance's unloaded tests); the heavy ones have their own
+    # reward group (constraints.heavy_group, the user 2026-11-11)
+    c("side_drift", "u_drift_light", "max", drift, 0.2, 0.15, ["side_drift"], {"term": "side_drift"}, stat="p90"),
+    c("straight_drift", "u_drift_light", "max", drift, 0.2, 0.15, ["straight_drift"], {"term": "straight_drift"},
       stat="p90"),
     c("back_drift", "back_drift", "max", 0.03, 0.1, 0.15, ["side_drift"],
       {"term": "side_drift", "settled": True, "min_abs_vy": 0.45, "max_payload": 3.0}),
@@ -80,7 +82,7 @@ def constraint_items(kind: str) -> list[dict]:
       {"term": "standing_position_hold"}, stat="p90"),
     c("march", "u_stand_hold_light", "max", 0.04, 0.15, 0.15, ["march_position_hold", "march_hip_default"],
       {"term": "march_position_hold"}, stat="p90"),
-    c("spin", "spin_hold", "max", 0.05, 0.15, 0.15, ["spin_position_hold"]),
+    c("spin", "u_spin_light", "max", 0.05, 0.15, 0.15, ["spin_position_hold"]),
     # stairs, from progress 0.5 (stairs share rising), at 0.25 of their weight before
     c("descent", "stair_speed", "min", 0.9, 0.6, 0.5, ["stair_speed_deficit"], {"descend": True}, start_scale=0.25),
     c("climb", "stair_speed", "min", 0.85, 0.5, 0.5, ["stair_speed_deficit"], {"descend": False}, start_scale=0.25),
@@ -138,6 +140,12 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if lean:
     for t in other:
       del rewards[t]
+  # the heavy robots' reward group (after the terms it reads): each flat item's costs at their configured weight on
+  # the robots with >= 8 kg, whatever the light robots' multipliers (constraints.heavy_group)
+  for item, (_, _, _, terms) in ucons.HEAVY_ITEMS.items():
+    terms = [t for t in terms if t in rewards]
+    if terms:
+      rewards[f"u_heavy_{item}"] = RewardTermCfg(func=ucons.heavy_group, weight=1.0, params={"terms": terms})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   return constrained, other
 
@@ -174,11 +182,13 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   new["u_payload"] = CurriculumTermCfg(func=ucur.progress_payload, params={"event_name": "base_payload",
                                                                          "full_max": payload["heavy_max"]})
   new["u_constraints"] = CurriculumTermCfg(func=ucons.constraints, params={"items": items})
+  new["u_heavy"] = CurriculumTermCfg(func=ucons.heavy_log, params={})   # light vs heavy readings, logged only
   if os.environ.get("U_SMOKE") == "1":
     # A few-iteration smoke run (jobs/unified/teacher.sh --smoke): measure from the start, multipliers move after a
     # few samples, the meter reports after 50 steps; the progress is forced along so every switch-on runs.
     new["u_progress"].params = {"skip_steps": 0, "ema_steps": 50.0, "force_rate": 0.002}
     new["u_constraints"].params.update({"skip_steps": 0, "warmup": 5, "ema_steps": 50.0})
+    new["u_heavy"].params.update({"skip_steps": 0, "ema_steps": 50.0})
     cfg.rewards["u_meter"].params["min_n"] = 50
   cfg.curriculum = new
 

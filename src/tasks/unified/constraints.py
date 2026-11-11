@@ -128,7 +128,127 @@ def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hol
   return value, mask
 
 
-CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light}
+LIGHT_MAX_KG = 3.0    # the light robots: the acceptance's unloaded tests (2026-11-11)
+HEAVY_MIN_KG = 8.0    # the heavy robots: their own reward group, no constraint (the user, 2026-11-11)
+
+
+def payload_mask(env: ManagerBasedRlEnv, lo: float | None = None, hi: float | None = None) -> torch.Tensor | None:
+  """The robots whose payload (mdp.base_payload_point's env.payload_kg) is in [lo, hi] kg; None before the first draw."""
+  kg = getattr(env, "payload_kg", None)
+  if kg is None:
+    return None
+  m = torch.ones_like(kg, dtype=torch.bool)
+  if lo is not None:
+    m &= kg >= lo
+  if hi is not None:
+    m &= kg <= hi
+  return m
+
+
+def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
+  """METRICS[metric] over the robots with a payload in [lo, hi] kg."""
+  def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
+    value, mask = METRICS[metric](env, **params)
+    pm = payload_mask(env, lo, hi)
+    return value, (mask if pm is None else mask & pm)
+  return f
+
+
+CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light,
+          # the flat items on the light robots (2026-11-11, the user: "现有的轻载约束 ... 只统计 ≤ 3 kg，继续对着无负载的验收门槛")
+          "u_drift_light": by_payload("drift_share", hi=LIGHT_MAX_KG),
+          "u_spin_light": by_payload("spin_hold", hi=LIGHT_MAX_KG)}
+
+# The same items on the heavy robots: measured and logged (Curriculum/u_heavy/<item>/{light,heavy}), never enforced.
+HEAVY_ITEMS = {
+  "creep": ("stand_hold", {"term": "standing_position_hold"}, "p90", ["standing_position_hold", "standing_speed"]),
+  "march": ("stand_hold", {"term": "march_position_hold"}, "p90", ["march_position_hold", "march_hip_default"]),
+  "side_drift": ("drift_share", {"term": "side_drift"}, "p90", ["side_drift"]),
+  "straight_drift": ("drift_share", {"term": "straight_drift"}, "p90", ["straight_drift"]),
+  "spin": ("spin_hold", {}, "mean", ["spin_position_hold"]),
+}
+
+
+def _raw(env: ManagerBasedRlEnv, term: str) -> tuple[torch.Tensor, float] | None:
+  """A reward term's raw value this step and its weight now (terms computed before the caller)."""
+  rm = env.reward_manager
+  if term not in rm._term_names:
+    return None
+  w = rm.get_term_cfg(term).weight
+  if w == 0.0:
+    return None
+  return rm._step_reward[:, rm._term_names.index(term)] / w, w
+
+
+class heavy_group:
+  """Reward term (weight 1, after the terms it reads): the heavy robots' own reward group for one flat item
+  (go2-depth 2026-11-11, the user: "停车蠕动、原地踏步漂移、跑偏、交替原地转，给重载机器人（比如 ≥ 8 kg）单独加一组奖励项，
+  用来把重载的行为往无负载的水平拉。这组只作奖励，不作约束：不设门槛，也不用乘子往上加压").
+
+  The item's cost terms run on every robot at the weight the constraints give them (configured x multiplier). For a
+  robot with at least `min_kg` of payload this term adds raw x (heavy_scale x configured - current), so that robot
+  feels each cost at heavy_scale x its configured weight, whatever the multiplier: the light robots' constraint
+  never presses on the heavy ones, and the heavy ones are still pulled towards the same behaviour."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    pass
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def __call__(self, env: ManagerBasedRlEnv, terms: list[str], min_kg: float = HEAVY_MIN_KG,
+               heavy_scale: float = 1.0) -> torch.Tensor:
+    out = torch.zeros(env.num_envs, device=env.device)
+    heavy = payload_mask(env, lo=min_kg)
+    if heavy is None:
+      return out
+    base = getattr(getattr(env, "u_constraints", None), "base", {})
+    for t in terms:
+      r = _raw(env, t)
+      if r is None:
+        continue
+      raw, w = r
+      out += heavy.float() * raw * (heavy_scale * base.get(t, w) - w)
+    return out
+
+
+class heavy_log:
+  """Curriculum term: each HEAVY_ITEMS item measured on the light (<= LIGHT_MAX_KG) and on the heavy (>= HEAVY_MIN_KG)
+  robots, smoothed like the constraints; logged as Curriculum/u_heavy/<item>/{light,heavy,gap}. Information only."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.value: dict[str, float] = {}
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, ema_steps: float = 1000.0,
+               skip_steps: int = 2400) -> dict[str, torch.Tensor]:
+    del env_ids
+    out = {}
+    if env.common_step_counter < skip_steps:
+      return out
+    a = 1.0 - math.exp(-1.0 / ema_steps)
+    for item, (metric, params, stat, _) in HEAVY_ITEMS.items():
+      for side, (lo, hi) in (("light", (None, LIGHT_MAX_KG)), ("heavy", (HEAVY_MIN_KG, None))):
+        try:
+          value, mask = METRICS[metric](env, **params)
+        except Exception:
+          continue
+        pm = payload_mask(env, lo, hi)
+        if pm is None:
+          continue
+        mask = mask & pm
+        if not mask.any():
+          continue
+        v = value[mask]
+        x = float(v.mean()) if stat == "mean" else float(torch.quantile(v, float(stat[1:]) / 100.0))
+        k = f"{item}/{side}"
+        self.value[k] = x if k not in self.value else self.value[k] + a * (x - self.value[k])
+        out[k] = torch.tensor(self.value[k])
+      if f"{item}/light" in self.value and f"{item}/heavy" in self.value:
+        out[f"{item}/gap"] = torch.tensor(self.value[f"{item}/heavy"] - self.value[f"{item}/light"])
+    return out
 
 
 def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -> float | None:
