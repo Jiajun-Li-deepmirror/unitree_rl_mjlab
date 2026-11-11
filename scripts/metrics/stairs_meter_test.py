@@ -43,10 +43,19 @@ meter = mj.StairsMeter(env, torch.arange(env.num_envs), wheeled=args.wheeled, mi
 print(f"grid {meter.grid.H.shape} cells at {meter.grid.res} m, {meter.feet} feet, stairs envs "
       f"{int(env.command_manager.get_term('twist').is_stair_env.sum())} / {env.num_envs}", flush=True)
 obs = venv.get_observations()
+z0 = env.scene["robot"].data.root_link_pos_w[:, 2].clone()
+ep0 = env.episode_length_buf.clone()
 with torch.inference_mode():
   for i in range(args.steps):
     obs, _, _, _ = venv.step(policy(obs))
     meter.step(env)
+    if (i + 1) == 400:
+      stairs = env.command_manager.get_term("twist").is_stair_env
+      same = env.episode_length_buf > ep0   # not reset since the start
+      dz = env.scene["robot"].data.root_link_pos_w[:, 2] - z0
+      m = stairs & same
+      print(f"diag: {int(m.sum())} stairs robots not reset in 400 steps: base rose > 10 cm {int((dz[m] > 0.10).sum())}, "
+            f"fell > 10 cm {int((dz[m] < -0.10).sum())}", flush=True)
     if (i + 1) % 500 == 0:
       names = ("slide_back", "idle_start", "idle_end") if args.wheeled else ("kicks", "slips", "mid", "edge")
       vals = {k: meter.rate(k) for k in names}
