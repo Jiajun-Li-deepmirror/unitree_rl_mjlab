@@ -23,6 +23,9 @@ import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import payload_opt  # noqa: E402
 
 p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
@@ -31,10 +34,12 @@ p.add_argument("--num-envs", type=int, default=256)
 p.add_argument("--turns", type=int, default=8)
 p.add_argument("--yaw-accel", type=float, default=0.0)
 p.add_argument("--stand", type=float, default=2.0)
+payload_opt.add(p)
 args = p.parse_args()
 SEQS = [(0.5, 3.0), (1.0, 2.0), (1.5, 1.5)]  # (wz rad/s, seconds per turn)
 
 cfg = load_env_cfg(args.task, play=True)
+payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
 n = args.num_envs
 cfg.scene.num_envs = n * len(SEQS)
 T = max(w for _, w in SEQS) * args.turns + args.stand

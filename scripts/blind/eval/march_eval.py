@@ -21,15 +21,20 @@ import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import payload_opt  # noqa: E402
 
 p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--envs", type=int, default=32)
+payload_opt.add(p)
 args = p.parse_args()
 
 for march in (False, True):
   cfg = load_env_cfg(args.task, play=True)
+  payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
   cfg.scene.num_envs = args.envs
   cfg.episode_length_s = 1000.0
   cfg.events.pop("push_robot", None)

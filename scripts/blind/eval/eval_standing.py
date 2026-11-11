@@ -37,6 +37,9 @@ import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import payload_opt  # noqa: E402
 
 GROUPS = [
   ("rest", (0.0, 0.0, 0.0)),
@@ -54,10 +57,12 @@ p.add_argument("checkpoint")
 p.add_argument("--envs-per-group", type=int, default=256)
 p.add_argument("--lin-accel", type=float, default=0.0)
 p.add_argument("--yaw-accel", type=float, default=0.0)
+payload_opt.add(p)
 args = p.parse_args()
 
 n = args.envs_per_group
 cfg = load_env_cfg(args.task, play=True)
+payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
 cfg.scene.num_envs = len(GROUPS) * n
 cfg.episode_length_s = 1000.0
 agent_cfg = load_rl_cfg(args.task)
