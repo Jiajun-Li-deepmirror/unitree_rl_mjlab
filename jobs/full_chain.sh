@@ -32,7 +32,20 @@ set -u
 R=$1 TAG=$2 STAGE=${3:-all}
 r=${R,,}
 cd /root/gpufree-data/go2-depth/depth_fe && source env.sh
+# The recipe. The blind round's comes from code (2026-11-11, the user: "配方由代码定义 ... 一份共用基础配方，加上腿式和轮式各自的
+# 部分，再加少量每个机型自己的差异"): jobs/recipes/unified.py (T, M and P keys apart, the step limits, constraints from 1x).
+# jobs/recipes/<r>.sh still gives the depth rounds' values. RECIPE_SOURCE=legacy: <r>.sh's blind values (T = M = its
+# RECIPE_BLIND_TM), as every run before d13194e.
 source jobs/recipes/$r.sh || exit 2
+RECIPE_SOURCE=${RECIPE_SOURCE:-unified}
+if [ $RECIPE_SOURCE = unified ]; then
+  RVARS=$(python3 jobs/recipes/unified.py $r --sh) || { echo "full_chain.sh: jobs/recipes/unified.py $r failed" >&2; exit 2; }
+  eval "$RVARS"
+  unset RECIPE_BLIND_TM
+fi
+RECIPE_BLIND_T=${RECIPE_BLIND_T:-${RECIPE_BLIND_TM:-}} RECIPE_BLIND_M=${RECIPE_BLIND_M:-${RECIPE_BLIND_TM:-}}
+# the values this run trains with, one VAR=value per line (the recipe snapshot; md5 in the log)
+recipe_vals() { local v; for v in $(compgen -v RECIPE_ | sort); do [ $v = RECIPE_SOURCE ] || printf '%s=%q\n' $v "${!v}"; done; }
 L=${REPRO_LOG:-logs/jobs/repro_$r.txt}
 BLOG=${BL_LOG:-logs/jobs/blind_$r.txt} FLOG=${FE_LOG:-logs/jobs/fe_$r.txt}   # the chains' logs (a smoke run: logs/jobs/smoke/)
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
@@ -82,10 +95,10 @@ fi
 # Hand-off (2026-11-10, the user: go2-home's own GPU helps with the run): logs/jobs/repro_away_<r> names where this
 # robot's rounds run instead; here they are skipped (exit 3)
 if [ -f logs/jobs/repro_away_$r ]; then log "$R $STAGE $TAG: runs elsewhere ($(cat logs/jobs/repro_away_$r)), skipped here"; exit 3; fi
-log "$R $STAGE $TAG: code $(cat REPO_COMMIT 2> /dev/null || echo '?'), recipe jobs/recipes/$r.sh (md5 $(md5sum < jobs/recipes/$r.sh | cut -c1-8))"
+log "$R $STAGE $TAG: code $(cat REPO_COMMIT 2> /dev/null || echo '?'), recipe $RECIPE_SOURCE (values md5 $(recipe_vals | md5sum | cut -c1-8); T $(echo $RECIPE_BLIND_T | tr , '\n' | grep -c .) / M $(echo $RECIPE_BLIND_M | tr , '\n' | grep -c .) / P $(echo $RECIPE_BLIND_P | tr , '\n' | grep -c .) keys)"
 # The recipe this TAG runs with, kept for a later rerun's stage (jobs/recipe_stage.sh); the first round of the TAG writes it
 SNAP=logs/jobs/recipe_${r}_$TAG.sh
-[ -f $SNAP ] || { cp jobs/recipes/$r.sh $SNAP; log "$R $STAGE $TAG: recipe kept as $SNAP"; }
+[ -f $SNAP ] || { recipe_vals > $SNAP; log "$R $STAGE $TAG: recipe kept as $SNAP"; }
 # pick_of TAG PHASE -> "PICK RUN": a blind phase's pick of an earlier TAG (logs/jobs/blind_<r>_<TAG>.picks; before
 # 2026-11-11 from the chain log and the phase's newest run dir)
 pick_of() {
@@ -98,7 +111,7 @@ BF=${REPRO_BLIND_FROM:-}
 if [ -n "$BF" ] && { [ $STAGE = all ] || [ $STAGE = blind ]; }; then
   BFS=${BF%@*} BFT=${BF#*@}
   if [ "$BFS" = auto ]; then
-    BFS=$(bash jobs/recipe_stage.sh logs/jobs/recipe_${r}_$BFT.sh jobs/recipes/$r.sh 2> /dev/null) || {
+    BFS=$(bash jobs/recipe_stage.sh logs/jobs/recipe_${r}_$BFT.sh <(recipe_vals) 2> /dev/null) || {
       log "$R $STAGE $TAG: REPRO_BLIND_FROM=$BF: no recipe of $BFT kept (logs/jobs/recipe_${r}_$BFT.sh); name the stage"; exit 1; }
     log "$R $STAGE $TAG: recipe since $BFT: $BFS"
     BFS=${BFS%% *}
@@ -141,7 +154,7 @@ elif [ $STAGE = all ] || [ $STAGE = blind ]; then
         log "$R blind $TAG: after the tool fault, M reused from TAG $TAG: $BL_M_PICK"
       fi
     fi
-    BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
+    BL_PILOT_T=$RECIPE_BLIND_T BL_PILOT_M=$RECIPE_BLIND_M BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
     BL_M_ITERS=${RECIPE_M_ITERS:-5000} BL_P_ITERS=${RECIPE_P_ITERS:-2000} \
     BL_EXTRA= BL_P_EXTRA= BL_DROP= \
       bash jobs/blind_chain.sh $R $TAG

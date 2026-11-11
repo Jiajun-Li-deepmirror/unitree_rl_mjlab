@@ -40,7 +40,6 @@ python3 jobs/recipes/unified.py --diff        # 六个机型：和现在的配�
 1. B2W 的物理量写进机器人配置：腿刚度 kp 240 / kd 6（原 `legkp15`）、锁腿 2.0 s（原 `leghold20`，做成所有轮式都可设的参数）、楼梯比例上限 0.35（原 `stairs35`）。
 2. 合并约束：`b2wcons` 的 back_drift、descent 两项指标并入轮式共用约束；`b2wdesc` `bdhold` 依赖 `b2wcons`，一起改。
 3. 训练链读 T、M、P 三组（`BL_PILOT_T` / `BL_PILOT_M` 分开），`recipe_stage.sh` 认 T 和 M 两组。
-4. 写在奖励里的机型常数改成按机型换算，例如带负载站姿惩罚按「负载 / 12 kg」放大（12 kg 是 Go2 的上限）。
 
 ## 4. 风险和待定
 

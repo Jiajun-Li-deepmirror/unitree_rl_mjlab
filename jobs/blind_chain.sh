@@ -45,9 +45,13 @@ export BLIND_PILOT=$(cat $V2_PKG/blind_pilot.txt)$KEEP${BL_EXTRA:+,$BL_EXTRA}
 # BL_PILOT_TM / BL_PILOT_P (2026-11-10, jobs/full_chain.sh with jobs/recipes/<r>.sh): the T / M and the P pilot given
 # whole, not built from an earlier package's blind_pilot.txt (the reproducible run)
 [ -n "${BL_PILOT_TM:-}" ] && { export BLIND_PILOT=$BL_PILOT_TM; POLISH_KEYS=""; }
+# BL_PILOT_T / BL_PILOT_M (2026-11-11, jobs/recipes/unified.py through full_chain.sh; the user: "T 和 M 的开关分成两组"):
+# T's and M's own pilots (BL_PILOT_TM, the recipes before, is both)
+[ -n "${BL_PILOT_T:-}" ] && { export BLIND_PILOT=$BL_PILOT_T; POLISH_KEYS=""; }
 # BL_DROP (11-07): keys taken out of the package's recipe (e.g. the Go2W leg hold: loaded robots fell standing with it)
 drop_keys() { local p=$1 k; for k in ${BL_DROP:+${BL_DROP//,/ }}; do p=$(echo "$p" | tr ',' '\n' | grep -v -x "$k" | paste -sd,); done; echo "$p"; }
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
+TPILOT=$BLIND_PILOT MPILOT=$(drop_keys "${BL_PILOT_M:-$BLIND_PILOT}")
 export FE_LOCK=${FE_LOCK:-/root/gpufree-data/go2-depth/ws_check.lock}
 # fe_robot.sh: the payload limit / wall stop (BLIND_PAYLOAD with the teacher phase's ramp: 3000 it of 24 steps)
 export PAYLOAD_RAMP=72000
@@ -86,14 +90,38 @@ PPILOT=$(drop_keys "$PPILOT")
 # 前后阶段能否对上"; scripts/blind/obs_dims.py): M resumes T as it is, so their inputs must be equal; P may only add
 # inputs (M's pick is widened for them before P); fewer inputs than the stage before cannot follow it -- a tool fault.
 DIMS=logs/jobs/blind_${r}_dims_$TAG.txt
-{ BLIND_PILOT=$BLIND_PILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Teacher Unitree-$R-Blind-Mixed
+{ if [ "$MPILOT" = "$BLIND_PILOT" ]; then
+    BLIND_PILOT=$BLIND_PILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Teacher Unitree-$R-Blind-Mixed
+  else
+    BLIND_PILOT=$BLIND_PILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Teacher
+    BLIND_PILOT=$MPILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Mixed
+  fi
   BLIND_PILOT=$PPILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Polish; } 2> logs/jobs/blind_${r}_dims_$TAG.log | grep ' actor ' > $DIMS
 read -r _ _ TA _ TC <<< "$(sed -n 1p $DIMS)"; read -r _ _ MA _ MC <<< "$(sed -n 2p $DIMS)"; read -r _ _ PA _ PC <<< "$(sed -n 3p $DIMS)"
 [ -n "${PC:-}" ] || { fault "the stages' input check did not run ($(grep -m1 -E 'Error' logs/jobs/blind_${r}_dims_$TAG.log | cut -c1-200))"; exit 4; }
 log "$R blind inputs (actor / critic): T $TA / $TC, M $MA / $MC, P $PA / $PC"
-[ "$TA/$TC" = "$MA/$MC" ] || { fault "M's inputs $MA / $MC differ from T's $TA / $TC: M cannot resume T"; exit 4; }
-{ [ $PA -ge $MA ] && [ $PC -ge $MC ]; } || { fault "P has fewer inputs ($PA / $PC) than M ($MA / $MC)"; exit 4; }
-[ "$PA/$PC" = "$MA/$MC" ] || log "$R blind inputs: P adds $((PA - MA)) actor / $((PC - MC)) critic inputs: M's pick is widened before P"
+# M and P load T's policy as the anchor runner's teacher (src/tasks/velocity/rl/anchor.py, strict), so the policy's
+# inputs are the same in all three; the critic may only grow (each pick widened before the next phase)
+{ [ "$TA" = "$MA" ] && [ "$MA" = "$PA" ]; } || { fault "the policy's inputs differ across the phases (T $TA, M $MA, P $PA): M and P load T's policy"; exit 4; }
+{ [ $MC -ge $TC ] && [ $PC -ge $MC ]; } || { fault "a phase has fewer critic inputs than the one before (T $TC, M $MC, P $PC)"; exit 4; }
+[ $MC = $TC ] || log "$R blind inputs: M adds $((MC - TC)) critic inputs: T's pick is widened before M"
+[ $PC = $MC ] || log "$R blind inputs: P adds $((PC - MC)) critic inputs: M's pick is widened before P"
+
+# widen_from RUN K TASK NAME NEED -> the run dir the next phase resumes from: with NEED=1, RUN's model_K widened for
+# TASK's inputs (scripts/blind/widen_obs.py zero weight columns: the policy acts as before until training uses them)
+# into RUN_to<NAME>; RUN itself otherwise. 2026-11-11: Go2W / B2 rp4's P stopped at the load (P's spinhold appends the
+# critic spin_hold_offsets); the input check above says which phases grow.
+widen_from() {
+  local run=$1 k=$2 task=$3 name=$4 need=$5 wd=$TD/$(basename $1)_to$4 wl=logs/jobs/blind_${r}_widen${4}_$TAG.log
+  [ "$need" = 1 ] || { echo $run; return; }
+  mkdir -p $wd
+  if $PY scripts/blind/widen_obs.py --task $task $run/model_$k.pt --out $wd/model_$k.pt > $wl 2>&1; then
+    log "$R blind $name: the checkpoint widened for $name's inputs ($(grep -E '^(actor|critic): inputs' $wl | tr '\n' ' ')) -> $wd/model_$k.pt"
+    echo $wd
+  else
+    fault "$name: widen_obs.py failed ($(tail -n 1 $wl))"; rmdir $wd 2> /dev/null; echo ""
+  fi
+}
 
 # phase NAME TASK RUN FROM_RUN FROM_K MAX_IT FIRST_CHECK MODE SEEDS -> PICK (avg checkpoint path) on stdout's last line
 phase() {
@@ -104,7 +132,7 @@ phase() {
   local before=$(new_run $run) rd=""
   $PY scripts/train.py $task $args > logs/jobs/blind_${r}_$run.log 2>&1 &
   local tp=$!
-  log "$R $name started (pid $tp; $task, $maxit it from ${frun:-zero}${fk:+ model_$fk}, checks $mode from +$first every 500, seeds $seeds)"
+  log "$R $name started (pid $tp; $task, $maxit it from ${frun:-zero}${fk:+ model_$fk}, checks $mode from +$first every ${BL_STEP:-500}, seeds $seeds)"
   rd=$(new_run_wait $run $tp "$before") || {
     fault "$name: no new run dir for $run (training $(kill -0 $tp 2> /dev/null && echo alive || echo ended): $(grep -m1 -E 'Error|error:' logs/jobs/blind_${r}_$run.log | cut -c1-200))"
     stop_train $tp; echo ""; return; }
@@ -216,7 +244,11 @@ else
     MF0=$BL_M_FROM_K; MFIRST=$(( MF0 + 500 >= TK + 3000 ? 500 : TK + 3000 - MF0 ))
     M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $BL_M_FROM_RUN $MF0 $((MEND - MF0)) $MFIRST full 0 | tail -n 1)
   else
-    M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $TRUN $TK $((MEND - TK)) ${BL_FIRST_M:-3000} full 0 | tail -n 1)
+    export BLIND_PILOT=$MPILOT
+    [ "$MPILOT" = "$TPILOT" ] || log "$R blind M pilot $BLIND_PILOT"
+    MFROM=$(widen_from $TRUN $TK Unitree-$R-Blind-Mixed M $([ $MC = $TC ] && echo 0 || echo 1))
+    [ -s $FAULT ] && exit 4
+    M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $MFROM $TK $((MEND - TK)) ${BL_FIRST_M:-3000} full 0 | tail -n 1)
   fi
   [ -s $FAULT ] && exit 4
   if [ -z "$M" ]; then
@@ -235,23 +267,9 @@ export BLIND_PILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}   # BL_P_
 [ -n "${BL_PILOT_P:-}" ] && export BLIND_PILOT=$BL_PILOT_P   # the recipe's whole P pilot (2026-11-10)
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 log "$R blind P pilot $BLIND_PILOT"
-# P's inputs can be wider than M's checkpoint: a P key appends an observation term (spinhold's critic
-# spin_hold_offsets; 2026-11-11, Go2W rp4's P stopped at the load, critic 282 vs 284). widen_obs.py adds zero
-# weight columns for them (the policy acts as before until training uses them), into a run dir of its own.
-PFROM=$MRUN WD=$TD/$(basename $MRUN)_toP
-mkdir -p $WD
-if $PY scripts/blind/widen_obs.py --task Unitree-$R-Blind-Polish $MRUN/model_$MK.pt --out $WD/model_$MK.pt \
-     > logs/jobs/blind_${r}_widen_$TAG.log 2>&1; then
-  IN=$(grep -E '^(actor|critic): inputs' logs/jobs/blind_${r}_widen_$TAG.log | tr '\n' ' ')
-  if grep -E '^(actor|critic): inputs' logs/jobs/blind_${r}_widen_$TAG.log | awk '$3 != $5 {d=1} END {exit !d}'; then
-    PFROM=$WD; log "$R blind P: M's checkpoint widened for P's inputs ($IN) -> $WD/model_$MK.pt"
-  else
-    rm -f $WD/model_$MK.pt; rmdir $WD 2> /dev/null
-  fi
-else
-  log "$R blind P: widen_obs.py failed ($(tail -n 1 logs/jobs/blind_${r}_widen_$TAG.log)); P resumes M as it is"
-  rmdir $WD 2> /dev/null
-fi
+# P's inputs can be wider than M's checkpoint (the input check above): M's pick widened for them first
+PFROM=$(widen_from $MRUN $MK Unitree-$R-Blind-Polish P $([ $PC = $MC ] && echo 0 || echo 1))
+[ -s $FAULT ] && exit 4
 PIT=${BL_P_ITERS:-2000}
 P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $PFROM $MK $PIT ${BL_FIRST_P:-500} full "${BL_P_SEEDS:-0 1 2}" | tail -n 1)
 [ -s $FAULT ] && exit 4

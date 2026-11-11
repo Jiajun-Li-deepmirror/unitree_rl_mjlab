@@ -26,7 +26,7 @@ step() { local f=$1 what=$2 pat=$3 line; line=$(grep -E "$pat" $f 2> /dev/null |
 step $S/blind_$r.txt "inputs T / M / P" "blind inputs \(actor"
 step $S/blind_$r.txt "T pick" "blind T PICK"
 step $S/blind_$r.txt "M pick" "blind M PICK"
-step $S/blind_$r.txt "P widened (if needed)" "blind P: M.s checkpoint widened|blind inputs: P adds"
+step $S/blind_$r.txt "widened (if needed)" "checkpoint widened|blind inputs: (M|P) adds"
 step $S/blind_$r.txt "P tinynav request" "P avg[0-9]+ tinynav"
 step $S/blind_$r.txt "blind package" "BLIND DELIVERY"
 step $S/fe_$r.txt "teacher pick" "TEACHER PICK"
