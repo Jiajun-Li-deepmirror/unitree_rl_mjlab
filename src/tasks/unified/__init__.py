@@ -30,7 +30,12 @@ def _register() -> None:
 
   for robot in ROBOTS.values():
     for suffix, lean in (("", False), ("-Lean", True)):
-      rl_cfg = make_blind_ppo_runner_cfg(f"{robot.key}_u_teacher", max_iterations=MAX_ITERATIONS)
+      # PPO entropy (2026-11-12): wheeled 0.005 -- the blind recipes' "lowent", which every wheeled training from zero
+      # had. At 0.01 the Go2W teacher v2's action std grew 1.0 -> 1.22 by 1200 it (the old Go2W blind T: 0.57 at 300)
+      # and 85% of its episodes ended in illegal contacts (calves / thighs down); the deployed Go2W blind policy has
+      # none on the same aligned model. Legged 0.01 (the Go2 teacher: std 0.75, falls 15% at 1370 it).
+      entropy = 0.005 if robot.kind == "wheeled" else 0.01
+      rl_cfg = make_blind_ppo_runner_cfg(f"{robot.key}_u_teacher", max_iterations=MAX_ITERATIONS, entropy_coef=entropy)
       rl_cfg.clip_actions = PHASE_CLIP_ACTIONS
       # the actor encodes the privileged group into a compact vector (models.py, 2026-11-12)
       rl_cfg.actor.class_name = "src.tasks.unified.models:UPrivLatentModel"
