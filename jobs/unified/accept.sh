@@ -6,7 +6,7 @@
 # Unitree-<R>-U-Student-<Kind>-Flat / -Stairs (jobs/unified/u_eval.py), unloaded (U_PAYLOAD 0 kg) and loaded (the
 # walking payload, jobs/accept_payload.sh): files logs/checks/u_<r>_<kind>_<run>_<K>_<test>[_pay].txt, judged by
 # scripts/unified/accept_judge.py. Tier 3 (tinynav, the aligned robot models) follows a tier-2 pass: TN_GATE
-# (default: the request file logs/accept/u_<r>_<kind>_<run>_<K>.req for the workstation's watcher; "skip" until the
+# (default: the request file logs/accept/u_<r>_<kind>_<run>_<K>.ureq for tn_gate_unified.sh; "skip" until the
 # aligned tinynav-sim models are in). Log logs/jobs/unified_<r>_accept.txt; the pick logs/jobs/unified_<r>_<kind>.pick.
 set -u
 R=$1 KIND=$2 RUN=$3; shift 3
@@ -74,7 +74,7 @@ for k in $KS; do
   fi
   Q=logs/accept/u_${r}_${KIND}_${name}_$k
   rm -f $Q.verdict
-  echo "$R $CK U${KIND^^}" > $Q.req
+  echo "$R $CK U${KIND^^}" > $Q.ureq   # .ureq: tools/go2_depth/acceptance/tn_gate_unified.sh (the older .req watcher ignores it)
   w=0
   until [ -f $Q.verdict ] || [ $w -ge 43200 ]; do sleep 60; w=$((w + 60)); done
   tv=$(cat $Q.verdict 2> /dev/null || echo "no verdict in 12 h (tool fault)")
