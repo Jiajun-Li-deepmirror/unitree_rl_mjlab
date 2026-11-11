@@ -54,9 +54,7 @@ export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 TPILOT=$BLIND_PILOT MPILOT=$(drop_keys "${BL_PILOT_M:-$BLIND_PILOT}")
 export FE_LOCK=${FE_LOCK:-/root/gpufree-data/go2-depth/ws_check.lock}
 # fe_robot.sh: the payload limit / wall stop (BLIND_PAYLOAD with the teacher phase's ramp: 3000 it of 24 steps).
-# BL_PAYLOAD_RAMP (2026-11-11): another ramp in env steps, e.g. 24000 (1000 it) for a P fine-tune from a model trained
-# without payload (each run's ramp restarts at its own step 0: 72000 would reach the limit only after 3000 it of P)
-export PAYLOAD_RAMP=${BL_PAYLOAD_RAMP:-72000}
+export PAYLOAD_RAMP=72000
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 unset BLIND_CONS_INIT BLIND_PHASE_START_IT BLIND_ANCHOR_CHECKPOINT BLIND_ANCHOR_COEFF
 [ -n "$V2_CONS" ] && export BLIND_CONS_INIT=$V2_CONS
@@ -147,7 +145,7 @@ phase() {
   local args="--env.scene.num-envs=${BL_NUM_ENVS:-4096} --agent.run-name=$run --agent.max-iterations=$maxit${BL_SAVE:+ --agent.save-interval=$BL_SAVE}"
   [ -n "$frun" ] && args="$args --agent.resume=True --agent.load-run=^$(basename $frun)\$ --agent.load-checkpoint=^model_$fk\.pt\$"
   local before=$(new_run $run) rd=""
-  $PY scripts/train.py $task $args > logs/jobs/blind_${r}_$run.log 2>&1 &
+  BLIND_PAYLOAD=${TRAIN_PAYLOAD:-$BLIND_PAYLOAD} $PY scripts/train.py $task $args > logs/jobs/blind_${r}_$run.log 2>&1 &
   local tp=$!
   log "$R $name started (pid $tp; $task, $maxit it from ${frun:-zero}${fk:+ model_$fk}, checks $mode from +$first every ${BL_STEP:-500}, seeds $seeds)"
   rd=$(new_run_wait $run $tp "$before") || {
@@ -247,6 +245,10 @@ PF=logs/jobs/blind_${r}_$TAG.picks
 echo "T $T $TRUN" > $PF
 export PAYLOAD_RAMP=0
 source jobs/fe_robot.sh $R > /dev/null   # BLIND_PAYLOAD again, now without the ramp
+# BL_PAYLOAD_RAMP_MP (2026-11-11): M's and P's TRAINING ramps the payload in over that many env steps (e.g. 24000 =
+# 1000 it, for a P fine-tune from a model trained without payload; each run's ramp restarts at its own step 0). The
+# checks keep the full payload (they inherit BLIND_PAYLOAD; only train.py gets TRAIN_PAYLOAD).
+[ -n "${BL_PAYLOAD_RAMP_MP:-}" ] && TRAIN_PAYLOAD=${BLIND_PAYLOAD/,ramp=0/,ramp=$BL_PAYLOAD_RAMP_MP}
 # after fe_robot.sh, which unsets BLIND_PHASE_START_IT (11-05: the first Go2W M ran its stairs ramp from 5000, not 3500)
 export BLIND_PHASE_START_IT=$TK BLIND_ANCHOR_CHECKPOINT=$PWD/$T
 # No anchor (11-06, go2-home's reply): their mixed and polish ran with BLIND_ANCHOR_COEFF=0 (the delivery README: "also
