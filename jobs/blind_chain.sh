@@ -192,8 +192,25 @@ export BLIND_PILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}   # BL_P_
 [ -n "${BL_PILOT_P:-}" ] && export BLIND_PILOT=$BL_PILOT_P   # the recipe's whole P pilot (2026-11-10)
 export BLIND_PILOT=$(drop_keys "$BLIND_PILOT")
 log "$R blind P pilot $BLIND_PILOT"
+# P's inputs can be wider than M's checkpoint: a P key appends an observation term (spinhold's critic
+# spin_hold_offsets; 2026-11-11, Go2W rp4's P stopped at the load, critic 282 vs 284). widen_obs.py adds zero
+# weight columns for them (the policy acts as before until training uses them), into a run dir of its own.
+PFROM=$MRUN WD=$TD/$(basename $MRUN)_toP
+mkdir -p $WD
+if $PY scripts/blind/widen_obs.py --task Unitree-$R-Blind-Polish $MRUN/model_$MK.pt --out $WD/model_$MK.pt \
+     > logs/jobs/blind_${r}_widen_$TAG.log 2>&1; then
+  IN=$(grep -E '^(actor|critic): inputs' logs/jobs/blind_${r}_widen_$TAG.log | tr '\n' ' ')
+  if grep -E '^(actor|critic): inputs' logs/jobs/blind_${r}_widen_$TAG.log | awk '$3 != $5 {d=1} END {exit !d}'; then
+    PFROM=$WD; log "$R blind P: M's checkpoint widened for P's inputs ($IN) -> $WD/model_$MK.pt"
+  else
+    rm -f $WD/model_$MK.pt; rmdir $WD 2> /dev/null
+  fi
+else
+  log "$R blind P: widen_obs.py failed ($(tail -n 1 logs/jobs/blind_${r}_widen_$TAG.log)); P resumes M as it is"
+  rmdir $WD 2> /dev/null
+fi
 PIT=${BL_P_ITERS:-2000}
-P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $MRUN $MK $PIT 500 full "0 1 2" | tail -n 1)
+P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $PFROM $MK $PIT 500 full "0 1 2" | tail -n 1)
 [ -n "$P" ] || { log "$R blind P: no checkpoint passed by +$PIT"; exit 1; }
 PK=$(basename $P .pt | cut -d_ -f2)
 log "$R blind P PICK $P"
