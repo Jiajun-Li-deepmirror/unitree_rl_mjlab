@@ -20,6 +20,7 @@ plus falls. Output: one line per scenario and a TOTAL line with the verdict agai
 roll <= 6 deg; wheeled slide-back <= 5% of step-ups, idle steps start (rear) <= 0.5 and end (front) <= 1.0 per climb,
 roll <= 4 deg; falls 0. Run from a tinynav-sim worktree's mujoco/ with ROBOT_ASSETS and MUJOCO_GL=egl.
 """
+import copy
 import math
 import os
 import sys
@@ -35,7 +36,20 @@ from sim.policy import PieOnnxPolicy  # noqa: E402
 from sim.robots import get_robot  # noqa: E402
 from sim.runtime import PieRuntime  # noqa: E402
 
-DT, JUMP = 0.02, 0.03
+# the shared metrics (src/metrics, 2026-11-12, doc/redesign.md): the raster and the legged counters live there now,
+# loaded by path so tinynav-sim's own packages (the cwd) cannot shadow them
+import importlib.util  # noqa: E402
+
+_REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location("uni_metrics", _REPO / "src" / "metrics" / "__init__.py",
+                                               submodule_search_locations=[str(_REPO / "src" / "metrics")])
+uni_metrics = importlib.util.module_from_spec(_spec)
+sys.modules["uni_metrics"] = uni_metrics
+_spec.loader.exec_module(uni_metrics)
+from uni_metrics.stairs import LeggedStairs, WheeledStairs  # noqa: E402
+from uni_metrics.terrain import JUMP, Grid as _Grid  # noqa: E402
+
+DT = 0.02
 robot, onnx = sys.argv[1], Path(sys.argv[2])
 runs = int(sys.argv[3]) if len(sys.argv) > 3 else 4
 WHEELED = get_robot(robot).wheeled
@@ -74,6 +88,11 @@ def add_payload(model, spec):
   mujoco.mj_setConst(model, mujoco.MjData(model))
 
 
+# Each run gets its own copy of the scene model and bindings as built (2026-11-12): tinynav-sim's runtime changes
+# them while it runs (sim/runtime.py: the contact cone / impratio from the policy, and the policy's default stance
+# written into the bindings' default_joint_pos / ctrl_default, so only the first run of a process settled on the
+# robot profile's stance), and with one cached pair per scene a run's result depended on what ran before it in the
+# process (gp3 avg15700 pit_18n_up alone 6.2 kicks / run, roll 14.4 deg; after pit_14_up 5.8, 7.0 deg).
 def model_for(scene):
   if scene not in _models:
     _models[scene] = build_model(scene, robot)
@@ -81,85 +100,13 @@ def model_for(scene):
       add_payload(_models[scene][0], PAYLOAD)
     if NOSLIP:
       _models[scene][0].opt.noslip_iterations = NOSLIP
-  return _models[scene]
+  model, b = _models[scene]
+  return copy.deepcopy(model), copy.deepcopy(b)
 
 
-def raster(model, win):
-  x0, x1, y0, y1, zlo, zhi, res = win
-  xs, ys = np.arange(x0, x1, res), np.arange(y0, y1, res)
-  gx, gy = np.meshgrid(xs, ys, indexing="ij")
-  H = np.full(gx.shape, -np.inf)
-  for g in range(model.ngeom):
-    if model.geom_bodyid[g] != 0 or model.geom_type[g] != mujoco.mjtGeom.mjGEOM_BOX:
-      continue
-    pos, half = model.geom_pos[g], model.geom_size[g]
-    R = np.zeros(9)
-    mujoco.mju_quat2Mat(R, model.geom_quat[g])
-    R = R.reshape(3, 3)
-    if abs(R[2, 2]) < 0.99:
-      continue
-    top = pos[2] + half[2] * abs(R[2, 2])
-    if not zlo <= top <= zhi:
-      continue
-    dx, dy = gx - pos[0], gy - pos[1]
-    lx = R[0, 0] * dx + R[1, 0] * dy
-    ly = R[0, 1] * dx + R[1, 1] * dy
-    inside = (np.abs(lx) <= half[0]) & (np.abs(ly) <= half[1])
-    H = np.where(inside & (top > H), top, H)
-  H[~np.isfinite(H)] = zlo
-  jump = np.zeros(H.shape, bool)
-  for ax in (0, 1):
-    d = np.abs(np.diff(H, axis=ax)) > JUMP
-    if ax == 0:
-      jump[:-1] |= d
-      jump[1:] |= d
-    else:
-      jump[:, :-1] |= d
-      jump[:, 1:] |= d
-  return H, jump, (x0, y0, res)
-
-
-def dilate(mask, r):
-  out = mask.copy()
-  for i in range(-r, r + 1):
-    for j in range(-r, r + 1):
-      if i * i + j * j <= r * r:
-        out |= np.roll(np.roll(mask, i, 0), j, 1)
-  return out
-
-
-class Grid:
-  def __init__(self, model, win):
-    self.H, jump, (self.x0, self.y0, self.res) = raster(model, win)
-    self.near1 = dilate(jump, int(round(1.0 / self.res)))
-    self.near05 = dilate(jump, int(round(0.5 / self.res)))
-    lv = np.unique(np.round(self.H[np.isfinite(self.H)], 3))
-    self.levels = lv[np.concatenate([[True], np.diff(lv) > JUMP])]   # distinct walkable heights (tread tops)
-
-  def level(self, z):
-    """Index of the level within 3 cm of z (a contact height), or -1."""
-    i = int(np.argmin(np.abs(self.levels - z)))
-    return i if abs(self.levels[i] - z) < 0.03 else -1
-
-  def ij(self, x, y):
-    i, j = int((x - self.x0) / self.res), int((y - self.y0) / self.res)
-    if 0 <= i < self.H.shape[0] and 0 <= j < self.H.shape[1]:
-      return i, j
-    return None
-
-  def h(self, x, y):
-    c = self.ij(x, y)
-    return None if c is None else float(self.H[c])
-
-  def along(self, x, y, hx, hy, h0, limit):
-    """Distance along (hx, hy) from (x, y) to the first cell whose height differs from h0 by > JUMP (inf within limit)."""
-    s = self.res
-    while s <= limit:
-      v = self.h(x + hx * s, y + hy * s)
-      if v is None or abs(v - h0) > JUMP:
-        return s
-      s += self.res
-    return math.inf
+def Grid(model, win):
+  """The shared raster (src/metrics/terrain.py) over the scene's world-body boxes, as this script always took them."""
+  return _Grid(model, win, world_only=True)
 
 
 def run(sc, seed, grid):
@@ -178,15 +125,14 @@ def run(sc, seed, grid):
   feet = {g: mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in robot_geoms
           if "foot" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "")}
   front = {g for g, n in feet.items() if n[:1].upper() == "F"}
-  st = {g: dict(on=0, level=None, prev_level=None, kick=False, air=0.0, z0=0.0, apex=0.0, flat_off=False,
-                placed=False, stand=None, nosed=False, off_L=-1, t_off=0.0, z_last=0.0, last_slide=None) for g in feet}
+  fl = list(feet)
+  legs = None if WHEELED else LeggedStairs(grid, 1, len(fl))   # the shared legged counters (src/metrics/stairs.py)
   m = dict(kicks=0, mid=0, edge=0, placed=0, slips=0, ups=0, idle_front=0, idle_rear=0, fell=False,
            roll=0.0, w2=0.0, wn=0, clean=0, edged=0, hd_max=0.0, hd_sum=0.0, r_sum=0.0, hn=0)
   # the flight's start level (under the base at the spawn) and end level (the highest / lowest level ahead)
   hz0 = grid.h(float(data.qpos[root]), float(data.qpos[root + 1]))
   start_L = grid.level(hz0) if hz0 is not None else -1
-  idle = []        # (take-off level, wheel, time, apex cm): split into start / end after the run
-  reached = []     # wheel stance levels (wheeled: the step-up classes' stand)
+  wheels = WheeledStairs(grid, 1, len(fl), [start_L]) if WHEELED else None   # the shared wheeled counters
   t_now = 0.0
   for step in range(int(round(secs / DT))):
     t_now = step * DT
@@ -216,99 +162,21 @@ def run(sc, seed, grid):
       for g, o in ((con.geom1, con.geom2), (con.geom2, con.geom1)):
         if g in feet and o not in robot_geoms and model.geom_bodyid[o] == 0:
           cons.setdefault(g, []).append((np.array(con.pos), float(con.frame[2])))
-    for g in feet:
-      s = st[g]
-      c = cons.get(g)
-      x, y, z = data.geom_xpos[g]
-      if c:
-        horiz = any(abs(nz) < 0.5 for _, nz in c)
-        cp = c[0][0]
-        cc = grid.ij(cp[0], cp[1])
-        over = cc is not None and grid.near05[cc]
-        if not WHEELED and horiz and not s["kick"] and over:
-          m["kicks"] += 1
-        s["kick"] = horiz
-        s["on"] += 1
-        s["z_last"] = float(z)
-        lv = grid.h(cp[0], cp[1])
-        if WHEELED and up:   # stair_wheels.py's step-up classes on the contact heights snapped to the levels
-          best = None
-          for cpos, nz in c:
-            L = grid.level(float(cpos[2]))
-            if L < 0:
-              continue
-            key = (L, abs(nz) > 0.9)
-            if best is None or key > best:
-              best = key
-          if best is not None:
-            L, flat = best
-            if s["stand"] is not None and L == s["stand"] + 1 and not flat and not s["nosed"]:
-              s["nosed"] = True
-            elif flat:
-              if s["stand"] is not None and L == s["stand"] + 1:
-                m["ups"] += 1
-                m["edged" if s["nosed"] else "clean"] += 1
-              elif s["stand"] is not None and L == s["stand"] and s["nosed"] and not (
-                  s["last_slide"] is not None and s["last_slide"][0] == L and t_now - s["last_slide"][1] < 0.5):
-                # a wheel bumping the same riser again within 0.5 s is one slide-back, not several (B2W in the
-                # pyramid pit: 4 bumps in 0.2 s)
-                m["ups"] += 1
-                m["slips"] += 1
-                s["last_slide"] = (L, t_now)
-                if os.environ.get("DEBUG_SLIDE"):
-                  print(f"    slide {feet[g]} t{t_now:.2f} back on level {L} ({grid.levels[L]:.3f}) at "
-                        f"({float(cp[0]):.2f}, {float(cp[1]):.2f}) heading ({hx:.2f}, {hy:.2f})", flush=True)
-              if L != s["stand"] or s["nosed"]:
-                s["stand"], s["nosed"] = L, False
-              reached.append(L)
-        if WHEELED and s["air"] > 0.0:   # landing after a flight: an idle step?
-          if s["flat_off"] and s["air"] > 0.06 + 1e-6 and s["apex"] - s["z0"] > 0.03:
-            idle.append((s["off_L"], feet[g], round(s["t_off"], 2), round(100 * (s["apex"] - s["z0"]), 1),
-                         grid.level(float(cp[2]))))
-          s["air"] = 0.0
-        if not WHEELED and s["on"] == 3 and lv is not None:     # a stance starts
-          if s["level"] is not None and up and lv < s["level"] - 0.06 and over:
-            m["slips"] += 1
-          s["prev_level"], s["level"] = s["level"], lv
-          s["placed"] = False
-        elif not WHEELED and s["on"] > 3 and lv is not None and s["level"] is not None and lv < s["level"] - 0.06 and over:
-          m["slips"] += 1                       # slid off during the stance
-          s["level"] = lv
-        if (not WHEELED and s["on"] >= 3 and not s["placed"] and lv is not None and over
-                and all(abs(nz) > 0.9 for _, nz in c)):
-          d_f = grid.along(cp[0], cp[1], hx, hy, lv, 0.7)
-          d_b = grid.along(cp[0], cp[1], -hx, -hy, lv, 0.7)
-          depth = d_f + d_b
-          if 0.15 <= depth <= 0.6:
-            frac = d_b / depth   # 0 / 1 = the tread's ends along the heading (symmetric bars)
-            m["placed"] += 1
-            m["mid"] += 0.2 <= frac <= 0.8
-            m["edge"] += min(d_f, d_b) < 0.03
-          s["placed"] = True
-      else:
-        if WHEELED and s["on"] > 0:          # take-off
-          lv = grid.h(x, y)
-          ahead = grid.along(x, y, hx, hy, lv, 0.3) if lv is not None else 0.0
-          s["flat_off"] = near_stairs and math.isinf(ahead) and s["on"] >= 3
-          s["off_L"] = grid.level(lv) if lv is not None else -1
-          s["t_off"] = t_now
-          s["z0"] = s["z_last"]                 # the height at the last contact step (stair_wheels.py's)
-          s["apex"] = float(z)
-        if WHEELED:
-          s["air"] += DT
-          s["apex"] = max(s["apex"], float(z))
-        s["on"] = 0
-        s["kick"] = False
+    if legs is not None:
+      cf = [cons.get(g) for g in fl]
+      legs.step(np.array([[c is not None for c in cf]]),
+                np.array([[c is not None and any(abs(nz) < 0.5 for _, nz in c) for c in cf]]),
+                np.array([[c is not None and all(abs(nz) > 0.9 for _, nz in c) for c in cf]]),
+                np.array([[c[0][0][:2] if c is not None else (0.0, 0.0) for c in cf]], float),
+                np.array([[hx, hy]]), np.array([up]))
+    if wheels is not None:
+      wheels.step(t_now, DT, [[cons.get(g) or [] for g in fl]], np.array([[data.geom_xpos[g] for g in fl]]),
+                  np.array([[hx, hy]]), np.array([near_stairs]), np.array([up]))
   rt.close()
-  if WHEELED:
-    end_L = (max(reached) if up else min(reached)) if reached else -1
-    for L, w, t, a, Lland in idle:
-      if L == start_L and L != end_L:
-        m["idle_rear"] += 1        # "start": taken off from the start level (any wheel)
-      elif L == end_L:
-        m["idle_front"] += 1       # "end": from the level the flight ends on
-      if os.environ.get("DEBUG_IDLE"):
-        print(f"    idle {w} t{t} level {L} -> landed on {Lland} (start {start_L}, end {end_L}) apex {a} cm", flush=True)
+  if legs is not None:
+    m.update({k: int(v[0]) for k, v in legs.counts().items()})
+  if wheels is not None:
+    m.update({k: int(v[0]) for k, v in wheels.counts(np.array([up])).items()})
   return m
 
 
