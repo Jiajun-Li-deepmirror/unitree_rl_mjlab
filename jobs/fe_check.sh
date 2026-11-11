@@ -62,7 +62,8 @@ if [ -f $O/REMOTE ] && [ -z "${FE_NO_REMOTE:-}" ] && { [ ! -s $O/REMOTE ] || gre
   until [ -f ${P}_verdict.txt ]; do sleep 30; done
   exit 0
 fi
-mean_reached() {
+mean_reached() {   # "-" when the run did not happen (the flat smoke has no map3)
+  [ -f "$1" ] || { echo -; return; }
   python3 -c "import re,sys; v=[float(x) for x in re.findall(r'reached=([0-9.]+)', open(sys.argv[1]).read())]; print(f'{100*sum(v)/len(v):.1f}' if v else 'nan')" $1
 }
 trainings() { ps -eo args | grep -cE '^[^ ]*python[^ ]* scripts/train[.]py '; }
