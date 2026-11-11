@@ -11,7 +11,8 @@
 # are stopped (KEEP_OTHERS=1 lets them run on). Smoke: U_SMOKE=1 (few iterations, every switch-on forced).
 # Log logs/jobs/unified_<r>.txt; runs logs/rsl_rl/<r>_u_teacher/<date>_u<variant>_s<seed>.
 # RESUME_RUN (a run dir) + RESUME_K: every seed resumes from that run's model_K (the runner restores the curriculum's
-# progress, multipliers and meter; 2026-11-11, after the progress clock was added); for one seed.
+# progress, multipliers and meter; 2026-11-11, after the progress clock was added); for one seed. RESUME_LATEST=1: each seed
+# resumes from its own newest run (*_u<variant>_s<seed>) at its latest checkpoint (2026-11-12).
 set -u
 R=$1 VARIANT=${2:-full} SEEDS=${3:-0 1} ITERS=${4:-30000}
 r=${R,,}
@@ -30,6 +31,12 @@ start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
   local res="" before
   [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$"
+  if [ "${RESUME_LATEST:-0}" = 1 ]; then
+    local rr=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
+    local rk=$(ls $rr/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
+    [ -n "$rk" ] && res="--agent.resume=True --agent.load-run=^$(basename $rr)\$ --agent.load-checkpoint=^model_${rk}\.pt\$" \
+      && log "seed $s resumes from $(basename $rr) model_$rk"
+  fi
   # the run dirs of this name already there (a resume's source among them): the new run is the one that appears after
   before=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
   $PY scripts/train.py $TASK --env.scene.num-envs=$ENVS --agent.run-name=$name --agent.seed=$s \

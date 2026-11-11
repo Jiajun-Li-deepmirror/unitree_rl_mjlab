@@ -47,6 +47,16 @@ def _register() -> None:
         rl_cfg=rl_cfg,
         runner_cls=UnifiedTeacherRunner,
       )
+    # the teacher on the check terrains (2026-11-12): its stairs metrics under the acceptance's crossing, for
+    # comparing with the training's reading (U_SCAN=on / off picks the mode)
+    for tname, terrain in (("Flat", "flat"), ("Stairs", "stairs")):
+      register_mjlab_task(
+        task_id=f"Unitree-{robot.name}-U-Teacher-{tname}",
+        env_cfg=unified_teacher_env_cfg(robot, terrain=terrain),
+        play_env_cfg=unified_teacher_env_cfg(robot, play=True, terrain=terrain),
+        rl_cfg=rl_cfg,
+        runner_cls=UnifiedTeacherRunner,
+      )
     # the students (students.py, 2026-11-12): stage 1 DAgger, stage 2 PPO + behavior cloning
     from . import students as us
 

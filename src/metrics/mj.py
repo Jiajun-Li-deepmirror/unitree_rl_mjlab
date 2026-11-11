@@ -89,10 +89,16 @@ class StairsMeter:
     wheeled  slide_back (slips / step-ups), idle_start / idle_end per step-up
   Counts decay with a time constant of ema_steps control steps (the curriculum moves on; old behaviour fades)."""
 
-  def __init__(self, env, ids: torch.Tensor, wheeled: bool, ema_steps: float = 20000.0, min_steps: float = 200.0):
+  def __init__(self, env, ids: torch.Tensor, wheeled: bool, ema_steps: float = 20000.0, min_steps: float = 200.0,
+               straight: bool = False):
     self.ids = ids.to(env.device)
     self.n = len(ids)
     self.wheeled = wheeled
+    # straight: count only robots walking the flight as the acceptance crosses it -- a forward / backward command
+    # (|vx| >= 0.25 m/s), little sideways or turning (|vy| <= 0.15, |wz| <= 0.3) -- so the training's reading means
+    # what the acceptance's does (2026-11-12: over every stairs robot, stops and turns on the flights included, the
+    # Go2 teacher read 3.4 kicks / step against the acceptance's 0.245 bar)
+    self.straight = straight
     self.decay = math.exp(-1.0 / ema_steps)
     self.min_steps = min_steps
     self.grid = terrain_grid(env)
@@ -124,6 +130,9 @@ class StairsMeter:
     h_ahead = self.grid.h_v(base + 0.5 * heading)
     up = np.nan_to_num(h_ahead, nan=-np.inf) > np.nan_to_num(h_here, nan=np.inf) + JUMP
     on_stairs = env.command_manager.get_term("twist").is_stair_env[ids].cpu().numpy()
+    if self.straight:
+      c = env.command_manager.get_command("twist")[ids]
+      on_stairs = on_stairs & ((c[:, 0].abs() >= 0.25) & (c[:, 1].abs() <= 0.15) & (c[:, 2].abs() <= 0.3)).cpu().numpy()
     return found, pos, nz, valid, base, heading, up, on_stairs
 
   def step(self, env) -> None:

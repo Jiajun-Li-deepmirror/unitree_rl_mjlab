@@ -376,7 +376,8 @@ class lib_meter:
     p = cfg.params
     n = min(int(p.get("sample", 512)), env.num_envs)
     self.meter = StairsMeter(env, torch.arange(n, device=env.device), wheeled=bool(p.get("wheeled", False)),
-                             ema_steps=float(p.get("ema_steps", 20000.0)), min_steps=float(p.get("min_steps", 200.0)))
+                             ema_steps=float(p.get("ema_steps", 20000.0)), min_steps=float(p.get("min_steps", 200.0)),
+                             straight=bool(p.get("straight", True)))
     env.u_lib_meter = self.meter
     env.u_lib_meter_term = self   # runner.py checkpoints its state
 
@@ -390,6 +391,6 @@ class lib_meter:
     self.meter.load(state)
 
   def __call__(self, env: ManagerBasedRlEnv, wheeled: bool = False, sample: int = 512, ema_steps: float = 20000.0,
-               min_steps: float = 200.0) -> torch.Tensor:
+               min_steps: float = 200.0, straight: bool = True) -> torch.Tensor:
     self.meter.step(env)
     return torch.zeros(env.num_envs, device=env.device)
