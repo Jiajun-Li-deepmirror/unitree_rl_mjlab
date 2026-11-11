@@ -2,9 +2,15 @@
 2026-11-11; the user: "一个训练跑完全部课程，不再分 T/M/P ... 地形难度、指令范围、负载、随机化强度，都按表现自动升级，楼梯份额也由
 课程控制").
 
-`progress` measures one number p in [0, 1] from the terrain curriculum (mjlab's terrain levels, promoted by distance
-walked, demoted by falls and short walks): the mean level's rise from where the run started toward GOAL_LEVEL_FRAC
-of the levels, smoothed, never going back. Everything else reads env.u_progress:
+`progress` measures one number p in [0, 1], never going back, the larger of
+  - performance: the terrain curriculum's mean level (mjlab's terrain levels, promoted by distance walked, demoted by
+    falls and short walks), its rise from where the run started toward GOAL_LEVEL_FRAC of the levels, smoothed;
+  - a gated clock (2026-11-11, the user: "直接修改然后重新训练"): from TIME_START_IT it covers 0 -> 1 in TIME_SPAN_IT
+    iterations, at a quarter of the pace while more than MAX_FAIL_RATE of the episodes end in a fall or an illegal
+    contact (the blind recipe's staged clock, mdp.staged_clock). The terrain levels alone stalled the first Go2 teacher
+    at p 0.19 (mean level ~1 at 3000-4000 it: with 8% stairs and many stand / march / spin commands few robots walk the
+    3 m a promotion needs; the blind T sits there too), and the stairs share only rises from p 0.3.
+Everything else reads env.u_progress:
 
   stairs share     TEACHER_SHARE until p 0.3, then up to the robot's final share by p 0.8 (mdp.stairs_share's
                    column draw, with p in place of the training step)
@@ -27,6 +33,8 @@ if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
 GOAL_LEVEL_FRAC = 0.5   # p = 1 when the mean level is here (robots past the top level are sent back to random rows)
+TIME_START_IT, TIME_SPAN_IT, MAX_FAIL_RATE = 1500, 10000, 0.3
+STEPS_PER_IT = 24   # the runners' num_steps_per_env
 
 
 def ramp(p: float, a: float, b: float) -> float:
@@ -45,6 +53,8 @@ class progress:
     self.level = None        # smoothed mean level
     self.level0 = None       # where the run started
     self.last_step = None
+    self.clock = None        # the gated clock (env steps)
+    self.fail = None         # smoothed share of resets that ended in a fall / illegal contact
     env.u_progress = 0.0
     env.u_progress_term = self   # the runner saves and restores it
 
@@ -52,19 +62,35 @@ class progress:
     pass
 
   def state(self) -> dict:
-    return {"p": self.p, "level": self.level, "level0": self.level0}
+    return {"p": self.p, "level": self.level, "level0": self.level0, "clock": self.clock, "fail": self.fail}
 
   def load(self, state: dict, env: ManagerBasedRlEnv) -> None:
     self.p, self.level, self.level0 = state["p"], state["level"], state["level0"]
+    # a checkpoint from before the clock: it starts at the restored step count
+    self.clock = state.get("clock") if state.get("clock") is not None else float(env.common_step_counter)
+    self.fail = state.get("fail")
+    self.last_step = env.common_step_counter
     env.u_progress = self.p
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, ema_steps: float = 2000.0,
-               skip_steps: int = 2400, force_rate: float = 0.0) -> dict[str, torch.Tensor]:
-    del env_ids
+               skip_steps: int = 2400, force_rate: float = 0.0, time_start_it: int = TIME_START_IT,
+               time_span_it: int = TIME_SPAN_IT, max_fail_rate: float = MAX_FAIL_RATE) -> dict[str, torch.Tensor]:
     terrain = env.scene.terrain
     assert terrain is not None
     mean = float(terrain.terrain_levels.float().mean())
     step = env.common_step_counter
+    # the gated clock: the resets now, how many ended in a fall or illegal contact (not a time-out)
+    if env_ids is not None and len(env_ids) > 0:
+      tm = env.termination_manager
+      failed = float((tm.terminated[env_ids] & ~tm.time_outs[env_ids]).float().mean())
+      self.fail = failed if self.fail is None else self.fail + 0.01 * (failed - self.fail)
+    if self.clock is None or self.last_step is None:
+      self.clock = float(step)
+    else:
+      d = max(0, step - self.last_step)
+      self.clock += d * (0.25 if (self.fail or 0.0) > max_fail_rate else 1.0)
+    self.last_step = step
+    p_time = ramp(self.clock / STEPS_PER_IT, time_start_it, time_start_it + time_span_it)
     if step >= skip_steps:   # every robot resets at the start; the first levels say nothing yet
       if self.level is None:
         self.level = self.level0 = mean
@@ -74,10 +100,12 @@ class progress:
       goal = GOAL_LEVEL_FRAC * float(terrain.max_terrain_level)
       if goal > self.level0:
         self.p = max(self.p, min(1.0, (self.level - self.level0) / (goal - self.level0)))
+      self.p = max(self.p, p_time)
     if force_rate > 0.0:   # smoke runs only: progress per env step regardless of the levels
       self.p = min(1.0, max(self.p, step * force_rate))
     env.u_progress = self.p
-    return {"p": torch.tensor(self.p), "level": torch.tensor(mean)}
+    return {"p": torch.tensor(self.p), "level": torch.tensor(mean), "p_time": torch.tensor(p_time),
+            "fail_rate": torch.tensor(self.fail or 0.0)}
 
 
 def progress_stairs_share(

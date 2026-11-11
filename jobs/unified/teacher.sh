@@ -10,6 +10,8 @@
 # training; the first to pass is the pick: logs/jobs/unified_<r>_<variant>.pick (checkpoint path), the other seeds
 # are stopped (KEEP_OTHERS=1 lets them run on). Smoke: U_SMOKE=1 (few iterations, every switch-on forced).
 # Log logs/jobs/unified_<r>.txt; runs logs/rsl_rl/<r>_u_teacher/<date>_u<variant>_s<seed>.
+# RESUME_RUN (a run dir) + RESUME_K: every seed resumes from that run's model_K (the runner restores the curriculum's
+# progress, multipliers and meter; 2026-11-11, after the progress clock was added); for one seed.
 set -u
 R=$1 VARIANT=${2:-full} SEEDS=${3:-0 1} ITERS=${4:-30000}
 r=${R,,}
@@ -22,12 +24,14 @@ mkdir -p logs/jobs
 log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; }
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
-log "seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null)"
+log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null)"
 declare -A PID RUN
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
+  local res=""
+  [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$"
   $PY scripts/train.py $TASK --env.scene.num-envs=$ENVS --agent.run-name=$name --agent.seed=$s \
-    --agent.max-iterations=$ITERS > logs/jobs/unified_${r}_$name.log 2>&1 &
+    --agent.max-iterations=$ITERS $res > logs/jobs/unified_${r}_$name.log 2>&1 &
   PID[$s]=$!
   for _ in $(seq 80); do RUN[$s]=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1); [ -n "${RUN[$s]}" ] && break; sleep 15; done
   log "seed $s started (pid ${PID[$s]}, run ${RUN[$s]:-none yet})"
