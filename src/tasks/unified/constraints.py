@@ -28,7 +28,7 @@ import torch
 
 from src.tasks.velocity.mdp.constraints import METRICS
 
-from .curriculum import ramp
+from .curriculum import MAX_FAIL_RATE, ramp
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -343,18 +343,29 @@ class constraints:
         n = self.count[name] = self.count.get(name, 0) + 1
         a = max(alpha, 1.0 / n)
         self.value[name] = v if n == 1 else self.value[name] + a * (v - self.value[name])
+    # The task first (2026-11-12): while more than MAX_FAIL_RATE of the episodes end in a fall or an illegal contact
+    # (curriculum.progress's fail rate), no multiplier grows and those above 1 relax toward it by lr per update. The
+    # Go2W teacher v2 had six at the 3x cap (drift, creep, march, wheels down) while it could not meet them; its action
+    # std rose 0.75 -> 1.08, its falls 26% -> 65% and its terrain level 2.5 -> 0.6. The progress clock slows the same
+    # way (curriculum.py).
+    fail = getattr(getattr(env, "u_progress_term", None), "fail", None) or 0.0
+    failing = fail > MAX_FAIL_RATE
     if not frozen and step - self.last_update >= update_steps:   # frozen: the students keep the teacher's final scales
       self.last_update = step
       for c in items:
         name = c["name"]
         if not c.get("enforce", True) or p < c["activate"] or self.count.get(name, 0) < warmup:
           continue
+        if failing:
+          if self.scale[name] > 1.0:
+            self.scale[name] = max(1.0, self.scale[name] - c["lr"])
+          continue
         tgt = self.target(c, p)
         norm = max(abs(tgt), 1e-6)
         short = (tgt - self.value[name]) / norm if c["sense"] == "min" else (self.value[name] - tgt) / norm
         self.scale[name] = min(max(self.scale[name] + c["lr"] * short, c.get("min_scale", 0.5)), c["max_scale"])
     self._apply(env, items, p)
-    out = {}
+    out = {"relaxing": torch.tensor(float(failing))}
     for c in items:
       name = c["name"]
       if name in self.value:
