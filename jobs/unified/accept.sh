@@ -30,9 +30,16 @@ else
   [ -n "$last" ] || { log "no checkpoints in $RUN"; exit 2; }
   KS="$last $(seq $(( (last / 500) * 500 )) -500 1000 | grep -vx $last | tr '\n' ' ')"
 fi
-run() {   # OUT CMD...: one test, retried once (a tool fault is not a result)
-  local out=$1; shift
-  "$@" > $out 2>&1 || "$@" > $out 2>&1 || log "TOOL FAULT: $(basename $out): $(grep -E 'Error' $out | tail -n 1 | cut -c1-160)"
+run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait 5 min and retry, up to 6 times; any
+  # other failure: retried once. A tool fault is not a result: logged, and the judge reports the test as not measured.
+  local out=$1 i; shift
+  for i in 1 2 3 4 5 6 7; do
+    "$@" > $out 2>&1 && return 0
+    grep -qiE "out of memory|CUDA error 2" $out || break
+    [ $i -lt 7 ] && sleep 300
+  done
+  "$@" > $out 2>&1 && return 0
+  log "TOOL FAULT: $(basename $out): $(grep -E 'Error' $out | tail -n 1 | cut -c1-160)"
 }
 for k in $KS; do
   CK=$RUN/model_$k.pt
