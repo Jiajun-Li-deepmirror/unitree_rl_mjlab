@@ -187,6 +187,19 @@ if [[ $R == *W ]]; then  # wheeled: all four wheels down driving forward / backw
   evalrun ${P}_gait.txt $RS $S/gait_fb.py --task $TF $CK --envs-per-cmd 32 &
   pids="$pids $!"; ser
 fi
+# The loaded runs of the same tests (2026-11-11, the user: "带负载的同一组考题（12 kg 下的蠕动、踏步漂移、跑偏、交替原地转）
+# 只测量、写进报告，不参与通过与否"): drift, alternating turns, stop creep, march at the payload limit, into *_pay.txt;
+# scripts/blind/acceptance/payload_gap.py reports them beside the unloaded runs. Never judged (FE_PAY_INFO=0: skipped).
+if [ "${FE_PAY_INFO:-1}" = 1 ]; then
+  evalrun ${P}_drift3_pay.txt $RS $S/drift_all.py --task $TF $CK $DRIFTA --payload $LPAY &
+  pids="$pids $!"; ser
+  evalrun ${P}_spinalt_pay.txt $RS $S/spin_alt.py --task $TF $CK $(echo $DRIFTA | grep -o -- "--yaw-accel [0-9.]*") --payload $LPAY &
+  pids="$pids $!"; ser
+  evalrun ${P}_stand_pay.txt $RS $S/eval_standing.py --task $TF $CK $STANDA --payload $LPAY &
+  pids="$pids $!"; ser
+  evalrun ${P}_march_pay.txt $RS $S/march_eval.py --task $TF $CK --payload $LPAY &
+  pids="$pids $!"; ser
+fi
 fi   # the flat part
 wait $pids
 v=$(FE_PASS_SKIP=$({ [ $FLAT = 1 ] && echo ${FE_FLAT_SKIP:-g_stairs,g_drift}; } || { [ $PART = flat ] && echo g_stairs; }) $PY jobs/fe_pass.py $R $P 2>&1 | tail -n 1)
@@ -201,4 +214,6 @@ if [ $KIND = student ] && [ $PART != flat ]; then
   fi
 fi
 echo "$v" > ${P}_verdict.txt
+# the unloaded / loaded readings side by side (informational; payload_gap.py)
+[ $PART != stairs ] && [ "${FE_PAY_INFO:-1}" = 1 ] && $PY scripts/blind/acceptance/payload_gap.py $R $P > ${P}_payload_gap.txt 2>&1
 echo "$(date '+%m-%d %T') $KIND $R $CK s$SEED ($(( $(date +%s) - t0 )) s): noop $(mean_reached ${P}_noop.txt) op $(mean_reached ${P}_op.txt)$edge | $(grep failed ${P}_am.txt) | $(tail -n 1 ${P}_stairs.txt) | $(tail -n 1 ${P}_clock.txt) | $v" >> $O/checks.out
