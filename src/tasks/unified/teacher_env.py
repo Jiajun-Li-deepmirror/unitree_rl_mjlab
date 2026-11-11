@@ -164,13 +164,14 @@ def scan_flag(env) -> torch.Tensor:
   return on[:, None]
 
 
-def u_scan_mask(env, env_ids, share: float = SCAN_MASK_SHARE) -> None:
-  """Reset event: each episode is seen (1) or blind (0); U_SCAN=on / off fixes it (evaluations, students)."""
+def u_scan_mask(env, env_ids, share: float = SCAN_MASK_SHARE, mode: str | None = None) -> None:
+  """Reset event: each episode is seen (1) or blind (0). mode "on" / "off" (the students' tasks) or U_SCAN=on / off
+  (evaluations) fixes it; else a share of the episodes is blind."""
   if getattr(env, "u_scan_on", None) is None:
     env.u_scan_on = torch.ones(env.num_envs, device=env.device)
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)
-  mode = os.environ.get("U_SCAN", "mix")
+  mode = mode or os.environ.get("U_SCAN", "mix")
   if mode == "on":
     v = torch.ones(len(env_ids), device=env.device)
   elif mode == "off":
@@ -292,7 +293,10 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   cfg.curriculum = new
 
 
-def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = False) -> ManagerBasedRlEnvCfg:
+def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = False,
+                            student: str | None = None) -> ManagerBasedRlEnvCfg:
+  """student "blind" / "depth" (students.py): the teacher's environment with the scan fixed off / on, the curriculum
+  at its end (progress 1) and the constraint scales frozen at the teacher's (restored from its checkpoint)."""
   cfg = base_env_cfg(robot, play=play)
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
   _add_privileged(cfg)
@@ -302,4 +306,9 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
   constrained, other = _rewards(cfg, robot.kind, items, lean)
   if not play:
     _curriculum(cfg, robot, items, constrained, other if lean else [])
+  if student is not None:
+    cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
+    if "u_progress" in cfg.curriculum:
+      cfg.curriculum["u_progress"].params["fixed_p"] = 1.0
+      cfg.curriculum["u_constraints"].params["frozen"] = True
   return cfg

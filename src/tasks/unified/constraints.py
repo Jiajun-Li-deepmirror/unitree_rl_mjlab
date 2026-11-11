@@ -320,7 +320,8 @@ class constraints:
     return c["loose"] + (c["target"] - c["loose"]) * k
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, items: list[dict], ema_steps: float = 1000.0,
-               update_steps: int = 24, skip_steps: int = 2400, warmup: int = 240) -> dict[str, torch.Tensor]:
+               update_steps: int = 24, skip_steps: int = 2400, warmup: int = 240,
+               frozen: bool = False) -> dict[str, torch.Tensor]:
     del env_ids
     step = env.common_step_counter
     p = getattr(env, "u_progress", 0.0)
@@ -342,7 +343,7 @@ class constraints:
         n = self.count[name] = self.count.get(name, 0) + 1
         a = max(alpha, 1.0 / n)
         self.value[name] = v if n == 1 else self.value[name] + a * (v - self.value[name])
-    if step - self.last_update >= update_steps:
+    if not frozen and step - self.last_update >= update_steps:   # frozen: the students keep the teacher's final scales
       self.last_update = step
       for c in items:
         name = c["name"]

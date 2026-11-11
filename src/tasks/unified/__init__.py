@@ -42,6 +42,25 @@ def _register() -> None:
         rl_cfg=rl_cfg,
         runner_cls=UnifiedTeacherRunner,
       )
+    # the students (students.py, 2026-11-12): stage 1 DAgger, stage 2 PPO + behavior cloning
+    from . import students as us
+
+    for kind in ("blind", "depth"):
+      name = kind.capitalize()
+      register_mjlab_task(
+        task_id=f"Unitree-{robot.name}-U-Student-{name}",
+        env_cfg=us.student_env_cfg(robot, kind),
+        play_env_cfg=us.student_env_cfg(robot, kind, play=True),
+        rl_cfg=us.distill_runner_cfg(robot, kind),
+        runner_cls=us.UStudentDistillationRunner,
+      )
+      register_mjlab_task(
+        task_id=f"Unitree-{robot.name}-U-Student-{name}-RL",
+        env_cfg=us.student_env_cfg(robot, kind),
+        play_env_cfg=us.student_env_cfg(robot, kind, play=True),
+        rl_cfg=us.ppo_runner_cfg(robot, kind, clip_actions=PHASE_CLIP_ACTIONS),
+        runner_cls=us.UStudentPpoRunner,
+      )
 
 
 

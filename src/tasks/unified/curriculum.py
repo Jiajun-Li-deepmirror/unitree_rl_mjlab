@@ -74,7 +74,8 @@ class progress:
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, ema_steps: float = 2000.0,
                skip_steps: int = 2400, force_rate: float = 0.0, time_start_it: int = TIME_START_IT,
-               time_span_it: int = TIME_SPAN_IT, max_fail_rate: float = MAX_FAIL_RATE) -> dict[str, torch.Tensor]:
+               time_span_it: int = TIME_SPAN_IT, max_fail_rate: float = MAX_FAIL_RATE,
+               fixed_p: float | None = None) -> dict[str, torch.Tensor]:
     terrain = env.scene.terrain
     assert terrain is not None
     mean = float(terrain.terrain_levels.float().mean())
@@ -103,6 +104,8 @@ class progress:
       self.p = max(self.p, p_time)
     if force_rate > 0.0:   # smoke runs only: progress per env step regardless of the levels
       self.p = min(1.0, max(self.p, step * force_rate))
+    if fixed_p is not None:   # the students (2026-11-12): the teacher's final curriculum, all the way
+      self.p = float(fixed_p)
     env.u_progress = self.p
     return {"p": torch.tensor(self.p), "level": torch.tensor(mean), "p_time": torch.tensor(p_time),
             "fail_rate": torch.tensor(self.fail or 0.0)}
