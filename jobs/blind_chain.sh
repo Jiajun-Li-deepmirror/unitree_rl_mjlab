@@ -7,8 +7,8 @@
 #   T  Unitree-<R>-Blind-Teacher from zero, <= 5000 it; flat goals only, drift not judged (FE_CHECK_FLAT=1) every 500
 #      from 2000;
 #      payload ramped in over the first 3000 it
-#   M  Unitree-<R>-Blind-Mixed from T's pick (BLIND_PHASE_START_IT = its iteration), stairs 8 -> 65% over 3000 it,
-#      <= +5000; the whole acceptance every 500 from +3000. Not anchored (BLIND_ANCHOR_COEFF=0, go2-home's recipe; the
+#   M  Unitree-<R>-Blind-Mixed from T's pick (BLIND_PHASE_START_IT = its iteration), stairs 8 -> 50% (stairs50; 65%
+#      without it) over 3000 it, <= +BL_M_ITERS; the whole acceptance every 500 from +3000. Not anchored (BLIND_ANCHOR_COEFF=0, go2-home's recipe; the
 #      runner still gets T's pick as BLIND_ANCHOR_CHECKPOINT). Go2W climbs late: 0% up at +2000 / +3000 is normal there
 #      (go2-home: onset ~3000-4000 it into mixed), so judge M by wheel_riser_lift / foothold_height_gain, not one check.
 #   P  Unitree-<R>-Blind-Polish from M's pick, <= +2000, not anchored either; the whole acceptance on seeds 0 1 2 every
@@ -295,7 +295,8 @@ log "$R blind P PICK $P"
 echo "P $P $(new_run bl2P_$TAG)" >> $PF
 OUT=logs/pkg/${r}_bl2_${TAG}_$PK
 mkdir -p $OUT
-cp $P $OUT/model_$PK.pt && { cp -r $(new_run bl2P_$TAG)/params $OUT/ 2> /dev/null || cp -r $V2_PKG/params $OUT/ 2> /dev/null; }
+# the P run's own params (2026-11-11: no fall-back to an older package's params, whose recipe is not this one)
+cp $P $OUT/model_$PK.pt && cp -r $(new_run bl2P_$TAG)/params $OUT/ || { fault "no params/ in $(new_run bl2P_$TAG) for the package"; exit 4; }
 echo "$BLIND_PILOT" | sed 's/^,//' > $OUT/blind_pilot.txt
 echo "${BLIND_PARAMS:-}" > $OUT/blind_params.txt   # the robot's physical parameters (jobs/recipes/unified.py), for the depth rounds
 md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5

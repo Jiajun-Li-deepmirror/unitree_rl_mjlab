@@ -1,7 +1,11 @@
 """luck_pass.py R PREFIX (go2-depth 2026-11-10, doc/acceptance.md, the user: "运气通过规则化"): whether a failed seed's check
 may pass by the luck rule. ELIGIBLE when every failed goal fails on falls alone and exactly one robot fell over all the
-judged tests (flat matrix, drift, stops, alternating turns, loaded stand, stairs); else NO <why>. The chains then need the
-other seeds to pass (one luck seed per check) and log the luck pass."""
+tests (doc/acceptance.md §1: "所有测试合计只摔了 1 台"): the flat matrix, drift, stops, alternating turns, the loaded
+stand (after its LOADSTAND_SETTLE, as its own goal), the march and its reset, the stop-then-move, the four-wheels-down
+drives, and the stairs; else NO <why>. The chains then need the other seeds to pass (one luck seed per check) and log
+the luck pass. (2026-11-11: the loaded stand, march, stop-then-move and wheels-down falls are counted too; the code had
+counted the first five only, its docstring had named the loaded stand.)"""
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +32,17 @@ n += a["falls"] if a else 0
 n += sum(v["fell"] for v in at.drift_vals(p).values())
 n += sum(v["fell"] for v in at.stand_vals(p).values())
 n += sum(v["fell"] for v in (at.spinalt_vals(p) or {}).values())
+# the loaded stand: falls after the settle (accept_tables' g_loadstand rule)
+m = re.search(r"falls (\d+)/(\d+) at t \[([^\]]*)\]", at.txt(p.get("loadstand")) or "")
+if m:
+  ts = [float(t) for t in m.group(3).split(",") if t.strip()]
+  n += sum(1 for t in ts if t >= at.LOADSTAND_SETTLE) + max(0, int(m.group(1)) - len(ts))
+n += sum(v["fell"] for v in (at.march_vals(p) or {}).values())
+rv = at.reset_vals(p)
+n += rv["fell"] if rv else 0
+nl = at.nolift_vals(p)
+n += nl["fell"] if nl else 0
+n += sum(int(x) for x in re.findall(r"\| (\d+)/\d+\s*$", at.txt(p.get("stopmove")) or "", re.M))
 st = at.stop_row(p)
 if st and st.split("|")[1].strip() != "0%":
   n += 1   # stairs falls come as a share of the runs: one incident at least

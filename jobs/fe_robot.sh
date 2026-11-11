@@ -36,7 +36,7 @@ esac
 # Payload (pilot payload, 2026-11-05; the user: up to the Unitree documented limits, a wide payload CoM): max kg, the
 # payload point's range in the base frame (+-x, +-y, 0..z m). unitree.com: Go2 / Go2-W MAX ~12 kg, B2 / B2-W walking load
 # > 40 kg (standing 120 kg, not used for walking). As2 / As2W: no official figure found (our models 20.7 / 26.0 kg, not
-# the A2's 37 kg): about half their weight until the user gives one. BLIND_WALL_STOP (pilot endwall): base centre to
+# the A2's 37 kg): about half their weight, the user's choice (2026-11-11: "按约一半体重定（10 kg / 13 kg）"). BLIND_WALL_STOP (pilot endwall): base centre to
 # the wall where the forward command reaches zero (half-length + ~0.5 m).
 case $1 in
   Go2|Go2W) export BLIND_PAYLOAD=max=12,x=0.15,y=0.08,z=0.20${PAYLOAD_RAMP:+,ramp=$PAYLOAD_RAMP} BLIND_WALL_STOP=0.85 BLIND_FOOT_R=0.022 ;;
