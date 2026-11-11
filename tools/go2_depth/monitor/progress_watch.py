@@ -34,8 +34,8 @@ IDLE_UTIL, IDLE_MIB = 10, 3000
 # name -> (port, training log, chain log, kind)
 WATCH = {
   "t1 unified Go2": ("30714", "logs/jobs/unified_go2_ufull_s0.log", "logs/jobs/unified_go2.txt", "unified"),
-  # 11-11 21:0x: gp2's training ended; t2 runs avg13700's checks by hand (no training: checks only)
-  "t2 gp2 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp2.log", "logs/jobs/blind_go2_gp2.txt", "checks"),
+  # 11-11 21:2x: gp3 (from gp2 model_13700 + stairstand4,standlong) trains on t2
+  "t2 gp3 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp3.log", "logs/jobs/blind_go2_gp3.txt", "blind"),
 }
 
 
