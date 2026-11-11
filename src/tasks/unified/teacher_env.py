@@ -75,9 +75,10 @@ def constraint_items(kind: str) -> list[dict]:
       stat="p90"),
     c("back_drift", "back_drift", "max", 0.03, 0.1, 0.15, ["side_drift"],
       {"term": "side_drift", "settled": True, "min_abs_vy": 0.45, "max_payload": 3.0}),
-    c("creep", "stand_hold", "max", 0.008, 0.03, 0.15, ["standing_position_hold", "standing_speed"],
+    # creep and march over the light robots only (<= 3 kg, as the acceptance's unloaded tests; 2026-11-11)
+    c("creep", "u_stand_hold_light", "max", 0.008, 0.03, 0.15, ["standing_position_hold", "standing_speed"],
       {"term": "standing_position_hold"}, stat="p90"),
-    c("march", "stand_hold", "max", 0.04, 0.15, 0.15, ["march_position_hold", "march_hip_default"],
+    c("march", "u_stand_hold_light", "max", 0.04, 0.15, 0.15, ["march_position_hold", "march_hip_default"],
       {"term": "march_position_hold"}, stat="p90"),
     c("spin", "spin_hold", "max", 0.05, 0.15, 0.15, ["spin_position_hold"]),
     # stairs, from progress 0.5 (stairs share rising), at 0.25 of their weight before

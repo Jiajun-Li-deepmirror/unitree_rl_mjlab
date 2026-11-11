@@ -28,17 +28,24 @@ log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $
 declare -A PID RUN
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
-  local res=""
+  local res="" before
   [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$"
+  # the run dirs of this name already there (a resume's source among them): the new run is the one that appears after
+  before=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
   $PY scripts/train.py $TASK --env.scene.num-envs=$ENVS --agent.run-name=$name --agent.seed=$s \
     --agent.max-iterations=$ITERS $res > logs/jobs/unified_${r}_$name.log 2>&1 &
   PID[$s]=$!
-  for _ in $(seq 80); do RUN[$s]=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1); [ -n "${RUN[$s]}" ] && break; sleep 15; done
+  RUN[$s]=""
+  for _ in $(seq 80); do
+    d=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
+    [ -n "$d" ] && [ "$d" != "$before" ] && { RUN[$s]=$d; break; }
+    sleep 15
+  done
   log "seed $s started (pid ${PID[$s]}, run ${RUN[$s]:-none yet})"
 }
 gate() {    # SEED -> 0 when it passed (writes the pick)
   local s=$1 v
-  [ -n "${RUN[$s]:-}" ] || RUN[$s]=$(ls -d logs/rsl_rl/${r}_u_teacher/*_u${VARIANT}_s$s 2> /dev/null | sort | tail -n 1)
+  [ -n "${RUN[$s]:-}" ] || RUN[$s]=$(ls -d logs/rsl_rl/${r}_u_teacher/*_u${VARIANT}_s$s 2> /dev/null | sort | tail -n 1)   # the newest
   [ -n "${RUN[$s]:-}" ] || return 1
   v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} 2> /dev/null | head -n 1)
   log "seed $s: ${v:-no verdict}"

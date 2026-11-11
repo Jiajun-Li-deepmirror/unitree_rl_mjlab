@@ -115,7 +115,20 @@ def _stairs_roll(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
   return roll, env.command_manager.get_term("twist").is_stair_env & moving
 
 
-CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll}
+def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hold",
+                      max_payload: float = 3.0) -> tuple[torch.Tensor, torch.Tensor]:
+  """mdp.constraints' stand_hold (distance from the locked hold anchor) over the robots carrying at most max_payload kg:
+  the acceptance's stop-creep and march tests carry none (2026-11-11: over all robots, the heavy half of the payload
+  randomization held the first Go2 teacher's creep at 3.5 cm p90 with its multiplier at the 3x cap; as back_drift's
+  max_payload)."""
+  value, mask = METRICS["stand_hold"](env, term=term)
+  kg = getattr(env, "payload_kg", None)
+  if kg is not None:
+    mask = mask & (kg <= max_payload)
+  return value, mask
+
+
+CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light}
 
 
 def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -> float | None:
