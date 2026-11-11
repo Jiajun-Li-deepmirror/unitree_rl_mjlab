@@ -96,10 +96,11 @@ evalrun() {  # OUT CMD...
 # CHAIN_SMOKE=1 (2026-11-11, jobs/smoke_chain.sh): a map3 run without the operator (4 robots, one shard) and the flat
 # matrix (one robot per command) start and finish on this checkpoint; the verdict is PASS, or a judge error when one of
 # them broke (blind_chain / fe_chain count that as a tool fault).
+SPART=${FE_CHECK_PART:-all}; [ "${FE_CHECK_FLAT:-0}" = 1 ] && SPART=flat
 if [ "${CHAIN_SMOKE:-0}" = 1 ]; then
-  if $W $S/map3_par.py --out ${P}_noop.txt --shards 1 -- --task $TE $CK --set flights --no-operator --down-vx 0.5 --num-envs 4 \
-       --time-scale 1.6 --seed $SEED $SCAN > ${P}_noop.log 2>&1 \
-     && $RS $S/accept_matrix.py --task $TF --envs-per-cmd 1 $CK $AMA > ${P}_am.txt 2>&1; then v=PASS
+  if { [ $SPART = flat ] || $W $S/map3_par.py --out ${P}_noop.txt --shards 1 -- --task $TE $CK --set flights --no-operator --down-vx 0.5 --num-envs 4 \
+       --time-scale 1.6 --seed $SEED $SCAN > ${P}_noop.log 2>&1; } \
+     && { [ $SPART = stairs ] || $RS $S/accept_matrix.py --task $TF --envs-per-cmd 1 $CK $AMA > ${P}_am.txt 2>&1; }; then v=PASS
   else v="FAIL: judge error: smoke evaluation ($(tail -n 1 ${P}_noop.log ${P}_am.txt 2> /dev/null | tr '\n' ' ' | cut -c1-200))"; fi
   echo "$v" > ${P}_verdict.txt
   echo "$(date '+%m-%d %T') SMOKE $KIND $R $CK s$SEED: noop $(mean_reached ${P}_noop.txt) | $v" >> $O/checks.out
@@ -120,11 +121,17 @@ map3() {  # OUT TASK OPERATOR(op|noop)
 # at 3000 with sideways creep 5.5% (bar 5%); the phase only decides when stairs start, and the mixed / polish
 # phases and tinynav judge drift at the full bar on every seed (go2-home's drift guards are polish-stage terms).
 FLAT=${FE_CHECK_FLAT:-0}
-if [ $FLAT = 0 ]; then
+# FE_CHECK_PART (2026-11-11, the user: "检查分两档（先快速筛查，过了再跑 map3、3 个种子和 tinynav）"): flat = the flat
+# evaluations only (~5 min beside a training; map3 and eval_stairs not run, g_stairs not judged), stairs = map3 and
+# eval_stairs only, then the whole judgement over both parts' files (this PREFIX's flat part must have run), all =
+# both at once (default). FE_CHECK_FLAT=1 is flat with drift not judged either (the T phase).
+PART=${FE_CHECK_PART:-all}
+[ $FLAT = 1 ] && PART=flat
+if [ $PART != flat ]; then
 map3 ${P}_noop $TE noop
 map3 ${P}_op $TE op
 fi
-if [ $KIND = student ]; then
+if [ $KIND = student ] && [ $PART != flat ]; then
   map3 ${P}_noopedge $TE-RealEdge noop
   map3 ${P}_opedge $TE-RealEdge op
 fi
@@ -133,7 +140,7 @@ wait $pids; pids=""
 # repeated once on its own, and a run still short of 18 scenarios voids the check.
 complete() { [ "$(grep -c 'reached=' $1.txt 2>/dev/null)" -ge 18 ]; }
 short=""
-for run in $([ $FLAT = 0 ] && echo noop:$TE:noop op:$TE:op) $([ $KIND = student ] && echo noopedge:$TE-RealEdge:noop opedge:$TE-RealEdge:op); do
+for run in $([ $PART != flat ] && echo noop:$TE:noop op:$TE:op) $([ $KIND = student ] && [ $PART != flat ] && echo noopedge:$TE-RealEdge:noop opedge:$TE-RealEdge:op); do
   IFS=: read -r tag task mode <<< "$run"
   if ! complete ${P}_$tag; then
     echo "$(date '+%m-%d %T') $KIND $R $CK s$SEED: map3 $tag incomplete ($(grep -c 'reached=' ${P}_$tag.txt 2>/dev/null)/18), repeated" >> $O/checks.out
@@ -141,12 +148,15 @@ for run in $([ $FLAT = 0 ] && echo noop:$TE:noop op:$TE:op) $([ $KIND = student 
     complete ${P}_$tag || short="$short $tag"
   fi
 done
+if [ $PART != stairs ]; then
 evalrun ${P}_am.txt $RS $S/accept_matrix.py --task $TF --envs-per-cmd 32 $CK $AMA &
 pids="$pids $!"; ser
-if [ $FLAT = 0 ]; then
+fi
+if [ $PART != flat ]; then
 evalrun ${P}_stairs.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --seed $SEED &
 pids="$pids $!"; ser
 fi
+if [ $PART != stairs ]; then
 evalrun ${P}_drift3.txt $RS $S/drift_all.py --task $TF $CK $DRIFTA &
 pids="$pids $!"; ser
 # turning in place left / right in turn (go2-depth 2026-11-06, the user: "左右交替转多次后的累积位移"; g_spinalt), the yaw
@@ -162,8 +172,9 @@ case $R in Go2|Go2W) LPAY=12,0.15,0,0.20 ;; As2) LPAY=10,0.15,0,0.20 ;; As2W) LP
 # --handover (zero actions = the policy's own PD at the default stance) is NOT used: those gains are far softer than
 # the robot's FixStand (Go2W kp 60 / 80) and 89 / 256 Go2W fell while held with 12 kg.
 evalrun ${P}_loadstand.txt $RS $S/long_stand.py --task $TF $CK --seconds 60 --payload $LPAY &
+pids="$pids $!"   # waited for like the rest (2026-11-11: it was not, and the judge could read it unfinished)
 # Stop then move at the payload limit (2026-11-09, the user: in the Go2W 12 kg flat video the legs stood wrong after the
-# stop from 1.5 m/s and the next moves nearly fell): recorded, not judged yet (stop_then_move.py).
+# stop from 1.5 m/s and the next moves nearly fell): judged since 11-10 (g_posture, doc/acceptance.md).
 evalrun ${P}_stopmove.txt $RS $S/stop_then_move.py --task $TF $CK --payload $LPAY &
 pids="$pids $!"; ser
 wait $pids; pids=""
@@ -175,12 +186,13 @@ if [[ $R == *W ]]; then  # wheeled: all four wheels down driving forward / backw
   evalrun ${P}_gait.txt $RS $S/gait_fb.py --task $TF $CK --envs-per-cmd 32 &
   pids="$pids $!"; ser
 fi
+fi   # the flat part
 wait $pids
-v=$(FE_PASS_SKIP=$([ $FLAT = 1 ] && echo ${FE_FLAT_SKIP:-g_stairs,g_drift}) $PY jobs/fe_pass.py $R $P 2>&1 | tail -n 1)
+v=$(FE_PASS_SKIP=$({ [ $FLAT = 1 ] && echo ${FE_FLAT_SKIP:-g_stairs,g_drift}; } || { [ $PART = flat ] && echo g_stairs; }) $PY jobs/fe_pass.py $R $P 2>&1 | tail -n 1)
 [ -n "$short" ] && v="FAIL: INVALID: map3 incomplete:$short"
 [[ "$v" == PASS || "$v" == FAIL* ]] || v="FAIL: judge error: $v"
 edge=""
-if [ $KIND = student ]; then
+if [ $KIND = student ] && [ $PART != flat ]; then
   en=$(mean_reached ${P}_noopedge.txt) eo=$(mean_reached ${P}_opedge.txt)
   edge=" edge noop $en op $eo"
   if ! python3 -c "import sys; n,o=map(float,sys.argv[1:]); sys.exit(0 if n >= 90 and o >= 95 else 1)" $en $eo; then

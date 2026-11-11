@@ -123,6 +123,21 @@ widen_from() {
   fi
 }
 
+# check_part PART: one part of a check (jobs/fe_check.sh FE_CHECK_PART flat | stairs; T: FE_CHECK_FLAT) of phase()'s
+# checkpoint A at SEED into P; the verdict in v. No verdict, or one the judge could not reach (a run missing): the part
+# again, then a tool fault (returns 1).
+check_part() {
+  local i
+  for i in 1 2; do
+    FE_CHECK_FLAT=$([ $mode = flat ] && echo 1 || echo 0) FE_CHECK_PART=$1 bash jobs/fe_check.sh blind $R $A $SEED $P
+    v=$(cat ${P}_verdict.txt 2> /dev/null)
+    [ -z "$v" ] || [[ "$v" == *"judge error"* ]] || [[ "$v" == *INVALID* ]] || return 0
+    [ $i = 1 ] && log "$R $name avg$K s$SEED: no usable verdict from the $1 part (${v:-none}), checked again"
+  done
+  fault "$name avg$K s$SEED: the $1 part of the check gave no usable verdict twice (${v:-none})"
+  return 1
+}
+
 # phase NAME TASK RUN FROM_RUN FROM_K MAX_IT FIRST_CHECK MODE SEEDS -> PICK (avg checkpoint path) on stdout's last line
 phase() {
   local name=$1 task=$2 run=$3 frun=$4 fk=$5 maxit=$6 first=$7 mode=$8 seeds=$9
@@ -144,16 +159,17 @@ phase() {
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $rd $K) >> $L 2>&1 || cp $rd/model_$K.pt $A
     for SEED in $seeds; do
-      local P=$C/bl_${r}_${run}_avg${K}_s$SEED
-      FE_CHECK_FLAT=$([ $mode = flat ] && echo 1 || echo 0) bash jobs/fe_check.sh blind $R $A $SEED $P
-      local v=$(cat ${P}_verdict.txt 2> /dev/null)
-      # no verdict, or one the judge could not reach (a run missing): the check again, then a tool fault
-      if [ -z "$v" ] || [[ "$v" == *"judge error"* ]] || [[ "$v" == *INVALID* ]]; then
-        log "$R $name avg$K s$SEED: no usable verdict (${v:-none}), checked again"
-        FE_CHECK_FLAT=$([ $mode = flat ] && echo 1 || echo 0) bash jobs/fe_check.sh blind $R $A $SEED $P
-        v=$(cat ${P}_verdict.txt 2> /dev/null)
-        if [ -z "$v" ] || [[ "$v" == *"judge error"* ]] || [[ "$v" == *INVALID* ]]; then
-          fault "$name avg$K s$SEED: the check gave no usable verdict twice (${v:-none})"; ok=0; break 2
+      local P=$C/bl_${r}_${run}_avg${K}_s$SEED v=""
+      # Two parts (2026-11-11, the user: "检查分两档（先快速筛查，过了再跑 map3、3 个种子和 tinynav）"): the flat
+      # evaluations first (~5 min), map3 and eval_stairs (~12 min) only on a pass -- or on a flat miss of a single fall
+      # where several seeds decide (the luck rule judges the whole check). T's check is the flat part alone.
+      if [ $mode = flat ]; then
+        check_part flat || { ok=0; break 2; }
+      else
+        check_part flat || { ok=0; break 2; }
+        log "$R $name avg$K s$SEED (quick): $v"
+        if [[ "$v" == PASS ]] || { [ $(echo $seeds | wc -w) -gt 1 ] && [[ "$($PY jobs/luck_pass.py $R $P)" == ELIGIBLE* ]]; }; then
+          check_part stairs || { ok=0; break 2; }
         fi
       fi
       log "$R $name avg$K s$SEED ($mode): $v"

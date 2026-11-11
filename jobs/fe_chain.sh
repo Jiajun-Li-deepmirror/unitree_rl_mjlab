@@ -53,6 +53,24 @@ wait_free() { local n=0; until [ $n -ge 3 ]; do if [ $(free_mib) -ge $1 ]; then 
 # A check that did not finish (2026-11-02, t1: an evaluation out of GPU memory left its items "评测中" and the chain
 # took it for a FAIL) is run once more instead of judged.
 incomplete() { [[ -z "$1" || "$1" == *评测中* || "$1" == *INVALID* || "$1" == *"judge error"* ]]; }
+# two_part KIND CK SEED PREFIX (2026-11-11, the user: "检查分两档（先快速筛查，过了再跑 map3、3 个种子和 tinynav）"): the flat
+# part of jobs/fe_check.sh (FE_CHECK_PART=flat, ~5 min) first; map3 and eval_stairs (the stairs part, ~12 min) only
+# when it passes, or for a student on a flat miss of a single fall (the luck rule judges the whole check). A part that
+# comes back incomplete runs once more. The verdict ends in PREFIX_verdict.txt.
+two_part() {
+  local part v
+  for part in flat stairs; do
+    FE_CHECK_PART=$part bash jobs/fe_check.sh $1 $R $2 $3 $4
+    if incomplete "$(cat $4_verdict.txt 2> /dev/null)"; then
+      log "$R $1 $(basename $4): the $part part incomplete ($(cat $4_verdict.txt 2> /dev/null)), checked again"
+      FE_CHECK_PART=$part bash jobs/fe_check.sh $1 $R $2 $3 $4
+    fi
+    [ $part = flat ] || break
+    v=$(cat $4_verdict.txt 2> /dev/null)
+    log "$R $1 $(basename $4) (quick): $v"
+    [[ "$v" == PASS ]] || { [ $1 = student ] && [[ "$($PY jobs/luck_pass.py $R $4)" == ELIGIBLE* ]]; } || break
+  done
+}
 reached() { python3 -c "import re,sys; v=[float(x) for x in re.findall(r'reached=([0-9.]+)', open(sys.argv[1]).read())]; print(f'{100*sum(v)/len(v):.1f}' if v else 'nan')" $1; }
 wait_ck() {  # RUN_DIR K PID: until model_K.pt is saved (0) or the training has ended without it (1)
   until [ -f $1/model_$2.pt ]; do kill -0 $3 2> /dev/null || { sleep 5; [ -f $1/model_$2.pt ]; return; }; sleep 30; done
@@ -135,11 +153,7 @@ if [ ! -f $PK/${r}_teacher ]; then
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $RUN $K) >> $L 2>&1 || { log "$R teacher average $K failed"; continue; }
     P=$C/fe_${r}_teacher${TTAG}_avg$K
-    bash jobs/fe_check.sh teacher $R $A 0 $P
-    if incomplete "$(cat ${P}_verdict.txt 2> /dev/null)"; then
-      log "$R teacher avg$K: check incomplete ($(cat ${P}_verdict.txt 2> /dev/null)), checking again"
-      bash jobs/fe_check.sh teacher $R $A 0 $P
-    fi
+    two_part teacher $A 0 $P
     v=$(cat ${P}_verdict.txt) n=$(reached ${P}_noop.txt) o=$(reached ${P}_op.txt) sp=$($PY jobs/fe_margin.py $R $P)
     m=${sp##* }
     log "$R teacher avg$K: noop $n op $o speed up/down/margin $sp | $v"
@@ -257,11 +271,7 @@ for K in $KLIST; do
   ok=1 lucky=""
   for SEED in 0 1 2; do
     P=$C/fe_${r}_student_${SRUN#fe_edge_}_avg${K}_s$SEED
-    bash jobs/fe_check.sh student $R $A $SEED $P
-    if incomplete "$(cat ${P}_verdict.txt 2> /dev/null)"; then
-      log "$R student avg$K s$SEED: check incomplete ($(cat ${P}_verdict.txt 2> /dev/null)), checking again"
-      bash jobs/fe_check.sh student $R $A $SEED $P
-    fi
+    two_part student $A $SEED $P
     v=$(cat ${P}_verdict.txt)
     log "$R student avg$K s$SEED: noop $(reached ${P}_noop.txt) op $(reached ${P}_op.txt) edge noop $(reached ${P}_noopedge.txt) op $(reached ${P}_opedge.txt) speed up/down/margin $($PY jobs/fe_margin.py $R $P) | $v"
     if [[ "$v" != PASS ]]; then
