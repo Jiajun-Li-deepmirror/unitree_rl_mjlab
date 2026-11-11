@@ -11,13 +11,15 @@ with another run's reward scale. Offsets are from the run's first iteration (its
 200 iterations.
   share_lag   (M, P) stairs share behind its curriculum: W(share) / W(target) < 0.70 while W(target) >= 0.15.
               The curriculum only raises the share as robots finish stairs, so a lag means they do not climb.
-  climb_flat  (M) the climb reward did not grow: at +3000, W(wheel_riser_lift) (wheeled; foothold_height_gain legged)
-              < 2x its W at +500.
+  climb_flat  (M) the climb reward did not grow: W(wheel_riser_lift) (wheeled; foothold_height_gain legged) under
+              1.2x its W at +500 from +2000, under 2x from +3000. (+2000 added 11-11 on go2-home's replay of As2 rp3 M,
+              which only +3000 caught: Go2W rp3 0.95x / rp4 1.37x / B2 rp3 2.6x / rp4 3.3x at +2000. A terrain-level-drop
+              rule does not separate them: Go2W rp4, which climbed, dropped 0.86 levels in M, rp3 0.73.)
   reward_drop (T after +1000; M, P after +500) W(mean_reward) < 0.5x its best W since +500 (best > 5), unless the
               terrain level rose by 0.5 or more since that best (a harder curriculum lowers the reward).
   short_eps   (T after +1500; M, P after +500) W(mean_episode_length) < 0.5x its best W, the same terrain proviso.
-Set on the rp3 / rp4 runs (2026-11-11): Go2W rp3 M (never climbed) trips share_lag at about +1000 (share 0.11 of 0.22)
-and climb_flat at +3000; Go2W rp4 M and B2 rp4 T / M (climbed, passed) trip nothing; B2 rp3 M (its P later failed map3)
+Set on the rp3 / rp4 runs (2026-11-11): Go2W rp3 M (never climbed) trips share_lag at +600 (share 0.07 of 0.15)
+and climb_flat at +2000; Go2W rp4 M and B2 rp4 T / M (climbed, passed) trip nothing; B2 rp3 M (its P later failed map3)
 trips reward_drop (17 -> 8).
 """
 from __future__ import annotations
@@ -83,13 +85,14 @@ def rules(cv: dict, phase: str, s0: int, at: int) -> dict[str, str | None]:
         if sh is not None and tg is not None and tg >= 0.15:
             r["share_lag"] = (f"stairs share {sh:.3f} of the curriculum's {tg:.3f} ({sh / tg:.0%} < 70%): robots do not finish "
                               "the stairs") if sh / tg < 0.70 else None
-    if phase == "M" and off >= 3000:
+    if phase == "M" and off >= 2000:
         k = "riser" if "riser" in cv else "foothold"
+        need = 2.0 if off >= 3000 else 1.2
         if k in cv:
             a, b = wmean(cv[k], s0 + 500), wmean(cv[k], at)
             if a is not None and b is not None:
-                r["climb_flat"] = (f"{TAGS[k].split('/')[-1]} {b:.4f} at +{off}, {b / a if a > 0 else 0:.1f}x its +500 value "
-                                   f"{a:.4f} (< 2x): the climb is not being learned") if b < 2 * max(a, 1e-6) else None
+                r["climb_flat"] = (f"{TAGS[k].split('/')[-1]} {b:.4f} at +{off}, {b / a if a > 0 else 0:.2f}x its +500 value "
+                                   f"{a:.4f} (< {need}x): the climb is not being learned") if b < need * max(a, 1e-6) else None
     for k, name, start in (("reward", "reward_drop", 1000 if phase == "T" else 500),
                            ("eplen", "short_eps", 1500 if phase == "T" else 500)):
         if k in cv and off >= start + W:
