@@ -37,7 +37,7 @@ step $S/fe_$r.txt "stage-1 student" "STAGE-1 STUDENT"
 step $S/fe_$r.txt "stage-2 tinynav request" "student avg[0-9]+ tinynav"
 step $S/fe_$r.txt "student export" "STUDENT PICK"
 fi
-# the blind videos run beside the depth round (blind_videos.sh): wait for them (up to 40 min) before cleaning up
+# the blind videos run beside the depth round (jobs/accept_videos.sh): wait for them (up to 40 min) before cleaning up
 for i in $(seq 80); do pf=$(ls logs/pkg/${r}_bl2_${TAG}_*/videos.pid 2> /dev/null | head -n 1); [ -n "$pf" ] && kill -0 $(cat $pf) 2> /dev/null || break; sleep 30; done
 step $S/blind_$r.txt "blind videos" "BLIND VIDEOS"
 step $S/repro_$r.txt "tool faults" "TOOL FAULT"

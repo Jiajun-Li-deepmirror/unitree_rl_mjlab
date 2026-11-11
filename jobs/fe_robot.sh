@@ -38,12 +38,9 @@ esac
 # > 40 kg (standing 120 kg, not used for walking). As2 / As2W: no official figure found (our models 20.7 / 26.0 kg, not
 # the A2's 37 kg): about half their weight, the user's choice (2026-11-11: "按约一半体重定（10 kg / 13 kg）"). BLIND_WALL_STOP (pilot endwall): base centre to
 # the wall where the forward command reaches zero (half-length + ~0.5 m).
-case $1 in
-  Go2|Go2W) export BLIND_PAYLOAD=max=12,x=0.15,y=0.08,z=0.20${PAYLOAD_RAMP:+,ramp=$PAYLOAD_RAMP} BLIND_WALL_STOP=0.85 BLIND_FOOT_R=0.022 ;;
-  As2) export BLIND_PAYLOAD=max=10,x=0.15,y=0.08,z=0.20${PAYLOAD_RAMP:+,ramp=$PAYLOAD_RAMP} BLIND_WALL_STOP=0.9 BLIND_FOOT_R=0.028 ;;
-  As2W) export BLIND_PAYLOAD=max=13,x=0.15,y=0.08,z=0.20${PAYLOAD_RAMP:+,ramp=$PAYLOAD_RAMP} BLIND_WALL_STOP=0.9 ;;
-  B2|B2W) export BLIND_PAYLOAD=max=40,x=0.30,y=0.15,z=0.30${PAYLOAD_RAMP:+,ramp=$PAYLOAD_RAMP} BLIND_WALL_STOP=1.05 BLIND_FOOT_R=0.032 ;;
-esac
+# the payload the training randomizes, the end-wall stop, the foot radius: the one robot table (src/robot_table.py,
+# 2026-11-11; the values that stood here before, unchanged)
+eval "$(python3 "$(dirname "${BASH_SOURCE[0]}")/../src/robot_table.py" $1 --fe-sh)"
 if [ $WHEELED = 1 ]; then
   OCC=/root/gpufree-data/go2-depth/depth_fe/logs/wh_v4/${1,,}_v4_student.pt
 else

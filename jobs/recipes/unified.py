@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / "src"))
+import robot_table  # noqa: E402  the robots' physical parameters (the one table, 2026-11-11)
 
 
 @dataclass(frozen=True)
@@ -139,7 +141,7 @@ ROBOTS = {
                              "leg_kp": "240/6 -- was the key legkp15: 82 kg on kp 160 crept after stops",
                              "leg_hold_s": "2.0 -- was the key leghold20: legs hold their targets after a stop",
                              "stairs_final_share": "0.35 -- was stairs35: B2W's flat items slid as the share rose past ~0.35"},
-                 env={"leg_kp_scale": 1.5, "leg_kd_scale": 1.2, "leg_hold_s": 2.0, "stairs_final": 0.35},
+                 env=dict(robot_table.ROBOTS["B2W"]["params"]),   # src/robot_table.py
                  keys=[k("marchgait3", "T", "verify", "B2W never stepped marching (0 touchdowns/s at 2000-3000): the clock "
                                                  "pays 3x while marching -- try without it once the common march keys run"),
                   k("standw4w", "T", "verify", "standing hold x4: B2W crept 2.5-3.6 cm after stops (bar 1 cm) -- heavy "

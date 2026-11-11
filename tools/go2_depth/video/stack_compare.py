@@ -4,8 +4,8 @@ user: "把负载和无负载放在一个视频中"; top = unloaded, bottom = pay
     python tools/go2_depth/video/stack_compare.py TOP.mp4 BOTTOM.mp4 OUT.mp4 \
         [--top-label "无负载"] [--bottom-label "负载 12 kg"] [--title "Go2-W depth_v6_w27d 平地"]
 
-The clips come from jobs/record_blind.sh / jobs/record_student_v.sh (same options for both, only the payload
-differs). Each clip gets a 44 px strip above it (Noto Sans CJK Bold); the shorter clip holds its last frame until
+The clips come from jobs/accept_videos.sh (the one acceptance-video script: both clips of a pair from the same seed,
+start and camera rule, only the payload differs). Each clip gets a 44 px strip above it (Noto Sans CJK Bold); the shorter clip holds its last frame until
 the longer one ends; the strips and clips are stacked with ffmpeg's vstack (the bundled imageio-ffmpeg build has no
 drawtext, hence the PNG strips). Widths must match (both 1280 from the recorders); H.264, CRF 23, 25 fps.
 """

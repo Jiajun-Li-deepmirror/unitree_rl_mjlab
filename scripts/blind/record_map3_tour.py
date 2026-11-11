@@ -11,7 +11,8 @@ rails are semi-transparent and everything overhead (upper flights, landings,
 floors) is see-through. A termination ends the tour: the last frame is held with
 its reason.
 
-Modelled on the go2-depth branch's scripts/go2_depth/record_map3.py.
+Modelled on the go2-depth branch's record_map3.py (removed 2026-11-11: this is the one map3 recorder, blind and
+depth students alike, through jobs/accept_videos.sh).
 
 go2-depth additions (2026-11-06, the user: use these scripts for the acceptance videos and add the tests they miss):
 --stair-stops (stop 2 s halfway up L0 and halfway down R1, then go on: the stairs stop item), --payload kg,x,y,z (the
@@ -145,6 +146,8 @@ class Autopilot:
     self.reset()
 
   def reset(self):
+    if not hasattr(self, "route_heading"):
+      self.route_heading = None   # the current step's heading on the route (rad), for the chase camera
     self.steps = 0
     self.offset = None   # the follow line's offset to the robot's left (m), None outside follow steps
     self.settled = 0
@@ -162,6 +165,7 @@ class Autopilot:
     if kind == "pause":
       return (0.0, 0.0, 0.0), t >= args, False
     if kind == "turn":
+      self.route_heading = math.radians(args)
       err = wrap(math.radians(args) - yaw)
       self.settled = self.settled + 1 if abs(err) < 0.06 else 0
       wz = float(np.clip(2.0 * err, -self.turn_rate, self.turn_rate))
@@ -170,6 +174,7 @@ class Autopilot:
     if kind == "strafe":
       target, heading = args
       h = math.radians(heading)
+      self.route_heading = h
       rel = np.asarray(target) - pos
       left = float(-math.sin(h) * rel[0] + math.cos(h) * rel[1])  # target offset to the robot's left
       # At least 0.12 m/s: commands under 0.1 m/s are zeroed (the deadzone).
@@ -180,6 +185,7 @@ class Autopilot:
       return (0.0, 0.0 if done else vy, wz), done or timed_out, timed_out
     target, heading, vx = args
     h = math.radians(heading)
+    self.route_heading = h
     axis = np.array([math.cos(h), math.sin(h)])
     rel = np.asarray(target) - pos
     remaining = float(rel @ axis)
@@ -210,6 +216,11 @@ def main() -> None:
   p.add_argument("--seed", type=int, default=0)
   p.add_argument("--stair-stops", action="store_true", help="stop 2.5 s halfway up L0 and halfway down R1")
   p.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base")
+  # Comparable clips (2026-11-11, the user: the unloaded and loaded videos from the same start at the same angle): an
+  # exact start (the scenario's spawn and heading, the default joint pose; the eval config spreads it +-5 cm / +-3 deg)
+  # and a chase camera turning with the route's heading (the same in every clip), not the robot's.
+  p.add_argument("--random-start", action="store_true", help="eval_map3's small spawn spread")
+  p.add_argument("--cam-follow", choices=("route", "robot"), default="route")
   p.add_argument("--contact-goes-on", action="store_true", help="count base / thigh touches instead of ending the tour")
   p.add_argument("--max-accel", type=float, default=2.0, help="m/s^2, vx and vy together (0: none)")
   p.add_argument("--max-yaw-accel", type=float, default=3.0, help="rad/s^2 (0: none)")
@@ -220,6 +231,12 @@ def main() -> None:
 
   scenario = eval_map3.Scenario("tour", SPAWN, SPAWN_YAW, [(600.0, 0.0, 0.0, 0.0)], "track")
   cfg = eval_map3.make_env_cfg(scenario, eval_map3.load_map3_boxes(), 1, args.seed, args.task)
+  if not args.random_start:
+    pr = cfg.events["reset_base"].params["pose_range"]
+    yaw0 = 0.5 * (pr["yaw"][0] + pr["yaw"][1])
+    cfg.events["reset_base"].params["pose_range"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (yaw0, yaw0)}
+    if "reset_robot_joints" in cfg.events and "position_range" in cfg.events["reset_robot_joints"].params:
+      cfg.events["reset_robot_joints"].params["position_range"] = (0.0, 0.0)
   if args.payload or "base_payload" in cfg.events:   # the recipe's payload DR off: 0 kg unless --payload
     fixed_payload(cfg, args.payload or "0,0,0,0")
   touch_cfg = cfg.terminations.pop("illegal_contact", None) if args.contact_goes_on else None
@@ -284,7 +301,9 @@ def main() -> None:
     rgba = base_rgba.copy()
     rgba[geom_bottom > base[2] + 0.45, 3] = 0.08  # overhead geometry
     model.geom_rgba[terrain_geoms] = rgba
-    target = math.degrees(float(robot.data.heading_w[0])) + args.cam_side  # looking along the heading
+    heading = pilot.route_heading if args.cam_follow == "route" and pilot.route_heading is not None else \
+      float(robot.data.heading_w[0])
+    target = math.degrees(heading) + args.cam_side  # looking along the (route's) heading
     if cam_azimuth is None:
       cam_azimuth = target
     cam_azimuth += 0.08 * (((target - cam_azimuth + 180.0) % 360.0) - 180.0)

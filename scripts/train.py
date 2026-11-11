@@ -157,6 +157,23 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   env.close()
 
 
+# The run's environment (go2-depth 2026-11-11, the user's unification item 1: every training writes the settings it ran
+# with, and checks / videos / exports / packages read them instead of rebuilding the recipe): every variable the task
+# builders read (src/ and scripts/ read only these prefixes), with the task and the command line, as run_env.sh in the
+# run dir (sourceable; jobs/run_env.sh finds it for a checkpoint).
+RUN_ENV_PREFIXES = ("BLIND_", "DEPTH_STUDENT_", "UNIFIED_TASKS", "U_SMOKE", "TRAIN_LOG_LAYOUT")
+
+
+def write_run_env(log_dir: Path, task_id: str) -> None:
+  import shlex
+
+  log_dir.mkdir(parents=True, exist_ok=True)
+  lines = [f"# run_env.sh: the environment of this run ({datetime.now().isoformat(timespec='seconds')})",
+           f"RUN_TASK={shlex.quote(task_id)}", f"RUN_ARGV={shlex.quote(' '.join(sys.argv))}"]
+  lines += [f"export {k}={shlex.quote(os.environ[k])}" for k in sorted(os.environ) if k.startswith(RUN_ENV_PREFIXES)]
+  (log_dir / "run_env.sh").write_text("\n".join(lines) + "\n")
+
+
 def launch_training(task_id: str, args: TrainConfig | None = None):
   args = args or TrainConfig.from_task(task_id)
 
@@ -179,6 +196,8 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name
     log_dir = log_root_path / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                                + (f"_{args.agent.run_name}" if args.agent.run_name else ""))
+
+  write_run_env(log_dir, task_id)
 
   # Select GPUs based on CUDA_VISIBLE_DEVICES and user specification.
   selected_gpus, num_gpus = select_gpus(args.gpu_ids)

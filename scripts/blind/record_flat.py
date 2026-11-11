@@ -128,9 +128,22 @@ p.add_argument("--first-stand", type=float, default=None,
 p.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base")
 p.add_argument("--max-accel", type=float, default=2.0, help="m/s^2, vx and vy together (0: none)")
 p.add_argument("--max-yaw-accel", type=float, default=3.0, help="rad/s^2 (0: none)")
+# Comparable clips (2026-11-11, the user: "机器的初始位置和画面上下两个（负重和无负重）最好统一角度"): the same seed, the same
+# start (the tile's middle, heading +x, the default joint pose) and a close-up turning with the commanded heading, so the
+# unloaded and the loaded clip differ only by the payload; --random-start / --cam-yaw robot for the old behaviour.
+p.add_argument("--seed", type=int, default=0)
+p.add_argument("--random-start", action="store_true", help="the play config's random spawn (position, heading, joints)")
+p.add_argument("--cam-yaw", choices=("command", "robot"), default="command",
+               help="the close-up turns with the commanded heading (same in every clip) or the robot's")
 args = p.parse_args()
 
 cfg = load_env_cfg(args.task, play=True)
+cfg.seed = args.seed
+if not args.random_start:
+  if "reset_base" in cfg.events and "pose_range" in cfg.events["reset_base"].params:
+    cfg.events["reset_base"].params["pose_range"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0), "yaw": (0.0, 0.0)}
+  if "reset_robot_joints" in cfg.events and "position_range" in cfg.events["reset_robot_joints"].params:
+    cfg.events["reset_robot_joints"].params["position_range"] = (0.0, 0.0)   # reset_joints_by_offset: the default pose
 if args.payload or "base_payload" in cfg.events:   # the recipe's payload DR off: 0 kg unless --payload
   fixed_payload(cfg, args.payload or "0,0,0,0")
 if args.payload:
@@ -295,7 +308,7 @@ def add_floor_marks(scene, center, z, cell=0.5, half=5.0):
 
 def frame(state):
   base = state["base"]
-  yaw = state["yaw"]
+  yaw = state["cmd_yaw"] if args.cam_yaw == "command" else state["yaw"]
   wide = camera((base[0], base[1], args.lookat_z), args.distance, 135.0, -15.0)
   close = camera(
     (base[0], base[1], args.lookat_z * 0.36), 0.75 * args.distance, math.degrees(yaw) - 125.0, -6.0
@@ -326,6 +339,8 @@ step = 0
 saved = set()
 summary = []
 cur_cmd = [0.0, 0.0, 0.0]
+_qw, _qx, _qy, _qz = robot.data.root_link_quat_w[0].tolist()
+cmd_yaw = math.atan2(2 * (_qw * _qz + _qx * _qy), 1 - 2 * (_qy * _qy + _qz * _qz))   # the commanded heading's integral
 for si, (label, c, seconds, opts) in enumerate(segments):
   C = torch.tensor([c], device=env.device, dtype=torch.float32)
   n = int(round(seconds / dt))
@@ -343,6 +358,7 @@ for si, (label, c, seconds, opts) in enumerate(segments):
   brake_steps = 0
   for k in range(n):
     cur_cmd = slew(cur_cmd, c, dt, args.max_accel, args.max_yaw_accel)
+    cmd_yaw += cur_cmd[2] * dt
     cmd.vel_command_b[:] = torch.tensor([cur_cmd], device=env.device, dtype=torch.float32)
     cmd.time_left[:] = 1e9
     if hasattr(cmd, "march"):
@@ -418,6 +434,7 @@ for si, (label, c, seconds, opts) in enumerate(segments):
       "clear": (zc - r - ground).clamp(min=0).tolist(),
       "last": last_lift.clamp(min=0).tolist(),
       "yaw": math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)),
+      "cmd_yaw": cmd_yaw,
       "base": robot.data.root_link_pos_w[0].tolist(),
       "ground_z": float(ground.mean()),
       "t": t,

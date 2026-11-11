@@ -13,7 +13,7 @@
 #     at +-0.5 / 1 rad/s against 0.25; the deployed blind 0.11 / 0.25: the spin keys were never in its recipe).
 # T and M are the source model (BL_T_PICK / BL_M_PICK: nothing retrained), its constraint multipliers
 # (v2_robot.sh V2_CONS); the whole acceptance every 500 on 3 seeds (two tiers), then tinynav.
-# Delivery: logs/pkg/go2_bl2_<TAG>_<K>, then its videos (jobs/blind_videos.sh). The depth round (jobs/v2_chain.sh from
+# Delivery: logs/pkg/go2_bl2_<TAG>_<K>, then its videos (jobs/accept_videos.sh). The depth round (jobs/v2_chain.sh from
 # that package, as B2's n-series) follows by hand. Log logs/jobs/blind_go2_<TAG>.txt.
 set -u
 TAG=${1:-gp1}

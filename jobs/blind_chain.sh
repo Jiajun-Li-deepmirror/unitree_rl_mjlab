@@ -307,11 +307,13 @@ mkdir -p $OUT
 cp $P $OUT/model_$PK.pt && cp -r $(new_run bl2P_$TAG)/params $OUT/ || { fault "no params/ in $(new_run bl2P_$TAG) for the package"; exit 4; }
 echo "$BLIND_PILOT" | sed 's/^,//' > $OUT/blind_pilot.txt
 echo "${BLIND_PARAMS:-}" > $OUT/blind_params.txt   # the robot's physical parameters (jobs/recipes/unified.py), for the depth rounds
+# the P run's whole environment (scripts/train.py run_env.sh, 2026-11-11): what checks, videos and exports read
+cp $(new_run bl2P_$TAG)/run_env.sh $OUT/ 2> /dev/null
 md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5
 $PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/model_$PK.pt --out $OUT > logs/jobs/blind_${r}_export.log 2>&1 \
   && $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $OUT/deploy.yaml >> logs/jobs/blind_${r}_export.log 2>&1 \
   && log "$R BLIND DELIVERY $OUT (model md5 $(md5sum < $OUT/model_$PK.pt | cut -c1-8), policy.onnx $(md5sum < $OUT/policy.onnx | cut -c1-8))" \
   || { fault "blind export failed: $(tail -n 3 logs/jobs/blind_${r}_export.log | tr '\n' ' ')"; exit 4; }
 # the acceptance videos (2026-11-11, the user: "盲走通过后自动录视频"): in the background, the depth round does not wait
-setsid nohup bash jobs/blind_videos.sh $R $OUT > /dev/null 2>&1 < /dev/null &
-log "$R blind videos recording (jobs/blind_videos.sh, pid $!; flat and map3, each without / with the payload, stacked)"
+LOG=$L setsid nohup bash jobs/accept_videos.sh blind $R $OUT > /dev/null 2>&1 < /dev/null &
+log "$R blind videos recording (jobs/accept_videos.sh, pid $!; flat and map3, each without / with the payload, stacked)"

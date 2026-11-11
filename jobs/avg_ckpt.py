@@ -13,4 +13,12 @@ for key, value in sd.items():
   if torch.is_floating_point(value):
     sd[key] = torch.stack([c["actor_state_dict"][key] for c in cks]).mean(0)
 torch.save(avg, out)
+# The source run's environment beside the average (scripts/train.py run_env.sh; 2026-11-11), so the average can be
+# checked, recorded and exported with the settings it trained with.
+import os
+import shutil
+
+src_env = os.path.join(os.path.dirname(paths[-1]), "run_env.sh")
+if os.path.isfile(src_env):
+  shutil.copy(src_env, os.path.join(os.path.dirname(out), "run_env.sh"))
 print(f"wrote {out}: actor averaged over {len(cks)} ({paths[0]} .. {paths[-1]}), iter {avg['iter']}")

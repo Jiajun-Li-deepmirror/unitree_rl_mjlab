@@ -39,10 +39,15 @@ class URobot:
     return self.name.lower()
 
 
-ROBOTS: dict[str, URobot] = {
-  "Go2": URobot("Go2", "legged", "max=12,x=0.15,y=0.08,z=0.20", 0.85, foot_r_m=0.022),
-  "Go2W": URobot("Go2W", "wheeled", "max=12,x=0.15,y=0.08,z=0.20", 0.85),
-}
+def _from_table(name: str) -> URobot:
+  """The robot's physical parameters from the one robot table (src/robot_table.py, 2026-11-11)."""
+  from src import robot_table
+
+  r = robot_table.get(name)
+  return URobot(name, r["kind"], r["train_payload"], r["wall_stop"], foot_r_m=r.get("foot_r") if r["kind"] == "legged" else None)
+
+
+ROBOTS: dict[str, URobot] = {name: _from_table(name) for name in ("Go2", "Go2W")}
 
 
 def unified_recipe(robot: URobot) -> dict:
