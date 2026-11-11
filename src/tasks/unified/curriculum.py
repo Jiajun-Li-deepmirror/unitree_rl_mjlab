@@ -100,7 +100,11 @@ class progress:
       terrain.terrain_levels[:] = lv.to(terrain.terrain_levels.dtype)
       how = f"drawn around the checkpoint's level {self.level:.2f}"
     terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
-    print(f"[unified] terrain levels {how}: mean {float(terrain.terrain_levels.float().mean()):.2f}")
+    # every robot onto its restored origin now: left where the fresh environment put it, its first reset measured its
+    # "distance walked" from the new origin and promoted it (the Go2 teacher's level 0.75 -> 1.50 in 30 it, progress
+    # 0.10 -> 0.19, 2026-11-12)
+    env.reset()
+    print(f"[unified] terrain levels {how}: mean {float(terrain.terrain_levels.float().mean()):.2f} (robots reset onto them)")
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, ema_steps: float = 2000.0,
                skip_steps: int = 2400, force_rate: float = 0.0, time_start_it: int = TIME_START_IT,
