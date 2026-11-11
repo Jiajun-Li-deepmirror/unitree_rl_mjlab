@@ -49,7 +49,7 @@ def remote(port: str, cmd: str) -> str:
 
 def read(port: str, train_log: str, chain_log: str) -> dict:
   cmd = (f"cd {D}; echo ITER $(grep -oE 'Learning iteration [0-9]+' {train_log} 2>/dev/null | tail -n 1 | grep -oE '[0-9]+$'); "
-         f"echo P $(tail -n 400 {train_log} 2>/dev/null | grep -E 'u_progress/p' | tail -n 1 | grep -oE '[0-9.]+$'); "
+         f"echo P $(tail -n 400 {train_log} 2>/dev/null | grep -E 'u_progress/p:' | tail -n 1 | grep -oE '[0-9.]+$'); "
          f"echo LEVEL $(tail -n 400 {train_log} 2>/dev/null | grep -E 'u_progress/level' | tail -n 1 | grep -oE '[0-9.]+$'); "
          f"echo GATE $(grep -E 'NOT YET|PASS|PICK' {chain_log} 2>/dev/null | tail -n 1 | cut -c16-); "
          f"echo CHECK $(grep -E ' avg[0-9]+ s[0-9]|tinynav' {chain_log} 2>/dev/null | tail -n 1 | cut -c1-140); "
