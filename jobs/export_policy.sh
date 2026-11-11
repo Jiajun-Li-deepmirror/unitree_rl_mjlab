@@ -41,7 +41,7 @@ $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out
   || { echo "export_policy.sh: deploy.yaml failed ($(tail -n 2 $LOGF | tr '\n' ' '))" >&2; exit 1; }
 { echo "# run_env.sh as exported ($ENVSRC; payload ramp stripped)"
   for k in $(compgen -e | grep -E '^(BLIND_|DEPTH_STUDENT_|UNIFIED_TASKS|U_SMOKE|TRAIN_LOG_LAYOUT)' | sort); do printf 'export %s=%q\n' $k "${!k}"; done
-  [ -n "${RUN_TASK:-}" ] && printf 'RUN_TASK=%q\nRUN_ARGV=%q\n' "$RUN_TASK" "${RUN_ARGV:-}"; } > "$OUT/run_env.sh.new" \
+  if [ -n "${RUN_TASK:-}" ]; then printf 'RUN_TASK=%q\nRUN_ARGV=%q\n' "$RUN_TASK" "${RUN_ARGV:-}"; fi; } > "$OUT/run_env.sh.new" \
   && mv "$OUT/run_env.sh.new" "$OUT/run_env.sh"
 echo "${BLIND_PILOT:-}" | sed 's/^,//' > "$OUT/blind_pilot.txt"
 echo "${BLIND_PARAMS:-}" > "$OUT/blind_params.txt"

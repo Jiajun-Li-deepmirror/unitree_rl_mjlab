@@ -310,7 +310,12 @@ fi
 echo "$pick" > $PK/${r}_student
 K=$(basename $pick .pt | cut -d_ -f2)
 X=logs/exports/${r}_fe_student_${SRUN#fe_edge_}_avg$K.onnx
-$PY scripts/go2_depth/export_student.py --task Unitree-$R-Depth-Student-Edge --checkpoint $pick --out $X > logs/jobs/fe_${r}_export.log 2>&1 \
-  && log "$R STUDENT PICK $pick (seeds 0 1 2 pass); exported $X (md5 $(md5sum < $X | cut -c1-8))" \
+# the one export and package format (2026-11-11, unification item 3): logs/pkg/<r>_depth_<run>_<K> with the student,
+# policy.onnx, deploy.yaml, run_env.sh, manifest.json (videos: jobs/accept_videos.sh depth); the ONNX also at $X, the
+# path the tinynav gate and the deploy notes use
+XP=logs/pkg/${r}_depth_${SRUN#fe_edge_}_$K
+mkdir -p $XP && cp $pick $XP/model_$K.pt && { E=$(bash jobs/run_env.sh $pick) && cp $E $XP/run_env.sh; true; }
+bash jobs/export_policy.sh depth $R $XP/model_$K.pt $XP > logs/jobs/fe_${r}_export.log 2>&1 && cp $XP/policy.onnx $X \
+  && log "$R STUDENT PICK $pick (seeds 0 1 2 pass); exported $X (md5 $(md5sum < $X | cut -c1-8)), package $XP" \
   || fault "STUDENT PICK $pick; export failed: $(tail -n 3 logs/jobs/fe_${r}_export.log | tr '\n' ' ')"
 echo "$(date '+%m-%d %T') $R fe round done" >> $C/checks.out

@@ -33,18 +33,21 @@ while true; do
     n=$(basename $X .onnx)
     BLIND=0; [ "$EXTRA" = BLIND ] && BLIND=1
     if [ $BLIND = 1 ]; then
-      # a blind policy (blind_chain.sh): go2-home's export (policy.onnx from the Flat-Scratch play config, deploy.yaml
-      # from the Polish task), imported here as tinynav-sim's blind models are (scripts/import_blind_policy.py)
+      # a blind policy (blind_chain.sh): jobs/export_policy.sh blind (policy.onnx from the Flat-Scratch play config,
+      # deploy.yaml from the Polish task, with the checkpoint's run_env.sh when it has one; 2026-11-11), imported here as
+      # tinynav-sim's blind models are (scripts/import_blind_policy.py)
       # fe_robot.sh first (11-06): the pilot's "payload" key needs BLIND_PAYLOAD (B2 l4 9000 failed here on it)
       PD=logs/probe/${r}_$base
-      timeout 900 $SSH $P "cd $D && source env.sh && source jobs/fe_robot.sh $R > /dev/null && export BLIND_PARAMS=\$(python3 jobs/recipes/unified.py $r --params 2> /dev/null) && export BLIND_PILOT=$BPILOT BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=\$PWD/$CK && mkdir -p $PD && \$PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $CK --out $PD > $PD/export.log 2>&1 && \$PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $PD/deploy.yaml >> $PD/export.log 2>&1" < /dev/null > /dev/null
+      timeout 900 $SSH $P "cd $D && source env.sh && source jobs/fe_robot.sh $R > /dev/null && export BLIND_PARAMS=\$(python3 jobs/recipes/unified.py $r --params 2> /dev/null) && export BLIND_PILOT=$BPILOT BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=\$PWD/$CK && bash jobs/export_policy.sh blind $R $CK $PD > /dev/null 2>&1" < /dev/null > /dev/null
       mkdir -p $C/gate_pull/$n
       timeout 300 $SSH $P "cat $D/$PD/policy.onnx" < /dev/null > $C/gate_pull/$n/policy.onnx
       timeout 300 $SSH $P "cat $D/$PD/deploy.yaml" < /dev/null > $C/gate_pull/$n/deploy.yaml
       # the pilot beside them (2026-11-09): import_blind_policy.py takes the contact solver from it ("grip": elliptic,
       # impratio 10); without it every blind candidate ran on tinynav's default pyramidal cone at impratio 1, the
       # deployed blind models (and the depth exports) on elliptic / 10
-      echo "$BPILOT" > $C/gate_pull/$n/blind_pilot.txt
+      # (11-11: the export's own blind_pilot.txt, from the checkpoint's run_env.sh when it has one; the request's pilot else)
+      timeout 60 $SSH $P "cat $D/$PD/blind_pilot.txt" < /dev/null > $C/gate_pull/$n/blind_pilot.txt 2> /dev/null
+      [ -s $C/gate_pull/$n/blind_pilot.txt ] || echo "$BPILOT" > $C/gate_pull/$n/blind_pilot.txt
       (cd $WT && $PY scripts/import_blind_policy.py $C/gate_pull/$n $C/gate_pull/$n.onnx > /dev/null 2>&1)
       [ -s $C/gate_pull/$n.onnx ] || { echo "FAIL: blind export / import" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"; continue; }
       X2=$C/gate_pull/$n.onnx

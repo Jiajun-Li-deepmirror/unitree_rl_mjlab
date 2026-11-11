@@ -14,5 +14,7 @@ source jobs/fe_robot.sh $R || exit 2
 [ -f $PKG/blind_params.txt ] && export BLIND_PARAMS=$(cat $PKG/blind_params.txt)
 export BLIND_PILOT=$(cat $PKG/blind_pilot.txt)$EXTRA BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=$PWD/logs/rsl_rl/${r}_depth_teacher/${FE_INIT_RUN:-blind_init_fe}/model_$N.pt
 mkdir -p $(dirname $OUT)
-$PY scripts/go2_depth/export_student.py --task Unitree-$R-Depth-Student-Edge --checkpoint $CK --out $OUT 2>&1 | tail -n 2
+# the one export (2026-11-11, unification item 3): the checkpoint's own run_env.sh when it has one, else the
+# environment set up above; the ONNX copied to OUT
+bash jobs/export_policy.sh depth $R $CK ${OUT%.onnx}_pkg 2>&1 | tail -n 2 && cp ${OUT%.onnx}_pkg/policy.onnx $OUT
 md5sum $OUT

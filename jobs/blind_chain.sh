@@ -310,8 +310,8 @@ echo "${BLIND_PARAMS:-}" > $OUT/blind_params.txt   # the robot's physical parame
 # the P run's whole environment (scripts/train.py run_env.sh, 2026-11-11): what checks, videos and exports read
 cp $(new_run bl2P_$TAG)/run_env.sh $OUT/ 2> /dev/null
 md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5
-$PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/model_$PK.pt --out $OUT > logs/jobs/blind_${r}_export.log 2>&1 \
-  && $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $OUT/deploy.yaml >> logs/jobs/blind_${r}_export.log 2>&1 \
+# the one export (2026-11-11, unification item 3): policy.onnx, deploy.yaml, run_env.sh, manifest.json, with the P run's environment
+bash jobs/export_policy.sh blind $R $OUT/model_$PK.pt $OUT > logs/jobs/blind_${r}_export.log 2>&1 \
   && log "$R BLIND DELIVERY $OUT (model md5 $(md5sum < $OUT/model_$PK.pt | cut -c1-8), policy.onnx $(md5sum < $OUT/policy.onnx | cut -c1-8))" \
   || { fault "blind export failed: $(tail -n 3 logs/jobs/blind_${r}_export.log | tr '\n' ' ')"; exit 4; }
 # the acceptance videos (2026-11-11, the user: "盲走通过后自动录视频"): in the background, the depth round does not wait
