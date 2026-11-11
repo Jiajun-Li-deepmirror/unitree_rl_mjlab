@@ -123,3 +123,25 @@ As2 数据的比例推出）、关节阻尼（参照 As2 的 0.2 / 0.5）、转�
    各项指标读数，以及蒸馏出的盲走学生踢立面的次数。不如两个老师（盲走老师 + 感知老师）就退回两个老师。
 6. **学生**：蒸馏 + 微调，按三层验收。
 7. 原型有效后推到六个机型。真机校准流程等用户下次跑真机时开始收集数据。
+
+## 6. 实施状态（2026-11-12）
+
+| 步骤 | 状态 | 代码 |
+|---|---|---|
+| 1 指标库 | 完成；tinynav 已改用它（新旧计数逐趟一致），mjlab 训练和验收都接上了 | `src/metrics/`、`tools/go2_depth/acceptance/accept_stairs.py` |
+| 2 tinynav 对齐模型 | Go2 / Go2W 完成（`TNSIM_MODEL=uros`），其余机型轮到时生成 | `tools/robot_params/sync_tinynav.py`、tinynav-sim fork 97350f6 |
+| 3 mjlab 验收 v2 | 完成：检查任务、固定负载、合并判、新判定 | `jobs/unified/accept.sh`、`scripts/unified/accept_judge.py` |
+| 4 机型表 | 完成：行走负载、关节摩擦和阻尼随机化 | `src/robot_table.py`、`src/tasks/unified/teacher_env.py` |
+| 5 老师 v2 | 完成，Go2（t1）、Go2W（t2）各两个种子在训练（11-12 01:26 起） | `src/tasks/unified/` |
+| 6 学生 | 完成，老师通过后自动开训 | `src/tasks/unified/students.py`、`jobs/unified/students.sh` |
+| 交付 | 完成：打包、两个对比视频 | `jobs/unified/accept.sh`、`jobs/accept_videos.sh`（ublind / udepth） |
+
+还没做的：
+- 轮式的起步和顶部平台空踏，训练约束仍用原来的计数，还没换算到「每上一级」。
+- mjlab 每级门槛（踢立面 0.245、打滑 0.0245）是从 tinynav 每趟门槛换算的，第一个学生出来后在两边各量一次核对。
+
+整条链：
+1. `teacher.sh`：两个种子，按判定选出老师；
+2. `students.sh`：盲走、深度学生并行，各自蒸馏，再 PPO 加行为克隆；
+3. `accept.sh`：mjlab 合并判，再 tinynav（`tn_gate_unified.sh`）；
+4. 打包，录视频。
