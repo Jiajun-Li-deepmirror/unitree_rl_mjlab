@@ -34,7 +34,8 @@ IDLE_UTIL, IDLE_MIB = 10, 3000
 # name -> (port, training log, chain log, kind)
 WATCH = {
   "t1 unified Go2": ("30714", "logs/jobs/unified_go2_ufull_s0.log", "logs/jobs/unified_go2.txt", "unified"),
-  "t2 gp2 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp2.log", "logs/jobs/blind_go2_gp2.txt", "blind"),
+  # 11-11 21:0x: gp2's training ended; t2 runs avg13700's checks by hand (no training: checks only)
+  "t2 gp2 Go2": ("31365", "logs/jobs/blind_go2_bl2P_gp2.log", "logs/jobs/blind_go2_gp2.txt", "checks"),
 }
 
 
@@ -51,7 +52,7 @@ def read(port: str, train_log: str, chain_log: str) -> dict:
          f"echo P $(tail -n 400 {train_log} 2>/dev/null | grep -E 'u_progress/p' | tail -n 1 | grep -oE '[0-9.]+$'); "
          f"echo LEVEL $(tail -n 400 {train_log} 2>/dev/null | grep -E 'u_progress/level' | tail -n 1 | grep -oE '[0-9.]+$'); "
          f"echo GATE $(grep -E 'NOT YET|PASS|PICK' {chain_log} 2>/dev/null | tail -n 1 | cut -c16-); "
-         f"echo CHECK $(grep -E ' avg[0-9]+ s[0-9]' {chain_log} 2>/dev/null | tail -n 1 | cut -c1-140); "
+         f"echo CHECK $(grep -E ' avg[0-9]+ s[0-9]|tinynav' {chain_log} 2>/dev/null | tail -n 1 | cut -c1-140); "
          f"echo ALIVE $(ps -eo args | grep -c '[s]cripts/train.py'); "
          "echo GPU $(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits | head -n 1 | tr -d ' ')")
   out = {}
@@ -85,7 +86,7 @@ def main() -> int:
     it = int(r["ITER"]) if r.get("ITER", "").isdigit() else None
     h_it = track(f"{name}/iter", it)
     line = f"{name}: iteration {it} ({h_it * 60:.0f} min unchanged)"
-    if it is not None and h_it * 60 >= ITER_STALL_MIN:
+    if kind != "checks" and it is not None and h_it * 60 >= ITER_STALL_MIN:
       alarms.append(f"STALL {name}: iteration {it} unchanged for {h_it * 60:.0f} min (trainings alive: {r.get('ALIVE')})")
     if kind == "unified":
       p = r.get("P") or None
@@ -99,7 +100,7 @@ def main() -> int:
     else:
       h_ck = track(f"{name}/check", r.get("CHECK"))
       line += f", last check '{(r.get('CHECK') or '')[:90]}' ({h_ck:.1f} h)"
-      if r.get("ALIVE", "0") != "0" and h_ck >= CHECK_STALL_H:
+      if (r.get("ALIVE", "0") != "0" or kind == "checks") and h_ck >= CHECK_STALL_H:
         alarms.append(f"NOCHECK {name}: no new check line for {h_ck:.1f} h")
     gpu = r.get("GPU", "")
     if "," in gpu:
