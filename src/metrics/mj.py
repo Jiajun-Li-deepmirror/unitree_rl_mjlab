@@ -195,7 +195,9 @@ class StairsMeter:
             "edge": s.get("edge", 0.0) / placed if placed else None}.get(name)
 
   def state(self) -> dict:
-    return {"sums": dict(self.sums)}
+    return {"sums": dict(self.sums), "straight": self.straight}
 
   def load(self, state: dict) -> None:
-    self.sums = dict(state.get("sums", {}))
+    """The counts of a checkpoint taken with the same counting (straight or not); others start afresh."""
+    if bool(state.get("straight", False)) == self.straight:
+      self.sums = dict(state.get("sums", {}))
