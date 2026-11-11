@@ -62,7 +62,12 @@ class progress:
     pass
 
   def state(self) -> dict:
-    return {"p": self.p, "level": self.level, "level0": self.level0, "clock": self.clock, "fail": self.fail}
+    out = {"p": self.p, "level": self.level, "level0": self.level0, "clock": self.clock, "fail": self.fail}
+    terrain = getattr(self, "_terrain", None)
+    if terrain is not None and getattr(terrain, "terrain_levels", None) is not None:
+      out["terrain_levels"] = terrain.terrain_levels.cpu().tolist()
+      out["terrain_types"] = terrain.terrain_types.cpu().tolist()
+    return out
 
   def load(self, state: dict, env: ManagerBasedRlEnv) -> None:
     self.p, self.level, self.level0 = state["p"], state["level"], state["level0"]
@@ -71,12 +76,38 @@ class progress:
     self.fail = state.get("fail")
     self.last_step = env.common_step_counter
     env.u_progress = self.p
+    self._restore_terrain(state, env)
+
+  def _restore_terrain(self, state: dict, env: ManagerBasedRlEnv) -> None:
+    """The robots' terrain levels (and columns) as the checkpoint left them (2026-11-12). A fresh environment draws
+    them anew, and the progress -- which only rises -- read that draw as an advance: the Go2 teacher's level jumped
+    0.77 -> 1.91 and its progress 0.10 -> 0.35 on a resume (the 11-11 v1 "level 1 -> 2.07" was the same). A checkpoint
+    from before this saves no levels: the robots get levels averaging the checkpoint's level reading instead."""
+    terrain = env.scene.terrain
+    self._terrain = terrain
+    if getattr(terrain, "terrain_levels", None) is None or getattr(terrain, "terrain_origins", None) is None:
+      return
+    n = terrain.terrain_levels.shape[0]
+    dev = terrain.terrain_levels.device
+    if len(state.get("terrain_levels") or []) == n:
+      terrain.terrain_levels[:] = torch.tensor(state["terrain_levels"], device=dev, dtype=terrain.terrain_levels.dtype)
+      terrain.terrain_types[:] = torch.tensor(state["terrain_types"], device=dev, dtype=terrain.terrain_types.dtype)
+      how = "restored"
+    else:
+      lo = math.floor(self.level)
+      up = torch.rand(n, device=dev) < (self.level - lo)
+      lv = torch.clamp(lo + up.long(), 0, int(terrain.max_terrain_level) - 1)
+      terrain.terrain_levels[:] = lv.to(terrain.terrain_levels.dtype)
+      how = f"drawn around the checkpoint's level {self.level:.2f}"
+    terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+    print(f"[unified] terrain levels {how}: mean {float(terrain.terrain_levels.float().mean()):.2f}")
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, ema_steps: float = 2000.0,
                skip_steps: int = 2400, force_rate: float = 0.0, time_start_it: int = TIME_START_IT,
                time_span_it: int = TIME_SPAN_IT, max_fail_rate: float = MAX_FAIL_RATE,
                fixed_p: float | None = None) -> dict[str, torch.Tensor]:
     terrain = env.scene.terrain
+    self._terrain = terrain   # state() saves its levels
     assert terrain is not None
     mean = float(terrain.terrain_levels.float().mean())
     step = env.common_step_counter
