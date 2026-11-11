@@ -167,7 +167,7 @@ evalrun ${P}_stand.txt $RS $S/eval_standing.py --task $TF $CK $STANDA &
 pids="$pids $!"; ser
 # standing 60 s at the zero command with the robot's payload limit (go2-depth 2026-11-07, the user: Go2W "负重的时候"
 # fell standing; g_loadstand): Go2 / Go2W 12 kg, As2 10, As2W 13, B2 / B2W 40 (tn_gate_watch.sh's PAY)
-case $R in Go2|Go2W) LPAY=12,0.15,0,0.20 ;; As2) LPAY=10,0.15,0,0.20 ;; As2W) LPAY=13,0.15,0,0.20 ;; *) LPAY=40,0.15,0,0.30 ;; esac
+LPAY=$(bash jobs/accept_payload.sh $R) || exit 2   # the one payload table
 # accept_tables judges the falls after 3 s only (LOADSTAND_SETTLE, 2026-11-08, the user approved). long_stand.py
 # --handover (zero actions = the policy's own PD at the default stance) is NOT used: those gains are far softer than
 # the robot's FixStand (Go2W kp 60 / 80) and 89 / 256 Go2W fell while held with 12 kg.

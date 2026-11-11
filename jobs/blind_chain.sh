@@ -304,3 +304,6 @@ $PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/m
   && $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $OUT/deploy.yaml >> logs/jobs/blind_${r}_export.log 2>&1 \
   && log "$R BLIND DELIVERY $OUT (model md5 $(md5sum < $OUT/model_$PK.pt | cut -c1-8), policy.onnx $(md5sum < $OUT/policy.onnx | cut -c1-8))" \
   || { fault "blind export failed: $(tail -n 3 logs/jobs/blind_${r}_export.log | tr '\n' ' ')"; exit 4; }
+# the acceptance videos (2026-11-11, the user: "盲走通过后自动录视频"): in the background, the depth round does not wait
+setsid nohup bash jobs/blind_videos.sh $R $OUT > /dev/null 2>&1 < /dev/null &
+log "$R blind videos recording (jobs/blind_videos.sh, pid $!; flat and map3, each without / with the payload, stacked)"

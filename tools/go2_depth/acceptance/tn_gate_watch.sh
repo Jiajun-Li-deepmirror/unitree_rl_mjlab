@@ -91,15 +91,11 @@ PYEOF
     # legged bars: the initial ones for every robot (2026-11-10, doc/acceptance.md, the user: "统一用原始门槛"); B2 had
     # its deployed depth's level (kicks 3.1 / mid 76.6; loaded 4.2 / 73.9 / slips 0.6) since 11-06
     LB="" LBP=""
-    case $R in
-      Go2|Go2W) PAY=12,0.15,0,0.20 ;; As2) PAY=10,0.15,0,0.20 ;; As2W) PAY=13,0.15,0,0.20 ;;
-      # B2 (11-06): 40 kg at x 0.15 / z 0.30, 4 runs. At the training range's corner (x 0.30) the deployed b2_depth_v3_fe
-      # and blind fe5000 fell 8 / 8 on top_18n_down (8 runs), the delivered blind l4_9000 2 / 8; at x 0.15 all 0 / 8.
-      # The corner stays measured (8 runs, top_18n_down), reported, not judged.
-      # B2-W the same (2026-11-11, doc/acceptance.md §3 "B2 / B2-W 上 0.30 m"): it fell to x 0.30 here before
-      B2|B2W) PAY=40,0.15,0,0.30 ;;
-      *) echo "tn_gate_watch: no payload for $R" >&2; PAY=0,0,0,0 ;;
-    esac
+    # the one payload table (jobs/accept_payload.sh). B2 (11-06): 40 kg at x 0.15 / z 0.30, 4 runs. At the training
+    # range's corner (x 0.30) the deployed b2_depth_v3_fe and blind fe5000 fell 8 / 8 on top_18n_down (8 runs), the
+    # delivered blind l4_9000 2 / 8; at x 0.15 all 0 / 8. The corner stays measured (8 runs, top_18n_down), reported,
+    # not judged. B2-W the same (2026-11-11; it fell to x 0.30 here before).
+    PAY=$(bash "$HERE/../../../jobs/accept_payload.sh" $R) || PAY=0,0,0,0
     # one tinynav run at a time per box (TNL above)
     ( flock 9; cd $WT && export ROBOT_ASSETS=/home/dm/.cache/go2-depth-work/model_stage MUJOCO_GL=egl OMP_NUM_THREADS=2
       LEGGED_BARS=$LB $PY $HERE/accept_stairs.py $r $X2 4 > $C/accept_base/$n.log 2>&1

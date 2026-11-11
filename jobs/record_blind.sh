@@ -17,7 +17,7 @@ PILOT=$(cat $BPKG/blind_pilot.txt)
 # go2w_polish_11300 instead of the package)
 source jobs/fe_robot.sh $R > /dev/null
 export BLIND_PILOT=$PILOT BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=$PWD/$CK
-case $R in Go2|Go2W) PAY=12,0.15,0,0.20 ;; As2) PAY=10,0.15,0,0.20 ;; As2W) PAY=13,0.15,0,0.20 ;; *) PAY=40,0.15,0,0.30 ;; esac
+PAY=$(bash jobs/accept_payload.sh $R) || exit 2   # the one payload table
 # B2 (11-06): strafing at R1's top y 5.0 its body still on the last step brushed the well-side rail (illegal contact,
 # both tours); it walks onto the landing first (R1_down's spawn is at y 5.78)
 # Go2W too (11-07, the user: the turn at the top was on the stairs): every robot walks onto R1's top landing first
