@@ -82,6 +82,18 @@ for k in $KS; do
   if [[ "$tv" == PASS* ]]; then
     echo "$CK" > $PICK
     log "PICK $CK"
+    # the delivery: the tinynav gate's export (logs/probe/<name>, export_student.py) and the checkpoint, then the two
+    # acceptance videos (flat and map3, unloaded above / loaded below; jobs/accept_videos.sh)
+    PKG=logs/pkg/${r}_u_${KIND}_${name}_$k
+    mkdir -p $PKG
+    cp logs/probe/$(basename $Q)/* $PKG/ 2> /dev/null
+    cp $CK $PKG/
+    if [ -s $PKG/policy.onnx ]; then
+      log "UNIFIED DELIVERY $PKG (policy.onnx $(md5sum < $PKG/policy.onnx | cut -c1-8))"
+    else
+      $PY scripts/unified/export_student.py $R $KIND $CK $PKG >> $L 2>&1 && log "UNIFIED DELIVERY $PKG (exported here)"
+    fi
+    LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos
     exit 0
   fi
 done

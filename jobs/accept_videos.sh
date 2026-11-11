@@ -56,7 +56,15 @@ case $KIND in
     fi
     [ -n "${E:-}" ] && source $E   # the student's own run (scripts/train.py, from 11-11) over the rebuilt one
     RUN=("$PY" jobs/student_eval.py) TF=Unitree-$R-Depth-Student-Flat TS=Unitree-$R-Depth-Student-Stairs TAGW=DEPTH ;;
-  *) echo "accept_videos.sh: KIND blind or depth" >&2; exit 2 ;;
+  ublind|udepth)   # a unified student (2026-11-12, doc/redesign.md): SRC = its stage-2 checkpoint, OUT required
+    K=${KIND#u}
+    CK=$SRC OUT=${4:?accept_videos.sh $KIND: OUT} T=${5:-$R $([ $K = blind ] && echo 盲走 || echo 感知)（新流程） $(basename $(dirname $SRC))}
+    L=${LOG:-logs/jobs/unified_${r}_students.txt}
+    export UNIFIED_TASKS=1 BLIND_PILOT="(the unified recipe)"
+    unset U_PAYLOAD   # the check tasks' payload: 0 kg for the unloaded clips; --payload for the loaded ones
+    RUN=("$PY" jobs/unified/u_eval.py) TF=Unitree-$R-U-Student-${K^}-Flat TS=Unitree-$R-U-Student-${K^}-Stairs
+    TAGW=U${K^^} ;;
+  *) echo "accept_videos.sh: KIND blind, depth, ublind or udepth" >&2; exit 2 ;;
 esac
 # a training's payload ramp (BLIND_PAYLOAD ...,ramp=N in run_env.sh) is not the robot's: evaluations see the full payload
 export BLIND_PAYLOAD=$(echo "${BLIND_PAYLOAD:-}" | sed -E 's/,ramp=[0-9]+//')
@@ -69,7 +77,7 @@ trap 'rm -f $OUT.pid' EXIT
 LOCK=${FE_LOCK:-/root/gpufree-data/go2-depth/ws_check.lock}
 locked() { if [ -e "$(dirname $LOCK)" ]; then flock $LOCK "$@"; else "$@"; fi; }   # one GPU job at a time with the checks
 t0=$(date +%s)
-echo "recording $KIND $CK (pilot md5 $(echo $BLIND_PILOT | md5sum | cut -c1-8), payload $PAY)" > $OUT/recording.txt
+echo "recording $KIND $CK (pilot md5 $(echo ${BLIND_PILOT:-} | md5sum | cut -c1-8), payload $PAY)" > $OUT/recording.txt
 locked "${RUN[@]}" scripts/blind/record_flat.py --task $TF $CK --out $OUT/${r}_flat.mp4 --title "$T" --reset-demo \
   > $OUT/flat.log 2>&1
 locked "${RUN[@]}" scripts/blind/record_flat.py --task $TF $CK --out $OUT/${r}_flat_payload.mp4 --title "$T" --reset-demo \
