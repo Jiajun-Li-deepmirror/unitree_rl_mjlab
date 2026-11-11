@@ -67,7 +67,14 @@
 | 4. 学生第二阶段 `s2` | PPO 微调，通过后导出 | 第 1 节的「通过」 |
 
 - 一个机型的下一轮，只在它上一轮通过之后开始（没通过时排队里的下一轮自动跳过）。
-- 某一轮不过：改配方，从这一轮的起点重跑这个机型（新 TAG；`REPRO_BLIND_TAG` / `REPRO_FROM_TAG` 指向上一轮通过的结果），不续训修补。
+- 某一轮不过：改配方，用新 TAG 从配方改动所在的最早阶段开始重跑（2026-11-11），不续训修补：
+  - 它之前没改的阶段沿用已通过的结果，它之后的阶段全部重跑；只改步数上限（如 `RECIPE_M_ITERS`）时从这个阶段开始，不重训前面的阶段。
+  - 每个 TAG 跑的配方存成 `logs/jobs/recipe_<机型>_<TAG>.sh`，`jobs/recipe_stage.sh` 比较它和现在的配方，给出最早改动的阶段：
+    T（`RECIPE_BLIND_TM`、`RECIPE_BLIND_CONS`、`RECIPE_T_MAX`）、M（`RECIPE_M_ITERS`）、P（`RECIPE_BLIND_P`、`RECIPE_P_ITERS`）、
+    深度老师（`RECIPE_DEPTH_*`、`RECIPE_TOPFLAT`）、学生第一阶段（`RECIPE_S1_*`）。
+  - 盲走轮用 `REPRO_BLIND_FROM=M@旧TAG`（沿用 T）、`P@旧TAG`（沿用 T 和 M）或 `auto@旧TAG`；深度各轮用 `REPRO_BLIND_TAG`（沿用盲走包）
+    和 `REPRO_FROM_TAG`（学生第一阶段沿用老师，第二阶段沿用老师和第一阶段）。
+  - 沿用的结果在日志里写明来自哪个 TAG（`logs/jobs/repro_<机型>.txt`、`blind_<机型>.txt`）。
 - 一台 GPU 跑完自己那批的这一轮，就接着跑它的机型里已经具备条件的下一轮，不等另一台。
 - 每个盲走包有自己的加宽起点（`blind_init_<包名>`），不和旧包共用。
 - 盲走各阶段的步数上限写在配方里：`RECIPE_T_MAX`（默认 5000）、`RECIPE_M_ITERS`（默认 5000）、`RECIPE_P_ITERS`（默认 2000），

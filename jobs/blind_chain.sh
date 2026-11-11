@@ -13,8 +13,8 @@
 #      (go2-home: onset ~3000-4000 it into mixed), so judge M by wheel_riser_lift / foothold_height_gain, not one check.
 #   P  Unitree-<R>-Blind-Polish from M's pick, <= +2000, not anchored either; the whole acceptance on seeds 0 1 2 every
 #      500 from +500, then the tinynav acceptance (blind ONNX; FE_TN_GATE via check/tn_gate_watch.sh)
-# Restarts: BL_T_PICK (+ BL_T_RUN) skips T; BL_T_FROM_RUN + BL_T_FROM_K resume T; BL_M_FROM_RUN + BL_M_FROM_K (with
-# BL_T_PICK) resume M from a raw checkpoint; BL_M_PICK + BL_M_RUN (with BL_T_PICK) skip M; BL_M_END sets M's last iteration;
+# Restarts: BL_T_PICK (+ BL_T_RUN, BL_T_PICK_WHY for the log) skips T; BL_T_FROM_RUN + BL_T_FROM_K resume T; BL_M_FROM_RUN + BL_M_FROM_K (with
+# BL_T_PICK) resume M from a raw checkpoint; BL_M_PICK + BL_M_RUN (with BL_T_PICK; BL_M_PICK_WHY) skip M; BL_M_END sets M's last iteration;
 # BL_M_ITERS / BL_P_ITERS (2026-11-11, jobs/recipes RECIPE_M_ITERS / RECIPE_P_ITERS): M's / P's length after the pick
 # before them (default 5000 / 2000);
 # BL_P_EXTRA adds polish keys; BL_EXTRA adds keys to every phase run; BL_DROP removes keys; BL_ANCHOR_COEFF overrides 0;
@@ -149,6 +149,10 @@ else
 fi
 TK=$(basename $T .pt | cut -d_ -f2)
 TRUN=${BL_T_RUN:-$(new_run bl2T_$TAG)}
+# The TAG's picks with their runs (2026-11-11, the user's rerun rule: a rerun from M or P reuses an earlier TAG's T / M,
+# jobs/full_chain.sh REPRO_BLIND_FROM): "PHASE PICK RUN" lines
+PF=logs/jobs/blind_${r}_$TAG.picks
+echo "T $T $TRUN" > $PF
 export PAYLOAD_RAMP=0
 source jobs/fe_robot.sh $R > /dev/null   # BLIND_PAYLOAD again, now without the ramp
 # after fe_robot.sh, which unsets BLIND_PHASE_START_IT (11-05: the first Go2W M ran its stairs ramp from 5000, not 3500)
@@ -163,7 +167,7 @@ log "$R blind M/P anchor coeff $BLIND_ANCHOR_COEFF (checkpoint $T)"
 MEND=${BL_M_END:-$((TK + ${BL_M_ITERS:-5000}))}   # BL_M_END: M's last iteration (default T's pick + BL_M_ITERS)
 if [ -n "${BL_M_PICK:-}" ]; then
   M=$BL_M_PICK MRUN=$BL_M_RUN
-  log "$R blind M PICK (given) $M"
+  log "$R blind M PICK (given${BL_M_PICK_WHY:+: $BL_M_PICK_WHY}) $M"
 else
   if [ -n "${BL_M_FROM_RUN:-}" ]; then
     # resume M from that raw checkpoint: the stairs ramp still counts from T's pick, M ends at T's pick + 5000 in all
@@ -182,6 +186,7 @@ else
   MRUN=$(new_run bl2M_$TAG)
   log "$R blind M PICK $M"
 fi
+echo "M $M $MRUN" >> $PF
 MK=$(basename $M .pt | cut -d_ -f2)
 export BLIND_PILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}   # BL_P_EXTRA: more polish keys (e.g. sidew6l)
 [ -n "${BL_PILOT_P:-}" ] && export BLIND_PILOT=$BL_PILOT_P   # the recipe's whole P pilot (2026-11-10)
@@ -192,6 +197,7 @@ P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $MRUN $MK $PIT 500 full "0 1 2" | 
 [ -n "$P" ] || { log "$R blind P: no checkpoint passed by +$PIT"; exit 1; }
 PK=$(basename $P .pt | cut -d_ -f2)
 log "$R blind P PICK $P"
+echo "P $P $(new_run bl2P_$TAG)" >> $PF
 OUT=logs/pkg/${r}_bl2_${TAG}_$PK
 mkdir -p $OUT
 cp $P $OUT/model_$PK.pt && { cp -r $(new_run bl2P_$TAG)/params $OUT/ 2> /dev/null || cp -r $V2_PKG/params $OUT/ 2> /dev/null; }
