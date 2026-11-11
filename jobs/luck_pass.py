@@ -1,9 +1,9 @@
 """luck_pass.py R PREFIX (go2-depth 2026-11-10, doc/acceptance.md, the user: "运气通过规则化"): whether a failed seed's check
 may pass by the luck rule. ELIGIBLE when every failed goal fails on falls alone and exactly one robot fell over all the
 tests (doc/acceptance.md §1: "所有测试合计只摔了 1 台"): the flat matrix, drift, stops, alternating turns, the loaded
-stand (after its LOADSTAND_SETTLE, as its own goal), the march and its reset, the stop-then-move, the four-wheels-down
-drives, and the stairs; else NO <why>. The chains then need the other seeds to pass (one luck seed per check) and log
-the luck pass. (2026-11-11: the loaded stand, march, stop-then-move and wheels-down falls are counted too; the code had
+stand (after its LOADSTAND_SETTLE, as its own goal), the march and its reset, the four-wheels-down drives, and the
+stairs; else NO <why>. The chains then need the other seeds to pass (one luck seed per check) and log
+the luck pass. (2026-11-11, the user: the loaded stand, march and wheels-down falls are counted too; the code had
 counted the first five only, its docstring had named the loaded stand.)"""
 import re
 import sys
@@ -42,7 +42,9 @@ rv = at.reset_vals(p)
 n += rv["fell"] if rv else 0
 nl = at.nolift_vals(p)
 n += nl["fell"] if nl else 0
-n += sum(int(x) for x in re.findall(r"\| (\d+)/\d+\s*$", at.txt(p.get("stopmove")) or "", re.M))
+# (not stop_then_move's falls: that test judges the stance after a stop, not falls, and the user's list of the falls
+# to add, 2026-11-11, was the loaded stand, the march and the four-wheels-down drives; counted 11-11 by mistake and
+# taken out the same day, after gp2 avg13700: 18 of its 19 falls were there)
 st = at.stop_row(p)
 if st and st.split("|")[1].strip() != "0%":
   n += 1   # stairs falls come as a share of the runs: one incident at least
