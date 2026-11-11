@@ -134,7 +134,9 @@ def main() -> int:
         robots.append({"robot": R, "machine": "", "status": "queued", "note": "waiting for a free GPU (central queue)"})
     if a.manual and Path(a.manual).exists():
         m = json.loads(Path(a.manual).read_text())
-        robots += m.get("robots", [])
+        manual = m.get("robots", [])
+        names = {row["robot"] for row in manual}
+        robots = [row for row in robots if row["robot"] not in names] + manual   # a manual row replaces the queue's
         events += m.get("events", [])
     robots.sort(key=lambda r: ORDER.index(r["robot"]) if r["robot"] in ORDER else 99)
     events.sort(key=lambda e: e["at"], reverse=True)
