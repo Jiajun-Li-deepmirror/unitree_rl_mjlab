@@ -131,6 +131,21 @@ def spinalt_vals(p):
 # b2_fe_mixed_5000 0.17, B2W b2w_polish_9000 0.28, As2W as2w_mixed_8000 0.31, As2 as2_fe_polish_12000 0.30 (ours
 # then: Go2W g14 13600 0.25, B2 l4 9000 0.30). Go2 0.25 until measured.
 STOP_FEET_BAR = 0.9
+# Robots whose deployed blind stops on fewer feet than that (2026-11-11, the user chose "不低于部署版": per band and
+# direction at least the deployed blind's own share minus 0.05, never more than STOP_FEET_BAR; falls still judged as 0,
+# and every robot gets its table measured the same way when its turn comes). The deployed blind's eval_stairs.py
+# "4 feet" column on seed 0, keyed (band, direction):
+#   Go2  go2_blind_v4 (go2_fe_polish_10000), measured 11-11 on t2.
+STOP_FEET_DEPLOYED = {
+  "Go2": {("5-8cm", "up"): 1.00, ("5-8cm", "down"): 0.74, ("8-12cm", "up"): 1.00, ("8-12cm", "down"): 0.75,
+          ("12-15cm", "up"): 1.00, ("12-15cm", "down"): 0.87, ("15-18cm", "up"): 1.00, ("15-18cm", "down"): 0.71},
+}
+STOP_FEET_MARGIN = 0.05
+
+
+def stop_feet_bar(r, band, direction):
+  dep = STOP_FEET_DEPLOYED.get(r, {}).get((band, direction))
+  return STOP_FEET_BAR if dep is None else min(STOP_FEET_BAR, dep - STOP_FEET_MARGIN)
 LOADSTAND_FALLS = 0
 LOADSTAND_SETTLE = 3.0   # s: falls before this are the spawn transient, not judged (see goal_cells)
 # One bar for every robot since 2026-11-10 (doc/acceptance.md, the user: "统一 0.25 m"); the per-robot bars above were
@@ -388,10 +403,10 @@ def goal_cells(r, i, label, p, ms):
     tags.append("停不稳")
   # Standing on all feet when stopped mid-flight (go2-depth 2026-11-07, the user: B2's right rear leg in the air stopping
   # mid-descent): eval_stairs' stop "4 feet" share at least STOP_FEET_BAR in every band and direction (B2 l4 9000 1.00
-  # everywhere, l8 11800 0.16-0.39 on 12-18 cm descents).
-  feet = [float(m.group(1)) for m in re.finditer(r"^\s*\d+-\d+cm\s+(?:up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$",
-                                                 txt(p.get("stairs")) or "", re.M)]
-  if feet and min(feet) < STOP_FEET_BAR:
+  # everywhere, l8 11800 0.16-0.39 on 12-18 cm descents); for a robot in STOP_FEET_DEPLOYED its band's own bar.
+  feet = [(m.group(1), m.group(2), float(m.group(3))) for m in re.finditer(
+    r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", txt(p.get("stairs")) or "", re.M)]
+  if any(v < stop_feet_bar(r, b, d) for b, d, v in feet):
     tags.append("停住缺脚")
   verdict("g_stairs", tags, not s)
   # Wheeled: all four wheels down driving forward / backward.
