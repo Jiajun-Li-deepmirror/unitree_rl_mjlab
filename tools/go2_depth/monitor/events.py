@@ -21,11 +21,13 @@ from pathlib import Path
 BOXES = {"t1": "30714", "t2": "31365"}
 SSH = "/home/dm/.cache/go2-depth-work/ssh/r"
 D = "/root/gpufree-data/go2-depth/depth_fe"
-FILES = "logs/jobs/blind_*.txt logs/jobs/fe_*.txt logs/jobs/repro_*.txt logs/jobs/smoke/*.txt"
+FILES = "logs/jobs/blind_*.txt logs/jobs/fe_*.txt logs/jobs/repro_*.txt logs/jobs/smoke/*.txt logs/jobs/central/central.txt"
+# the workstation's central queue (tools/go2_depth/queue/central_queue.py): every line of its log is an event
+CENTRAL_LOG = Path("/home/dm/.cache/go2-depth-work/central/central.log")
 EVENT = re.compile(
     r"started|PICK|PASS|FAIL|TOOL FAULT|PAUSED|removed, going on|DELIVERY|tinynav|widened|inputs \(actor|inputs: P adds|BLIND VIDEOS"
     r"|STAGE-1|STUDENT|TEACHER|repro queue .*(starts|passed|FAILED|skipped|stopped|all done)|no new run dir"
-    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error")
+    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error|central ")
 SKIP = re.compile(r"^wrote |actor averaged over")
 STATE = Path(__file__).resolve().parents[3] / "logs/monitor/events_state.json"
 
@@ -89,6 +91,16 @@ def main() -> int:
                 for l in lines:
                     print(l, flush=True)
             state[box] = offsets
+        if CENTRAL_LOG.exists():
+            size = CENTRAL_LOG.stat().st_size
+            off = state.get("central", size)
+            if size > off:
+                with open(CENTRAL_LOG, "rb") as f:
+                    f.seek(off)
+                    for l in f.read(size - off).decode(errors="replace").splitlines():
+                        if l.strip():
+                            print(f"[queue] {l[:300]}", flush=True)
+            state["central"] = size
         STATE.write_text(json.dumps(state))
         time.sleep(a.every)
 
