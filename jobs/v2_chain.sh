@@ -68,7 +68,7 @@ esac
   FE_STUDENT_RUN=v2s1_$TAG FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge FE_STUDENT_FROM=$V2_STUDENT_FROM \
   FE_STUDENT_ITERS=$S1 FE_STUDENT_LR=${V2_S1_LR:-2e-4} FE_STUDENT_LR_FINAL=1e-4 FE_STUDENT_FREE=14000 FE_STUDENT_CHECK=0 \
   $([ $V2_STAGE = teacher ] && echo FE_TEACHER_ONLY=1) \
-  DEPTH_STUDENT_HARD=1 ${AFTER:+FE_AFTER_PID=$AFTER} bash jobs/fe_chain.sh $R || { echo "v2_chain: stage A failed"; exit 1; }
+  DEPTH_STUDENT_HARD=1 ${AFTER:+FE_AFTER_PID=$AFTER} bash jobs/fe_chain.sh $R || { rc=$?; echo "v2_chain: stage A failed (exit $rc)"; [ $rc = 4 ] && exit 4; exit 1; }
 case $V2_STAGE in teacher) [ -f $PK/${r}_teacher ]; exit $? ;; s1) [ -f $PK/${r}_student_stage1 ]; exit $? ;; esac
 S1CK=${V2_S2_FROM:-$(cat $PK/${r}_student_stage1)}
 env FE_STUDENT_RUN=v2s2_$TAG${V2_S2_SUFFIX:-} FE_STUDENT_TASK=Unitree-$R-Depth-Student-Edge-RL FE_STUDENT_FROM=$PWD/$S1CK \

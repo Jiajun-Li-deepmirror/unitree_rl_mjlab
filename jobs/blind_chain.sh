@@ -21,6 +21,10 @@
 # BL_NUM_ENVS (4096).
 # then the delivery package logs/pkg/<r>_bl2_<TAG>_<K> (model, policy.onnx, deploy.yaml, blind_pilot.txt, md5s) for
 # the depth chain (v2_robot.sh V2_PKG). Log: logs/jobs/blind_<r>.txt.
+# Exit 0 delivered, 1 no pass (a real result), 2 setup error, 4 a tool fault (2026-11-11, the user: "崩溃、加载失败、找不到
+# 训练目录这类问题，属于工具链故障 ... 不应判为这一轮失败"): the training died or never wrote its run dir, a check gave no
+# verdict twice, the export failed. The reason is in logs/jobs/blind_<r>_<TAG>.fault; full_chain / repro_queue retry or
+# pause on it, never move on.
 set -u
 R=$1 TAG=$2 AFTER=${3:-}
 r=${R,,}
@@ -50,9 +54,12 @@ export PAYLOAD_RAMP=72000
 source jobs/fe_robot.sh $R > /dev/null || exit 2
 unset BLIND_CONS_INIT BLIND_PHASE_START_IT BLIND_ANCHOR_CHECKPOINT BLIND_ANCHOR_COEFF
 [ -n "$V2_CONS" ] && export BLIND_CONS_INIT=$V2_CONS
-L=logs/jobs/blind_$r.txt C=logs/checks TD=logs/rsl_rl/${r}_blind
+L=${BL_LOG:-logs/jobs/blind_$r.txt} C=logs/checks TD=logs/rsl_rl/${r}_blind
 mkdir -p logs/jobs $C logs/pkg
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
+FAULT=logs/jobs/blind_${r}_$TAG.fault
+rm -f $FAULT
+fault() { echo "$*" > $FAULT; log "$R TOOL FAULT: $*"; }
 new_run() { ls -d $TD/*_$1 2> /dev/null | sort | tail -n 1; }
 # new_run_wait RUN PID BEFORE: the run dir the training just launched writes (other than BEFORE, the newest one of that
 # name before the launch), waiting up to 20 min while it lives. 2026-11-10: a fixed 120 s missed B2 rp3's M, whose dir
@@ -68,23 +75,43 @@ last8() {
 wait_ck() { until [ -f $1/model_$2.pt ]; do kill -0 $3 2> /dev/null || { sleep 5; [ -f $1/model_$2.pt ]; return; }; sleep 30; done; sleep 10; }
 log "$R blind chain $TAG: pilot $BLIND_PILOT; polish adds $POLISH_KEYS"
 if [ -n "$AFTER" ]; then while kill -0 $AFTER 2> /dev/null; do sleep 30; done; log "$R pid $AFTER ended"; fi
+# CHAIN_SMOKE=1 (2026-11-11, jobs/smoke_chain.sh; the user: before every formal run, the whole chain with few robots
+# and a few iterations per stage, every check forced to pass): see the CHAIN_SMOKE lines.
+[ "${CHAIN_SMOKE:-0}" = 1 ] && log "$R blind chain $TAG: SMOKE (${BL_NUM_ENVS:-4096} robots, checkpoints every ${BL_SAVE:-?}, checks every ${BL_STEP:-500})"
+# The P pilot, here already for the input check below (as at P's start)
+PPILOT=$BLIND_PILOT$POLISH_KEYS${BL_P_EXTRA:+,$BL_P_EXTRA}
+[ -n "${BL_PILOT_P:-}" ] && PPILOT=$BL_PILOT_P
+PPILOT=$(drop_keys "$PPILOT")
+# The stages' input widths before any training (2026-11-11, the user: "链开始时可以先算出每个阶段配方对应的观测维度，提前检查
+# 前后阶段能否对上"; scripts/blind/obs_dims.py): M resumes T as it is, so their inputs must be equal; P may only add
+# inputs (M's pick is widened for them before P); fewer inputs than the stage before cannot follow it -- a tool fault.
+DIMS=logs/jobs/blind_${r}_dims_$TAG.txt
+{ BLIND_PILOT=$BLIND_PILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Teacher Unitree-$R-Blind-Mixed
+  BLIND_PILOT=$PPILOT $PY scripts/blind/obs_dims.py Unitree-$R-Blind-Polish; } 2> logs/jobs/blind_${r}_dims_$TAG.log | grep ' actor ' > $DIMS
+read -r _ _ TA _ TC <<< "$(sed -n 1p $DIMS)"; read -r _ _ MA _ MC <<< "$(sed -n 2p $DIMS)"; read -r _ _ PA _ PC <<< "$(sed -n 3p $DIMS)"
+[ -n "${PC:-}" ] || { fault "the stages' input check did not run ($(grep -m1 -E 'Error' logs/jobs/blind_${r}_dims_$TAG.log | cut -c1-200))"; exit 4; }
+log "$R blind inputs (actor / critic): T $TA / $TC, M $MA / $MC, P $PA / $PC"
+[ "$TA/$TC" = "$MA/$MC" ] || { fault "M's inputs $MA / $MC differ from T's $TA / $TC: M cannot resume T"; exit 4; }
+{ [ $PA -ge $MA ] && [ $PC -ge $MC ]; } || { fault "P has fewer inputs ($PA / $PC) than M ($MA / $MC)"; exit 4; }
+[ "$PA/$PC" = "$MA/$MC" ] || log "$R blind inputs: P adds $((PA - MA)) actor / $((PC - MC)) critic inputs: M's pick is widened before P"
 
 # phase NAME TASK RUN FROM_RUN FROM_K MAX_IT FIRST_CHECK MODE SEEDS -> PICK (avg checkpoint path) on stdout's last line
 phase() {
   local name=$1 task=$2 run=$3 frun=$4 fk=$5 maxit=$6 first=$7 mode=$8 seeds=$9
   # BL_NUM_ENVS (11-06): fewer robots to share a GPU (Go2W g16 at 2048 beside B2 l5's 12.4 GB on t1)
-  local args="--env.scene.num-envs=${BL_NUM_ENVS:-4096} --agent.run-name=$run --agent.max-iterations=$maxit"
+  local args="--env.scene.num-envs=${BL_NUM_ENVS:-4096} --agent.run-name=$run --agent.max-iterations=$maxit${BL_SAVE:+ --agent.save-interval=$BL_SAVE}"
   [ -n "$frun" ] && args="$args --agent.resume=True --agent.load-run=^$(basename $frun)\$ --agent.load-checkpoint=^model_$fk\.pt\$"
   local before=$(new_run $run) rd=""
   $PY scripts/train.py $task $args > logs/jobs/blind_${r}_$run.log 2>&1 &
   local tp=$!
   log "$R $name started (pid $tp; $task, $maxit it from ${frun:-zero}${fk:+ model_$fk}, checks $mode from +$first every 500, seeds $seeds)"
   rd=$(new_run_wait $run $tp "$before") || {
-    log "$R $name: no new run dir for $run (training $(kill -0 $tp 2> /dev/null && echo alive || echo ended)): phase stopped"
+    fault "$name: no new run dir for $run (training $(kill -0 $tp 2> /dev/null && echo alive || echo ended): $(grep -m1 -E 'Error|error:' logs/jobs/blind_${r}_$run.log | cut -c1-200))"
     stop_train $tp; echo ""; return; }
   local base=${fk:-0} pick=""
-  for K in $(seq $((base + first)) 500 $((base + maxit - 1))); do
-    wait_ck "$rd" $K $tp || { log "$R $name ended before model_$K"; break; }
+  for K in $(seq $((base + first)) ${BL_STEP:-500} $((base + maxit - 1))); do
+    # the training ends only when stopped here, after its last checked iteration: ending before one is a crash or a kill
+    wait_ck "$rd" $K $tp || { fault "$name: the training ended before model_$K ($(grep -m1 -E 'Error|Killed|Traceback' logs/jobs/blind_${r}_$run.log | cut -c1-200))"; break; }
     local A=$TD/${run}_avg$K/model_$K.pt ok=1 lucky=""
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $rd $K) >> $L 2>&1 || cp $rd/model_$K.pt $A
@@ -92,6 +119,15 @@ phase() {
       local P=$C/bl_${r}_${run}_avg${K}_s$SEED
       FE_CHECK_FLAT=$([ $mode = flat ] && echo 1 || echo 0) bash jobs/fe_check.sh blind $R $A $SEED $P
       local v=$(cat ${P}_verdict.txt 2> /dev/null)
+      # no verdict, or one the judge could not reach (a run missing): the check again, then a tool fault
+      if [ -z "$v" ] || [[ "$v" == *"judge error"* ]] || [[ "$v" == *INVALID* ]]; then
+        log "$R $name avg$K s$SEED: no usable verdict (${v:-none}), checked again"
+        FE_CHECK_FLAT=$([ $mode = flat ] && echo 1 || echo 0) bash jobs/fe_check.sh blind $R $A $SEED $P
+        v=$(cat ${P}_verdict.txt 2> /dev/null)
+        if [ -z "$v" ] || [[ "$v" == *"judge error"* ]] || [[ "$v" == *INVALID* ]]; then
+          fault "$name avg$K s$SEED: the check gave no usable verdict twice (${v:-none})"; ok=0; break 2
+        fi
+      fi
       log "$R $name avg$K s$SEED ($mode): $v"
       # M (11-06): stairs speed is the polish phase's job (the stairspeed keys are polish keys), so a mixed check whose
       # only miss is 上楼慢 / 下楼慢 passes M; polish is checked on the whole acceptance (3 seeds + tinynav).
@@ -114,6 +150,11 @@ phase() {
       echo "$R $A BLIND $BLIND_PILOT" > $Q.req   # the export needs the recipe (it decides the actor inputs)
       local w=0
       until [ -f $Q.verdict ] || [ $w -ge 5400 ]; do sleep 30; w=$((w + 30)); done
+      # no verdict in 90 min: the workstation's tinynav watcher is down -- a tool fault, logged once, waited out (12 h)
+      if [ ! -f $Q.verdict ]; then
+        log "$R TOOL FAULT: $name avg$K: no tinynav verdict in 90 min ($Q.req; tn_gate_watch.sh down?), still waiting"
+        until [ -f $Q.verdict ] || [ $w -ge 43200 ]; do sleep 60; w=$((w + 60)); done
+      fi
       local tv=$(cat $Q.verdict 2> /dev/null || echo "no verdict")
       log "$R $name avg$K tinynav: $tv"
       [[ "$tv" == PASS* ]] || ok=0
@@ -136,8 +177,9 @@ else
     TF0=$BL_T_FROM_K; TFIRST=$(( TF0 + 500 >= 2000 ? 500 : 2000 - TF0 ))
     T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG $BL_T_FROM_RUN $TF0 $((TMAX - TF0)) $TFIRST flat 0 | tail -n 1)
   else
-    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG "" "" $TMAX 2000 flat 0 | tail -n 1)
+    T=$(phase T Unitree-$R-Blind-Teacher bl2T_$TAG "" "" $TMAX ${BL_FIRST_T:-2000} flat 0 | tail -n 1)
   fi
+  [ -s $FAULT ] && exit 4
   if [ -z "$T" ]; then
     # 2026-11-10 (the user: T at its limit without a pass hands its last check to M, as M does to P; P's whole
     # acceptance -- 3 seeds + tinynav -- decides)
@@ -174,8 +216,9 @@ else
     MF0=$BL_M_FROM_K; MFIRST=$(( MF0 + 500 >= TK + 3000 ? 500 : TK + 3000 - MF0 ))
     M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $BL_M_FROM_RUN $MF0 $((MEND - MF0)) $MFIRST full 0 | tail -n 1)
   else
-    M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $TRUN $TK $((MEND - TK)) 3000 full 0 | tail -n 1)
+    M=$(phase M Unitree-$R-Blind-Mixed bl2M_$TAG $TRUN $TK $((MEND - TK)) ${BL_FIRST_M:-3000} full 0 | tail -n 1)
   fi
+  [ -s $FAULT ] && exit 4
   if [ -z "$M" ]; then
     # 2026-11-10 (doc/acceptance.md, the user: the mixed phase's handoff as a rule): M at its end without a pass hands
     # its last check to P, which is judged on the whole acceptance (3 seeds + tinynav)
@@ -210,7 +253,8 @@ else
   rmdir $WD 2> /dev/null
 fi
 PIT=${BL_P_ITERS:-2000}
-P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $PFROM $MK $PIT 500 full "0 1 2" | tail -n 1)
+P=$(phase P Unitree-$R-Blind-Polish bl2P_$TAG $PFROM $MK $PIT ${BL_FIRST_P:-500} full "${BL_P_SEEDS:-0 1 2}" | tail -n 1)
+[ -s $FAULT ] && exit 4
 [ -n "$P" ] || { log "$R blind P: no checkpoint passed by +$PIT"; exit 1; }
 PK=$(basename $P .pt | cut -d_ -f2)
 log "$R blind P PICK $P"
@@ -223,4 +267,4 @@ md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5
 $PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/model_$PK.pt --out $OUT > logs/jobs/blind_${r}_export.log 2>&1 \
   && $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $OUT/deploy.yaml >> logs/jobs/blind_${r}_export.log 2>&1 \
   && log "$R BLIND DELIVERY $OUT (model md5 $(md5sum < $OUT/model_$PK.pt | cut -c1-8), policy.onnx $(md5sum < $OUT/policy.onnx | cut -c1-8))" \
-  || log "$R blind export FAILED: $(tail -n 3 logs/jobs/blind_${r}_export.log)"
+  || { fault "blind export failed: $(tail -n 3 logs/jobs/blind_${r}_export.log | tr '\n' ' ')"; exit 4; }

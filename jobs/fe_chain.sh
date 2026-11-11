@@ -36,11 +36,20 @@ MARGIN=${FE_MARGIN:-0.05}
 # map3 "no worse than the widened model" within this many points of reached (1 robot of 64 in one of the 18 scenarios
 # is 0.09; 10-31 the Go2W widened model read op 100.0 and its first teacher average 99.9).
 MAP3_TOL=0.5
-L=logs/jobs/fe_$r.txt C=logs/checks
+L=${FE_LOG:-logs/jobs/fe_$r.txt} C=logs/checks
 mkdir -p logs/jobs $C $PK logs/exports
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
+# A tool fault (2026-11-11, the user: crashes, load failures and missing run dirs are not a failed round): logged,
+# written beside the log (logs/jobs/fe_<r>.fault), exit 4 -- v2_chain / full_chain / repro_queue retry or pause on it.
+fault() { log "$R TOOL FAULT: $*"; echo "$*" > ${L%.txt}.fault; exit 4; }
+rm -f ${L%.txt}.fault
 free_mib() { echo $(( $(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits) - $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) )); }
 wait_free() { local n=0; until [ $n -ge 3 ]; do if [ $(free_mib) -ge $1 ]; then n=$((n + 1)); else n=0; fi; sleep 60; done; }
+# CHAIN_SMOKE=1 (2026-11-11, jobs/smoke_chain.sh; the user: before every formal run, the whole chain with few robots
+# and a few iterations per stage, every check forced to pass): see the CHAIN_SMOKE lines.
+# Here: FE_TEACHER_ENVS / FE_STUDENT_ENVS / FE_SAVE / FE_TEACHER_ITERS small, no waiting for free memory (a few
+# hundred MiB), the first passing teacher check is the pick.
+[ "${CHAIN_SMOKE:-0}" = 1 ] && wait_free() { :; }
 # A check that did not finish (2026-11-02, t1: an evaluation out of GPU memory left its items "评测中" and the chain
 # took it for a FAIL) is run once more instead of judged.
 incomplete() { [[ -z "$1" || "$1" == *评测中* || "$1" == *INVALID* || "$1" == *"judge error"* ]]; }
@@ -84,31 +93,31 @@ fi
 
 # 1. Widen and check the widened model.
 if [ -f $INIT ] && [ $IRUN != blind_init_fe ] && ! cmp -s $TD/$IRUN/checkpoint.md5 $PKG/checkpoint.md5; then
-  log "$R: $INIT is not the widened $PKG (checkpoint.md5 differs)"; exit 1
+  fault "$INIT is not the widened $PKG (checkpoint.md5 differs)"
 fi
 if [ ! -f $INIT ]; then
-  [ "$(md5sum < $PKG/model_$N.pt | cut -d' ' -f1)" = "$(grep -o '^[0-9a-f]*' $PKG/checkpoint.md5 | head -n 1)" ] || { log "$R: md5 of $PKG/model_$N.pt does not match checkpoint.md5"; exit 1; }
+  [ "$(md5sum < $PKG/model_$N.pt | cut -d' ' -f1)" = "$(grep -o '^[0-9a-f]*' $PKG/checkpoint.md5 | head -n 1)" ] || fault "md5 of $PKG/model_$N.pt does not match checkpoint.md5"
   mkdir -p $TD/$IRUN && cp -r $PKG/params $PKG/blind_pilot*.txt $PKG/checkpoint.md5 $TD/$IRUN/
   log "$R widen $PKG/model_$N.pt (pilot $PILOT)"
   $PY scripts/go2_depth/widen_scan.py --task Unitree-$R-Depth-$PH $PKG/model_$N.pt --out $INIT > logs/jobs/fe_${r}_widen.log 2>&1 \
-    || { log "$R widen failed: $(tail -n 3 logs/jobs/fe_${r}_widen.log)"; exit 1; }
+    || fault "widen failed: $(tail -n 3 logs/jobs/fe_${r}_widen.log | tr '\n' ' ')"
 fi
 
 # 2. Teacher.
 if [ ! -f $PK/${r}_teacher ]; then
-  T0=$N LRUN=$IRUN TITERS=3001
+  T0=$N LRUN=$IRUN TITERS=${FE_TEACHER_ITERS:-3001}
   if [ -n "${FE_TEACHER_FROM:-}" ]; then
     T0=$(basename $FE_TEACHER_FROM .pt | cut -d_ -f2) LRUN=${TRUN}_init TITERS=$(( ${TKS##* } + 1 ))
-    mkdir -p $TD/$LRUN && cp $FE_TEACHER_FROM $TD/$LRUN/model_$T0.pt || { log "$R: cannot copy $FE_TEACHER_FROM"; exit 1; }
+    mkdir -p $TD/$LRUN && cp $FE_TEACHER_FROM $TD/$LRUN/model_$T0.pt || fault "cannot copy $FE_TEACHER_FROM"
   fi
   wait_free 12000
   TBEFORE=$(new_run ${r}_depth_teacher $TRUN)
-  $PY scripts/train.py Unitree-$R-Depth-$PH --env.scene.num-envs=4096 --agent.run-name=$TRUN --agent.resume=True \
+  $PY scripts/train.py Unitree-$R-Depth-$PH --env.scene.num-envs=${FE_TEACHER_ENVS:-4096} --agent.run-name=$TRUN --agent.resume=True ${FE_SAVE:+--agent.save-interval=$FE_SAVE} \
     --agent.load-run="^$LRUN\$" --agent.load-checkpoint="^model_$T0\.pt\$" --agent.max-iterations=$TITERS \
     > logs/jobs/fe_${r}_teacher$TTAG.log 2>&1 &
   TP=$!
   log "$R teacher started (pid $TP; from $LRUN/model_$T0.pt, $TITERS it, pilot $BLIND_PILOT, constraints init ${BLIND_CONS_INIT:-1x}; free $(free_mib) MiB before)"
-  RUN=$(new_run_wait ${r}_depth_teacher $TRUN $TP "$TBEFORE") || { log "$R teacher: no new run dir for $TRUN: chain stops"; kill -INT $TP 2> /dev/null; exit 1; }
+  RUN=$(new_run_wait ${r}_depth_teacher $TRUN $TP "$TBEFORE") || { kill -INT $TP 2> /dev/null; fault "teacher: no new run dir for $TRUN ($(grep -m1 -E 'Error|error:' logs/jobs/fe_${r}_teacher$TTAG.log | cut -c1-200))"; }
   log "$R teacher run $RUN"
   # one baseline per blind package and checkpoint (11-07: the B2 chains b2n1-b2n3 had compared their teachers with
   # fe_b2_init of 11-01, an older blind, whatever package they widened)
@@ -119,7 +128,7 @@ if [ ! -f $PK/${r}_teacher ]; then
   pick="" best="" bestm=-1
   for dK in $TKS; do
     K=$((T0 + dK))
-    wait_ck $RUN $K $TP || { log "$R teacher ended before model_$K ($(tail -n 1 logs/jobs/fe_${r}_teacher$TTAG.log))"; break; }
+    wait_ck $RUN $K $TP || fault "the teacher training ended before model_$K ($(grep -m1 -E 'Error|Killed|Traceback' logs/jobs/fe_${r}_teacher$TTAG.log | cut -c1-200))"
     A=$TD/${TRUN}_avg$K/model_$K.pt
     mkdir -p $(dirname $A)
     $PY jobs/avg_ckpt.py $A $(last8 $RUN $K) >> $L 2>&1 || { log "$R teacher average $K failed"; continue; }
@@ -132,6 +141,7 @@ if [ ! -f $PK/${r}_teacher ]; then
     v=$(cat ${P}_verdict.txt) n=$(reached ${P}_noop.txt) o=$(reached ${P}_op.txt) sp=$($PY jobs/fe_margin.py $R $P)
     m=${sp##* }
     log "$R teacher avg$K: noop $n op $o speed up/down/margin $sp | $v"
+    if [ "${CHAIN_SMOKE:-0}" = 1 ] && [[ "$v" == PASS ]]; then pick=$A; log "$R teacher avg$K: SMOKE pick"; break; fi
     if [[ "$v" == PASS ]] && python3 -c "import sys; a=list(map(float,sys.argv[1:])); sys.exit(0 if a[0] >= a[2] - a[4] and a[1] >= a[3] - a[4] else 1)" $n $o $BN $BO $MAP3_TOL; then
       if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)" $m $MARGIN; then
         # FE_TEACHER_TOPFLAT (2026-11-09, Go2W): also at most that share (%) of the top-landing wheel time lifted
@@ -201,18 +211,18 @@ SFRIC=${DEPTH_STUDENT_FRICTION:-}; unset DEPTH_STUDENT_FRICTION
 SSPIN=${DEPTH_STUDENT_SPIN_LEFT:-}; unset DEPTH_STUDENT_SPIN_LEFT
 SSTAND=${DEPTH_STUDENT_STAND_LONG:-}; unset DEPTH_STUDENT_STAND_LONG
 # FE_STUDENT_FROM=none (2026-11-10, the reproducible run): the student distils from a fresh network
-[ "$SFROM" = none ] || [ -f $SFROM ] || { log "$R: no warm-start student $SFROM"; exit 1; }
+[ "$SFROM" = none ] || [ -f $SFROM ] || fault "no warm-start student $SFROM"
 # FE_STUDENT_FREE (MiB, 2026-11-04): B2W's hard-command student OOM'd twice at start with 14.3 GB free beside a teacher
 # (it holds 14.4 GB); two students do not fit one 24 GB box.
 wait_free ${FE_STUDENT_FREE:-12000}  # a 1024-env depth student holds ~11.1 GB (Go2W, 11-01); 14000 never came beside a teacher
 SBEFORE=$(new_run ${r}_depth_student $SRUN)
 env ${SHARD:+DEPTH_STUDENT_HARD=$SHARD} ${SDRE:+DEPTH_STUDENT_DR_EDGE=$SDRE} ${SFRIC:+DEPTH_STUDENT_FRICTION=$SFRIC} \
-  ${SSPIN:+DEPTH_STUDENT_SPIN_LEFT=$SSPIN} ${SSTAND:+DEPTH_STUDENT_STAND_LONG=$SSTAND} $PY scripts/train.py $STASK --env.scene.num-envs=1024 --agent.max-iterations=$SITERS \
+  ${SSPIN:+DEPTH_STUDENT_SPIN_LEFT=$SSPIN} ${SSTAND:+DEPTH_STUDENT_STAND_LONG=$SSTAND} $PY scripts/train.py $STASK --env.scene.num-envs=${FE_STUDENT_ENVS:-1024} --agent.max-iterations=$SITERS ${FE_SAVE:+--agent.save-interval=$FE_SAVE} \
   --agent.run-name=$SRUN --agent.teacher-checkpoint=$TEACHER $([ "$SFROM" = none ] || echo --agent.student-checkpoint=$SFROM) \
   --agent.algorithm.learning-rate=$SLR --agent.learning-rate-final=$SLRF ${FE_STUDENT_ARGS:-} > logs/jobs/fe_${r}_student_$SRUN.log 2>&1 &
 SP=$!
 log "$R student started (pid $SP; $STASK, run name $SRUN, $SITERS it, lr $SLR -> $SLRF, hard commands ${SHARD:-off}, DR edges ${SDRE:-off}, foot friction ${SFRIC:-as the task}, spin left ${SSPIN:-0.5}, long stands ${SSTAND:-off}, args ${FE_STUDENT_ARGS:-none}; teacher $TEACHER; from $SFROM; free $(free_mib) MiB before)"
-RUN=$(new_run_wait ${r}_depth_student $SRUN $SP "$SBEFORE") || { log "$R student: no new run dir for $SRUN: chain stops"; kill -INT $SP 2> /dev/null; exit 1; }
+RUN=$(new_run_wait ${r}_depth_student $SRUN $SP "$SBEFORE") || { kill -INT $SP 2> /dev/null; fault "student: no new run dir for $SRUN ($(grep -m1 -E 'Error|error:' logs/jobs/fe_${r}_student_$SRUN.log | cut -c1-200))"; }
 log "$R student run $RUN"
 # This robot's depth trainings only (2026-11-02: dance's G1 trainings share the GPUs and run scripts/train.py too,
 # and a B2W teacher beside an As2W student must not hold its checks for 10 h).
@@ -223,11 +233,11 @@ pick=""
 # $PK/${r}_student_stage1; stage two (PPO+BC, FE_STUDENT_FROM = that average) runs as its own chain and is checked.
 if [ "${FE_STUDENT_CHECK:-1}" = 0 ]; then
   K=$((SITERS - 1))
-  wait_ck $RUN $K $SP || { log "$R stage-1 student ended before model_$K ($(tail -n 1 logs/jobs/fe_${r}_student_$SRUN.log))"; exit 1; }
+  wait_ck $RUN $K $SP || fault "the stage-1 student training ended before model_$K ($(grep -m1 -E 'Error|Killed|Traceback' logs/jobs/fe_${r}_student_$SRUN.log | cut -c1-200))"
   while kill -0 $SP 2> /dev/null; do sleep 10; done
   A=$SD/${SRUN}_avg$K/model_$K.pt
   mkdir -p $(dirname $A)
-  $PY jobs/avg_student.py $A $(last8 $RUN $K) >> $L 2>&1 || { log "$R stage-1 student average $K failed"; exit 1; }
+  $PY jobs/avg_student.py $A $(last8 $RUN $K) >> $L 2>&1 || fault "stage-1 student average $K failed"
   echo "$A" > $PK/${r}_student_stage1
   log "$R STAGE-1 STUDENT $A (no checks; FE_STUDENT_CHECK=0)"
   exit 0
@@ -235,7 +245,7 @@ fi
 # FE_STUDENT_KS (2026-11-05): the checked iterations (default every 500 from 1000, and the last).
 KLIST=${FE_STUDENT_KS:-$(seq 1000 500 $((SITERS - 1))) $((SITERS - 1))}
 for K in $KLIST; do
-  wait_ck $RUN $K $SP || { log "$R student ended before model_$K ($(tail -n 1 logs/jobs/fe_${r}_student_$SRUN.log))"; break; }
+  wait_ck $RUN $K $SP || fault "the student training ended before model_$K ($(grep -m1 -E 'Error|Killed|Traceback' logs/jobs/fe_${r}_student_$SRUN.log | cut -c1-200))"
   if [ "${FE_CHECK_AFTER_TRAIN:-0}" = 1 ]; then
     until [ "$(trainings)" = 0 ]; do sleep 60; done
   fi
@@ -290,5 +300,5 @@ K=$(basename $pick .pt | cut -d_ -f2)
 X=logs/exports/${r}_fe_student_${SRUN#fe_edge_}_avg$K.onnx
 $PY scripts/go2_depth/export_student.py --task Unitree-$R-Depth-Student-Edge --checkpoint $pick --out $X > logs/jobs/fe_${r}_export.log 2>&1 \
   && log "$R STUDENT PICK $pick (seeds 0 1 2 pass); exported $X (md5 $(md5sum < $X | cut -c1-8))" \
-  || log "$R STUDENT PICK $pick; export FAILED: $(tail -n 3 logs/jobs/fe_${r}_export.log)"
+  || fault "STUDENT PICK $pick; export failed: $(tail -n 3 logs/jobs/fe_${r}_export.log | tr '\n' ' ')"
 echo "$(date '+%m-%d %T') $R fe round done" >> $C/checks.out

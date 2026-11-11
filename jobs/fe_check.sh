@@ -93,6 +93,18 @@ evalrun() {  # OUT CMD...
   done
   return 1
 }
+# CHAIN_SMOKE=1 (2026-11-11, jobs/smoke_chain.sh): a map3 run without the operator (4 robots, one shard) and the flat
+# matrix (one robot per command) start and finish on this checkpoint; the verdict is PASS, or a judge error when one of
+# them broke (blind_chain / fe_chain count that as a tool fault).
+if [ "${CHAIN_SMOKE:-0}" = 1 ]; then
+  if $W $S/map3_par.py --out ${P}_noop.txt --shards 1 -- --task $TE $CK --set flights --no-operator --down-vx 0.5 --num-envs 4 \
+       --time-scale 1.6 --seed $SEED $SCAN > ${P}_noop.log 2>&1 \
+     && $RS $S/accept_matrix.py --task $TF --envs-per-cmd 1 $CK $AMA > ${P}_am.txt 2>&1; then v=PASS
+  else v="FAIL: judge error: smoke evaluation ($(tail -n 1 ${P}_noop.log ${P}_am.txt 2> /dev/null | tr '\n' ' ' | cut -c1-200))"; fi
+  echo "$v" > ${P}_verdict.txt
+  echo "$(date '+%m-%d %T') SMOKE $KIND $R $CK s$SEED: noop $(mean_reached ${P}_noop.txt) | $v" >> $O/checks.out
+  exit 0
+fi
 exec 9>> ${FE_LOCK:-$O/check.lock}
 flock 9
 t0=$(date +%s)

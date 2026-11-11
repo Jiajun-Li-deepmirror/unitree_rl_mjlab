@@ -23,18 +23,47 @@
 #     s1 reuses its teacher, s2 its teacher and stage-1 student
 # Every reused result is logged with the TAG it comes from. Exit 0 pass, 1 fail, 3 not ready (the previous round has
 # not passed).
+# A tool fault (2026-11-11, the user: "崩溃、加载失败、找不到训练目录这类问题，属于工具链故障。它们应自动重试，或者暂停等人
+# 处理，不应判为这一轮失败，也不应把队列推到下一个机型"; the chains exit 4) is never a result: the round is retried once
+# after 2 min, then this job pauses until logs/jobs/repro_hold_<r> is removed, and goes on from the stage it reached
+# (the blind round from this TAG's own picks).
 # Log: logs/jobs/repro_<r>.txt. The tinynav gate runs on the workstation (tools/go2_depth/acceptance/tn_gate_watch.sh).
 set -u
 R=$1 TAG=$2 STAGE=${3:-all}
 r=${R,,}
 cd /root/gpufree-data/go2-depth/depth_fe && source env.sh
 source jobs/recipes/$r.sh || exit 2
-L=logs/jobs/repro_$r.txt
+L=${REPRO_LOG:-logs/jobs/repro_$r.txt}
+BLOG=${BL_LOG:-logs/jobs/blind_$r.txt} FLOG=${FE_LOG:-logs/jobs/fe_$r.txt}   # the chains' logs (a smoke run: logs/jobs/smoke/)
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
+FAULTS=0
+on_fault() {   # REASON
+  FAULTS=$((FAULTS + 1))
+  log "$R $STAGE $TAG: TOOL FAULT $FAULTS ($1) -- not a failed round"
+  echo "$(date '+%m-%d %H:%M:%S') repro: $R $STAGE $TAG TOOL FAULT $FAULTS: $1" >> logs/jobs/repro_queue.txt
+  [ "${CHAIN_SMOKE:-0}" = 1 ] && exit 4
+  if [ $FAULTS -le 1 ]; then log "$R $STAGE $TAG: retried in 2 min"; sleep 120; return; fi
+  local H=logs/jobs/repro_hold_$r
+  echo "$R $STAGE $TAG: $1" > $H
+  log "$R $STAGE $TAG: PAUSED after $FAULTS tool faults; remove $H to go on"
+  echo "$(date '+%m-%d %H:%M:%S') repro: $R $STAGE $TAG PAUSED (remove $H to go on)" >> logs/jobs/repro_queue.txt
+  while [ -f $H ]; do sleep 60; done
+  log "$R $STAGE $TAG: $H removed, going on"
+}
 case $STAGE in all|blind|teacher|s1|s2) ;; *) echo "full_chain.sh: stage blind, teacher, s1, s2 or all" >&2; exit 2 ;; esac
 # A robot rerun under its own tag (2026-11-11): logs/jobs/repro_tag_<r> names the tag its rounds run under from then on,
 # so a queue started before the rerun (which still says the old tag) runs the robot's later rounds on the rerun's results
-if [ -s logs/jobs/repro_tag_$r ] && [ "$(cat logs/jobs/repro_tag_$r)" != "$TAG" ]; then
+# CHAIN_SMOKE=1 (2026-11-11, jobs/smoke_chain.sh): the recipe with every stage a few iterations long, 64 robots,
+# checks forced to pass; a smoke run never follows logs/jobs/repro_tag_<r>, never takes the queue's insert file and never
+# pauses on a tool fault (it ends with exit 4)
+if [ "${CHAIN_SMOKE:-0}" = 1 ]; then
+  [[ $TAG == smoke* ]] || { echo "full_chain.sh: a smoke TAG starts with smoke" >&2; exit 2; }
+  RECIPE_T_MAX=60 RECIPE_M_ITERS=60 RECIPE_P_ITERS=60 RECIPE_S1_ITERS=40
+  export REPRO_INSERTED=1 BL_NUM_ENVS=64 BL_SAVE=10 BL_STEP=20 BL_FIRST_T=20 BL_FIRST_M=20 BL_FIRST_P=20 BL_P_SEEDS=0 \
+    V2_TKS="20 40" V2_S2_ITERS=40 V2_S2_KS="20 39" FE_TEACHER_ITERS=41 FE_TEACHER_ENVS=64 FE_STUDENT_ENVS=32 FE_SAVE=10 \
+    FE_LOCK=/tmp/chain_smoke_check.lock
+fi
+if [ "${CHAIN_SMOKE:-0}" != 1 ] && [ -s logs/jobs/repro_tag_$r ] && [ "$(cat logs/jobs/repro_tag_$r)" != "$TAG" ]; then
   NT=$(cat logs/jobs/repro_tag_$r); log "$R $STAGE $TAG: runs as $NT (logs/jobs/repro_tag_$r)"; TAG=$NT
 fi
 # Inserted jobs (2026-11-10): logs/jobs/repro_insert, one shell command per line, run before this job (a queue that is
@@ -62,7 +91,7 @@ SNAP=logs/jobs/recipe_${r}_$TAG.sh
 pick_of() {
   local f=logs/jobs/blind_${r}_$1.picks p
   [ -f $f ] && grep "^$2 " $f | tail -n 1 | cut -d' ' -f2- && return
-  p=$(grep "$R blind $2 PICK" logs/jobs/blind_$r.txt 2> /dev/null | grep -o "logs/rsl_rl/[^ ]*bl2$2_$1_avg[0-9]*/model_[0-9]*\.pt" | tail -n 1)
+  p=$(grep "$R blind $2 PICK" $BLOG 2> /dev/null | grep -o "logs/rsl_rl/[^ ]*bl2$2_$1_avg[0-9]*/model_[0-9]*\.pt" | tail -n 1)
   [ -n "$p" ] && echo "$p $(ls -d logs/rsl_rl/${r}_blind/*_bl2$2_$1 2> /dev/null | sort | tail -n 1)"
 }
 BF=${REPRO_BLIND_FROM:-}
@@ -97,16 +126,33 @@ fi
 if [ -n "${REPRO_BLIND_TAG:-}" ] && [ "$REPRO_BLIND_TAG" != $TAG ] && { [ $STAGE = all ] || [ $STAGE = reuse ]; }; then
   log "$R $STAGE $TAG: blind round not run (reused from TAG $REPRO_BLIND_TAG)"
   [ $STAGE = reuse ] && STAGE=blind
-elif { [ $STAGE = all ] || [ $STAGE = blind ]; } && grep -q "$R BLIND DELIVERY logs/pkg/${r}_bl2_${TAG}_" logs/jobs/blind_$r.txt 2> /dev/null; then
+elif { [ $STAGE = all ] || [ $STAGE = blind ]; } && grep -q "$R BLIND DELIVERY logs/pkg/${r}_bl2_${TAG}_" $BLOG 2> /dev/null; then
   log "$R $STAGE $TAG: the blind round already delivered, not run again"
 elif [ $STAGE = all ] || [ $STAGE = blind ]; then
-  BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
-  BL_M_ITERS=${RECIPE_M_ITERS:-5000} BL_P_ITERS=${RECIPE_P_ITERS:-2000} \
-  BL_EXTRA= BL_P_EXTRA= BL_DROP= \
-    bash jobs/blind_chain.sh $R $TAG || { log "$R $STAGE $TAG: blind chain failed (logs/jobs/blind_$r.txt)"; exit 1; }
+  while :; do
+    if [ $FAULTS -gt 0 ]; then   # after a tool fault: on from the stage this TAG reached (its own picks)
+      TP=$(pick_of $TAG T) MP=$(pick_of $TAG M)
+      if [ -n "$TP" ]; then
+        export BL_T_PICK=${TP% *} BL_T_RUN=${TP#* } BL_T_PICK_WHY="this TAG's, kept after the tool fault"
+        log "$R blind $TAG: after the tool fault, T reused from TAG $TAG: $BL_T_PICK"
+      fi
+      if [ -n "$TP" ] && [ -n "$MP" ]; then
+        export BL_M_PICK=${MP% *} BL_M_RUN=${MP#* } BL_M_PICK_WHY="this TAG's, kept after the tool fault"
+        log "$R blind $TAG: after the tool fault, M reused from TAG $TAG: $BL_M_PICK"
+      fi
+    fi
+    BL_PILOT_TM=$RECIPE_BLIND_TM BL_PILOT_P=$RECIPE_BLIND_P BL_CONS=$RECIPE_BLIND_CONS BL_T_MAX=${RECIPE_T_MAX:-5000} \
+    BL_M_ITERS=${RECIPE_M_ITERS:-5000} BL_P_ITERS=${RECIPE_P_ITERS:-2000} \
+    BL_EXTRA= BL_P_EXTRA= BL_DROP= \
+      bash jobs/blind_chain.sh $R $TAG
+    rc=$?
+    [ $rc = 4 ] || break
+    on_fault "$(cat logs/jobs/blind_${r}_$TAG.fault 2> /dev/null || echo 'see logs/jobs/blind_'$r'.txt')"
+  done
+  [ $rc = 0 ] || { log "$R $STAGE $TAG: blind chain failed ($BLOG)"; exit 1; }
 fi
 BT=${REPRO_BLIND_TAG:-$TAG}
-OUT=${REPRO_PKG:-$(grep "$R BLIND DELIVERY logs/pkg/${r}_bl2_${BT}_" logs/jobs/blind_$r.txt 2> /dev/null | tail -n 1 | sed 's/.*DELIVERY \([^ ]*\).*/\1/')}
+OUT=${REPRO_PKG:-$(grep "$R BLIND DELIVERY logs/pkg/${r}_bl2_${BT}_" $BLOG 2> /dev/null | tail -n 1 | sed 's/.*DELIVERY \([^ ]*\).*/\1/')}
 if [ -z "$OUT" ] || [ ! -f $OUT/policy.onnx ]; then
   log "$R $STAGE $TAG: no blind delivery of $BT${OUT:+ ($OUT has no policy.onnx)}"
   if [ $STAGE = blind ] || [ $STAGE = all ]; then exit 1; else exit 3; fi
@@ -130,23 +176,27 @@ case $STAGE in
 esac
 log "$R $STAGE $TAG: from the blind package $OUT (the blind round of TAG $BT)"
 t0=$(date +%s)
-FE_PKG=$OUT FE_N=$PK FE_PH=Polish FE_PSTART= V2_PKG_FROM=$OUT V2_CONS_FORCE=$RECIPE_DEPTH_CONS \
-  V2_EXTRA_FORCE=$RECIPE_DEPTH_EXTRA V2_SF=none V2_S1_ITERS=$RECIPE_S1_ITERS V2_S1_LR=$RECIPE_S1_LR \
-  V2_STAGE=$STAGE ${RECIPE_TOPFLAT:+FE_TEACHER_TOPFLAT=$RECIPE_TOPFLAT} FE_TEACHER_STRICT=1 FE_INIT_RUN=blind_init_$(basename $OUT) \
-  bash jobs/v2_chain.sh $R full $TAG
-rc=$?
+while :; do
+  FE_PKG=$OUT FE_N=$PK FE_PH=Polish FE_PSTART= V2_PKG_FROM=$OUT V2_CONS_FORCE=$RECIPE_DEPTH_CONS \
+    V2_EXTRA_FORCE=$RECIPE_DEPTH_EXTRA V2_SF=none V2_S1_ITERS=$RECIPE_S1_ITERS V2_S1_LR=$RECIPE_S1_LR \
+    V2_STAGE=$STAGE ${RECIPE_TOPFLAT:+FE_TEACHER_TOPFLAT=$RECIPE_TOPFLAT} FE_TEACHER_STRICT=1 FE_INIT_RUN=blind_init_$(basename $OUT) \
+    bash jobs/v2_chain.sh $R full $TAG
+  rc=$?
+  [ $rc = 4 ] || break
+  on_fault "$(cat ${FLOG%.txt}.fault 2> /dev/null || echo "see $FLOG")"
+done
 case $STAGE in
   teacher)
     [ $rc = 0 ] && [ -f $PD/${r}_teacher ] && { log "$R teacher $TAG: TEACHER PASS $(cat $PD/${r}_teacher)"; exit 0; }
-    log "$R teacher $TAG: no teacher passed (logs/jobs/fe_$r.txt)"; exit 1 ;;
+    log "$R teacher $TAG: no teacher passed ($FLOG)"; exit 1 ;;
   s1)
-    [ $rc = 0 ] && [ -f $PD/${r}_student_stage1 ] || { log "$R s1 $TAG: stage 1 failed (logs/jobs/fe_$r.txt)"; exit 1; }
+    [ $rc = 0 ] && [ -f $PD/${r}_student_stage1 ] || { log "$R s1 $TAG: stage 1 failed ($FLOG)"; exit 1; }
     # not checked (the user); the behavior loss along the run, for a look at distillation from scratch
     f=logs/jobs/fe_${r}_student_v2s1_$TAG.log
     bl=$(grep 'Mean behavior loss' $f | awk '{print $NF}' | awk -v n=$RECIPE_S1_ITERS 'NR==1||NR==int(n/10)||NR==int(n/4)||NR==int(n/2)||NR==int(3*n/4)||NR==n-1{printf "%s@%d ", $1, NR}')
     log "$R s1 $TAG: STAGE-1 DONE $(cat $PD/${r}_student_stage1) ($(( ($(date +%s) - t0) / 60 )) min; behavior loss ${bl:-?})"; exit 0 ;;
   s2|all)
-    p=$(grep "$R STUDENT PICK .*v2s2_$TAG" logs/jobs/fe_$r.txt | tail -n 1)
+    p=$(grep "$R STUDENT PICK .*v2s2_$TAG" $FLOG | tail -n 1)
     [ $rc = 0 ] && [ -n "$p" ] && { log "$R $STAGE $TAG: STUDENT PASS -- $(echo "$p" | cut -c16-)"; exit 0; }
-    log "$R $STAGE $TAG: no student passed (logs/jobs/fe_$r.txt)"; exit 1 ;;
+    log "$R $STAGE $TAG: no student passed ($FLOG)"; exit 1 ;;
 esac

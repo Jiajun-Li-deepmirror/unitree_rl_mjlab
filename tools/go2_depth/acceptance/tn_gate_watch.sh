@@ -48,6 +48,11 @@ while true; do
       (cd $WT && $PY scripts/import_blind_policy.py $C/gate_pull/$n $C/gate_pull/$n.onnx > /dev/null 2>&1)
       [ -s $C/gate_pull/$n.onnx ] || { echo "FAIL: blind export / import" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"; continue; }
       X2=$C/gate_pull/$n.onnx
+      # a smoke run's request (jobs/smoke_chain.sh, TAG smoke*): the export and the import ran; the gate itself is not run
+      if [[ $base == *smoke* ]]; then
+        echo "PASS (smoke: export and import ran)" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"
+        echo "$(date '+%m-%d %H:%M') $R $base -> smoke PASS (export + import)" >> $OUT; continue
+      fi
       # wheeled blind too (2026-11-10, doc/acceptance.md): the L0 slide gate is the one measure of the top landing
       [[ $R == *W ]] && flock $TNL bash $HERE/slide_gate.sh $r $X2 > /dev/null 2>&1
     else
@@ -57,6 +62,11 @@ while true; do
         echo "FAIL: export / pull" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict" ; continue
       fi
       mv $C/gate_pull/$n.onnx.new $C/gate_pull/$n.onnx
+      # a smoke run's request (jobs/smoke_chain.sh, TAG smoke*): the export and the import ran; the gate itself is not run
+      if [[ $base == *smoke* ]]; then
+        echo "PASS (smoke: export and import ran)" | timeout 30 $SSH $P "cat > $D/${q%.req}.verdict"
+        echo "$(date '+%m-%d %H:%M') $R $base -> smoke PASS (export + import)" >> $OUT; continue
+      fi
       if [[ $R == *W ]]; then
         flock $TNL bash $HERE/slide_gate.sh $r $C/gate_pull/$n.onnx > /dev/null 2>&1
       else
