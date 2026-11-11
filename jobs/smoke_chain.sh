@@ -19,7 +19,7 @@ cd /root/gpufree-data/go2-depth/depth_fe || exit 2
 S=logs/jobs/smoke
 mkdir -p $S
 t0=$(date +%s)
-CHAIN_SMOKE=1 REPRO_LOG=$S/repro_$r.txt BL_LOG=$S/blind_$r.txt FE_LOG=$S/fe_$r.txt bash jobs/full_chain.sh $R $TAG all
+CHAIN_SMOKE=1 BL_CURVE_EVERY=60 REPRO_LOG=$S/repro_$r.txt BL_LOG=$S/blind_$r.txt FE_LOG=$S/fe_$r.txt bash jobs/full_chain.sh $R $TAG all
 rc=$?
 echo "== smoke $R $TAG: full_chain exit $rc after $(( ($(date +%s) - t0) / 60 )) min"
 step() { local f=$1 what=$2 pat=$3 line; line=$(grep -E "$pat" $f 2> /dev/null | tail -n 1 | cut -c1-200); printf '  %-24s %s\n' "$what" "${line:-MISSING}"; }

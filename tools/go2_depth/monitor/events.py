@@ -27,7 +27,7 @@ CENTRAL_LOG = Path("/home/dm/.cache/go2-depth-work/central/central.log")
 EVENT = re.compile(
     r"started|PICK|PASS|FAIL|TOOL FAULT|PAUSED|removed, going on|DELIVERY|tinynav|widened|inputs \(actor|inputs: P adds|BLIND VIDEOS"
     r"|STAGE-1|STUDENT|TEACHER|repro queue .*(starts|passed|FAILED|skipped|stopped|all done)|no new run dir"
-    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error|central ")
+    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error|central |CURVE ALARM|curve back")
 SKIP = re.compile(r"^wrote |actor averaged over")
 STATE = Path(__file__).resolve().parents[3] / "logs/monitor/events_state.json"
 

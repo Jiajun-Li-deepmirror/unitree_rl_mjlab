@@ -151,6 +151,10 @@ phase() {
   rd=$(new_run_wait $run $tp "$before") || {
     fault "$name: no new run dir for $run (training $(kill -0 $tp 2> /dev/null && echo alive || echo ended): $(grep -m1 -E 'Error|error:' logs/jobs/blind_${r}_$run.log | cut -c1-200))"
     stop_train $tp; echo ""; return; }
+  # the curve alarm (2026-11-11, the user's requirement 3): "<R> <phase> CURVE ALARM ..." in this log while the run
+  # trains (scripts/blind/curve_watch.py: stairs share behind its curriculum, climb reward flat, reward / episodes halved)
+  setsid nohup $PY scripts/blind/curve_watch.py $rd --phase $name --label "$R $name" --log $L --pid $tp \
+    --every ${BL_CURVE_EVERY:-600} > /dev/null 2>> logs/jobs/blind_${r}_curves.err < /dev/null &
   local base=${fk:-0} pick=""
   for K in $(seq $((base + first)) ${BL_STEP:-500} $((base + maxit - 1))); do
     # the training ends only when stopped here, after its last checked iteration: ending before one is a crash or a kill

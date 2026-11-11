@@ -53,7 +53,7 @@ export FE_PICKS=$PK FE_CONS_INIT=$V2_CONS FE_PILOT_EXTRA=$V2_EXTRA$V2_ROBOT_EXTR
 # Early stop (the user 11-05: "如果提前通过验收，就不要继续训练了，节省时间"): the teacher stops at its first check that
 # passes with the margin (checks every 500); stage 2 at its first K whose 3 seeds and tinynav acceptance pass
 # (FE_TN_GATE: scratchpad check/tn_gate_watch.sh on the workstation).
-echo "$(date '+%m-%d %H:%M:%S') v2_chain $R $MODE $TAG: pilot +$FE_PILOT_EXTRA, teacher from ${TFROM:-the widened blind}, student from $V2_STUDENT_FROM" >> logs/jobs/fe_$r.txt
+echo "$(date '+%m-%d %H:%M:%S') v2_chain $R $MODE $TAG: pilot +$FE_PILOT_EXTRA, teacher from ${TFROM:-the widened blind}, student from $V2_STUDENT_FROM" >> ${FE_LOG:-logs/jobs/fe_$r.txt}
 # V2_STAGE (2026-11-10, the reproducible run in four rounds -- blind, teacher, stage-1 student, stage-2 student; the user:
 # each round passes before the robot's next): teacher = stop at the teacher pick; s1 = the stage-1 student under the
 # picked teacher (exit 3 when there is none); s2 = stage 2 from the stage-1 average (exit 3 when there is none); all.
