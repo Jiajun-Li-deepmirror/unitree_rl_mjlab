@@ -23,26 +23,29 @@ import sys
 
 # name: kind, training payload (limit, point range), acceptance payload (kg, x, y, z), wall stop (m), foot radius (m),
 # wheel radius (m) / action scale, robot parameters (BLIND_PARAMS), notes. The values are those the chains used up to
-# 2026-11-11 (jobs/fe_robot.sh, jobs/accept_payload.sh, jobs/recipes/unified.py), unchanged.
+# 2026-11-11 (jobs/fe_robot.sh, jobs/accept_payload.sh, jobs/recipes/unified.py), except (2026-11-11 ~24:00, the user:
+# "先和unitree ros对齐，没有的参数再和官网对齐"): params model=uros (the unitree_ros-aligned model, src/assets/robots/uros.py)
+# for every robot, and the As2 / As2W payload from Unitree's figures (15 / 16 kg).
 ROBOTS: dict[str, dict] = {
   "Go2": dict(kind="legged", train_payload="max=12,x=0.15,y=0.08,z=0.20", accept_payload="12,0.15,0,0.20",
-              wall_stop=0.85, foot_r=0.022,
+              wall_stop=0.85, foot_r=0.022, params={"model": "uros"},
               notes="payload: Unitree's figure (max ~12 kg by config); foot sphere 2.2 cm"),
   "Go2W": dict(kind="wheeled", train_payload="max=12,x=0.15,y=0.08,z=0.20", accept_payload="12,0.15,0,0.20",
-               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10,
+               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
                notes="payload: Unitree's figure; leg kp 20/20/40 (model)"),
-  "As2": dict(kind="legged", train_payload="max=10,x=0.15,y=0.08,z=0.20", accept_payload="10,0.15,0,0.20",
-              wall_stop=0.9, foot_r=0.028,
-              notes="payload: no official figure, about half the body weight (the user, 2026-11-11)"),
-  "As2W": dict(kind="wheeled", train_payload="max=13,x=0.15,y=0.08,z=0.20", accept_payload="13,0.15,0,0.20",
-               wall_stop=0.9, foot_r=None, wheel_r=0.086, wheel_scale=8,
-               notes="payload: no official figure, about half the body weight (the user, 2026-11-11); leg kp 40/40/60"),
+  "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
+              wall_stop=0.9, foot_r=0.028, params={"model": "uros"},
+              notes="payload: Unitree's figure ~15 kg walking (www.unitree.com/As2, 2026-11-11; was 10, half the body "
+                    "weight, when no figure was found)"),
+  "As2W": dict(kind="wheeled", train_payload="max=16,x=0.15,y=0.08,z=0.20", accept_payload="16,0.15,0,0.20",
+               wall_stop=0.9, foot_r=None, wheel_r=0.086, wheel_scale=8, params={"model": "uros"},
+               notes="payload: Unitree's figure ~16 kg walking (www.unitree.com/As2-W, 2026-11-11; was 13); leg kp 40/40/60"),
   "B2": dict(kind="legged", train_payload="max=40,x=0.30,y=0.15,z=0.30", accept_payload="40,0.15,0,0.30",
-             wall_stop=1.05, foot_r=0.032,
+             wall_stop=1.05, foot_r=0.032, params={"model": "uros"},
              notes="payload: Unitree's figure; trained to x 0.30, accepted at x 0.15 (the corner 0.30 is reported only)"),
   "B2W": dict(kind="wheeled", train_payload="max=40,x=0.30,y=0.15,z=0.30", accept_payload="40,0.15,0,0.30",
               wall_stop=1.05, foot_r=0.032, wheel_r=0.113, wheel_scale=6,
-              params={"leg_kp_scale": 1.5, "leg_kd_scale": 1.2, "leg_hold_s": 2.0, "stairs_final": 0.35},
+              params={"model": "uros", "leg_kp_scale": 1.5, "leg_kd_scale": 1.2, "leg_hold_s": 2.0, "stairs_final": 0.35},
               notes="leg kp 240 / kd 6 (82 kg on kp 160 crept after stops); legs hold 2 s after a stop; stairs share "
                     "capped at 0.35 (its flat items slid past it)"),
 }

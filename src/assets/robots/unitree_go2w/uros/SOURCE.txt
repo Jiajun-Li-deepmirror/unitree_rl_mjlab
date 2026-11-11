@@ -1,0 +1,1 @@
+From https://github.com/unitreerobotics/unitree_ros robots/go2w_description at commit 725b59b (2026-11-09), fetched 2026-11-11 by tools/robot_params/align_uros.py's author; read by that script to build xmls/go2w_uros.xml.

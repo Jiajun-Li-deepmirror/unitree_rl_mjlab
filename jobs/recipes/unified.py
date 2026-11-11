@@ -134,7 +134,7 @@ class Robot:
 ROBOTS = {
     "go2w": Robot("wheeled", {"payload": "max=12,x=0.15,y=0.08,z=0.20 (Unitree spec)", "wall_stop_m": 0.85,
                               "wheel_scale": 10, "wheel_radius_m": 0.086, "leg_kp": "20/20/40 (model)"}),
-    "as2w": Robot("wheeled", {"payload": "max=13,x=0.15,y=0.08,z=0.20 (half the body weight, no spec found)",
+    "as2w": Robot("wheeled", {"payload": "max=16,x=0.15,y=0.08,z=0.20 (Unitree spec ~16 kg walking; was 13)",
                               "wall_stop_m": 0.9, "wheel_scale": 8, "wheel_radius_m": 0.086, "leg_kp": "40/40/60 (model)"}),
     "b2w": Robot("wheeled", {"payload": "max=40,x=0.30,y=0.15,z=0.30 (Unitree spec)", "wall_stop_m": 1.05,
                              "wheel_scale": 6, "wheel_radius_m": 0.113,
@@ -152,7 +152,7 @@ ROBOTS = {
                   k("b2wdesc", "T", "dropped", "tuned b2wcons' descent: desccons for all"),
                   k("bdhold", "T", "dropped", "capped b2wcons' back_drift, which the shared set does not have")]),
     "go2": Robot("legged", {"payload": "max=12,x=0.15,y=0.08,z=0.20 (Unitree spec)", "wall_stop_m": 0.85, "foot_r_m": 0.022}),
-    "as2": Robot("legged", {"payload": "max=10,x=0.15,y=0.08,z=0.20 (half the body weight, no spec found)",
+    "as2": Robot("legged", {"payload": "max=15,x=0.15,y=0.08,z=0.20 (Unitree spec ~15 kg walking; was 10)",
                             "wall_stop_m": 0.9, "foot_r_m": 0.028}),
     "b2": Robot("legged", {"payload": "max=40,x=0.30,y=0.15,z=0.30 (Unitree spec)", "wall_stop_m": 1.05, "foot_r_m": 0.032}),
 }
@@ -168,7 +168,9 @@ def recipe(r: str) -> dict:
     M = T + [x.name for x in live if x.phase == "M"]
     P = M + [x.name for x in live if x.phase == "P"]
     return {"T": T, "M": M, "P": P, "params": rob.params, "budgets": BUDGETS, "keys": layers,
-            "env": ",".join(f"{a}={b}" for a, b in rob.env.items())}
+            # the robot's physical parameters: the one table (2026-11-11: every robot's, with model=uros)
+            "env": robot_table.params_str({"go2": "Go2", "go2w": "Go2W", "as2": "As2", "as2w": "As2W", "b2": "B2",
+                                           "b2w": "B2W"}[r])}
 
 
 def current(r: str) -> tuple[set, set]:

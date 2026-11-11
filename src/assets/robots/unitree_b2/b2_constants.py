@@ -5,6 +5,7 @@ from pathlib import Path
 import mujoco
 
 from src import SRC_PATH
+from src.assets.robots import uros
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
@@ -30,7 +31,7 @@ def get_assets(meshdir: str) -> dict[str, bytes]:
 
 
 def get_spec() -> mujoco.MjSpec:
-  spec = mujoco.MjSpec.from_file(str(B2_XML))
+  spec = mujoco.MjSpec.from_file(str(uros.xml(B2_XML)))   # the unitree_ros-aligned model with model=uros
   spec.assets = get_assets(spec.meshdir)
   return spec
 
@@ -142,7 +143,7 @@ def get_b2_robot_cfg() -> EntityCfg:
     init_state=INIT_STATE,
     collisions=(FULL_COLLISION,),
     spec_fn=get_spec,
-    articulation=B2_ARTICULATION,
+    articulation=uros.articulation("b2", B2_ARTICULATION),
   )
 
 
