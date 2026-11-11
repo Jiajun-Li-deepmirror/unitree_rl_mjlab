@@ -32,6 +32,9 @@ def _register() -> None:
     for suffix, lean in (("", False), ("-Lean", True)):
       rl_cfg = make_blind_ppo_runner_cfg(f"{robot.key}_u_teacher", max_iterations=MAX_ITERATIONS)
       rl_cfg.clip_actions = PHASE_CLIP_ACTIONS
+      # the actor encodes the privileged group into a compact vector (models.py, 2026-11-12)
+      rl_cfg.actor.class_name = "src.tasks.unified.models:UPrivLatentModel"
+      rl_cfg.obs_groups = {"actor": ("actor", "actor_priv"), "critic": ("critic",)}
       register_mjlab_task(
         task_id=f"Unitree-{robot.name}-U-Teacher{suffix}",
         env_cfg=unified_teacher_env_cfg(robot, lean=lean),

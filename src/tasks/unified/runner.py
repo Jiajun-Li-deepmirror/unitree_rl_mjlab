@@ -27,7 +27,8 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
   def _parts(self) -> dict:
     env = self.env.unwrapped
     return {name: getattr(env, attr, None) for name, attr in
-            (("progress", "u_progress_term"), ("constraints", "u_constraints"), ("meter", "u_meter"))}
+            (("progress", "u_progress_term"), ("constraints", "u_constraints"), ("meter", "u_meter"),
+             ("lib_meter", "u_lib_meter_term"))}
 
   def save(self, path: str, infos=None):
     env = self.env.unwrapped
@@ -49,6 +50,8 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
         parts["constraints"].load(state["constraints"])
       if parts["meter"] is not None and "meter" in state:
         parts["meter"].load(state["meter"])
+      if parts["lib_meter"] is not None and "lib_meter" in state:
+        parts["lib_meter"].load(state["lib_meter"])
       print(f"[unified] restored progress {state.get('progress_p', 0.0):.3f} and "
             f"{len(state.get('constraints', {}).get('scale', {}))} constraint multipliers from {path}")
     return infos

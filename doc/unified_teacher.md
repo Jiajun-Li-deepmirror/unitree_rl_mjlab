@@ -94,3 +94,11 @@ U_SMOKE=1 bash jobs/unified/teacher.sh Go2 full 0 40
 - **重载奖励组**：`u_heavy_creep`、`u_heavy_march`、`u_heavy_side_drift`、`u_heavy_straight_drift`、`u_heavy_spin`（`constraints.heavy_group`）。负载 ≥ 8 kg 的机器人，这几项的代价固定按配方的原始权重算，不受乘子影响；不设门槛，不加压。
 - **记录**：`Curriculum/u_heavy/<项>/{light,heavy,gap}`，看重载和轻载差多少、差距是否在缩小。
 - **验收**：同一组考题再加跑一遍负载上限，结果写进 `<P>_payload_gap.txt`（`scripts/blind/acceptance/payload_gap.py`），只记录，不判。
+
+## 老师 v2（2026-11-12，doc/redesign.md 3.5）
+
+- **遮挡扫描模式**：40% 的回合把老师的地形扫描清零，同时给一个「看得见 / 看不见」标志（`scan_flag`，actor 和 critic 都有）。`U_SCAN=on / off` 可以固定（评估、学生蒸馏用）。
+- **特权信息压缩**：特权项单独成一个观测组 `actor_priv`，经 `models.UPrivLatentModel` 的小编码器（64 → 8）压成 8 维向量再进策略网络。ONNX 导出时输入是普通观测在前、特权在后。
+- **楼梯约束用共享指标**（`src/metrics`，和 tinynav 同一套计数）：腿式按每走一级计——踢立面 ≤ 0.245、打滑 ≤ 0.0245，落脚居中 ≥ 80%、踩边 ≤ 10%；轮式滑回 ≤ 5%。轮式的起步和顶部平台空踏暂用原计数。门槛由 tinynav 每趟门槛按每趟 8.15 级换算。
+- **轻载 / 重载**：按负载上限的比例划分，≤ 25% 为轻载，≥ 2/3 为重载。负载上限是官网行走负载（Go2 / Go2W 8 kg）。
+- **关节静摩擦和阻尼随机化**：每个关节的静摩擦在 0 到力矩上限的 2.5% 之间，阻尼按宇树 As2 的比例取并放宽到 1.5 倍。

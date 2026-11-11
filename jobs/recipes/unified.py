@@ -132,7 +132,7 @@ class Robot:
 
 
 ROBOTS = {
-    "go2w": Robot("wheeled", {"payload": "max=12,x=0.15,y=0.08,z=0.20 (Unitree spec)", "wall_stop_m": 0.85,
+    "go2w": Robot("wheeled", {"payload": "max=8,x=0.15,y=0.08,z=0.20 (Unitree walking spec)", "wall_stop_m": 0.85,
                               "wheel_scale": 10, "wheel_radius_m": 0.086, "leg_kp": "20/20/40 (model)"}),
     "as2w": Robot("wheeled", {"payload": "max=16,x=0.15,y=0.08,z=0.20 (Unitree spec ~16 kg walking; was 13)",
                               "wall_stop_m": 0.9, "wheel_scale": 8, "wheel_radius_m": 0.086, "leg_kp": "40/40/60 (model)"}),
@@ -151,7 +151,7 @@ ROBOTS = {
                                              "consease) plus desccons for all three"),
                   k("b2wdesc", "T", "dropped", "tuned b2wcons' descent: desccons for all"),
                   k("bdhold", "T", "dropped", "capped b2wcons' back_drift, which the shared set does not have")]),
-    "go2": Robot("legged", {"payload": "max=12,x=0.15,y=0.08,z=0.20 (Unitree spec)", "wall_stop_m": 0.85, "foot_r_m": 0.022}),
+    "go2": Robot("legged", {"payload": "max=8,x=0.15,y=0.08,z=0.20 (Unitree walking spec)", "wall_stop_m": 0.85, "foot_r_m": 0.022}),
     "as2": Robot("legged", {"payload": "max=15,x=0.15,y=0.08,z=0.20 (Unitree spec ~15 kg walking; was 10)",
                             "wall_stop_m": 0.9, "foot_r_m": 0.028}),
     "b2": Robot("legged", {"payload": "max=40,x=0.30,y=0.15,z=0.30 (Unitree spec)", "wall_stop_m": 1.05, "foot_r_m": 0.032}),

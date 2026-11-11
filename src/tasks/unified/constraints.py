@@ -116,37 +116,45 @@ def _stairs_roll(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hold",
-                      max_payload: float = 3.0) -> tuple[torch.Tensor, torch.Tensor]:
+                      max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
   """mdp.constraints' stand_hold (distance from the locked hold anchor) over the robots carrying at most max_payload kg:
   the acceptance's stop-creep and march tests carry none (2026-11-11: over all robots, the heavy half of the payload
   randomization held the first Go2 teacher's creep at 3.5 cm p90 with its multiplier at the 3x cap; as back_drift's
   max_payload)."""
   value, mask = METRICS["stand_hold"](env, term=term)
-  kg = getattr(env, "payload_kg", None)
-  if kg is not None:
-    mask = mask & (kg <= max_payload)
-  return value, mask
+  pm = payload_mask(env, hi=LIGHT_FRAC if max_frac is None else max_frac)
+  return value, (mask if pm is None else mask & pm)
 
 
-LIGHT_MAX_KG = 3.0    # the light robots: the acceptance's unloaded tests (2026-11-11)
-HEAVY_MIN_KG = 8.0    # the heavy robots: their own reward group, no constraint (the user, 2026-11-11)
+# The light and heavy robots as shares of the robot's payload limit (2026-11-12, doc/redesign.md: the limit is the
+# walking payload -- Go2 / Go2W 8 kg -- so the 11-11 fixed 3 kg / 8 kg no longer fit): light = the acceptance's
+# unloaded tests, judged by the constraints; heavy = their own reward group, no constraint (the user, 2026-11-11).
+LIGHT_FRAC = 0.25
+HEAVY_FRAC = 2.0 / 3.0
+DEFAULT_LIMIT_KG = 12.0   # until curriculum.progress_payload has set env.u_payload_full
+
+
+def payload_limit(env: ManagerBasedRlEnv) -> float:
+  return float(getattr(env, "u_payload_full", DEFAULT_LIMIT_KG))
 
 
 def payload_mask(env: ManagerBasedRlEnv, lo: float | None = None, hi: float | None = None) -> torch.Tensor | None:
-  """The robots whose payload (mdp.base_payload_point's env.payload_kg) is in [lo, hi] kg; None before the first draw."""
+  """The robots whose payload (mdp.base_payload_point's env.payload_kg) is in [lo, hi] x the payload limit; None before
+  the first draw."""
   kg = getattr(env, "payload_kg", None)
   if kg is None:
     return None
+  limit = payload_limit(env)
   m = torch.ones_like(kg, dtype=torch.bool)
   if lo is not None:
-    m &= kg >= lo
+    m &= kg >= lo * limit
   if hi is not None:
-    m &= kg <= hi
+    m &= kg <= hi * limit
   return m
 
 
 def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
-  """METRICS[metric] over the robots with a payload in [lo, hi] kg."""
+  """METRICS[metric] over the robots with a payload in [lo, hi] x the limit."""
   def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
     value, mask = METRICS[metric](env, **params)
     pm = payload_mask(env, lo, hi)
@@ -156,8 +164,9 @@ def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
 
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light,
           # the flat items on the light robots (2026-11-11, the user: "现有的轻载约束 ... 只统计 ≤ 3 kg，继续对着无负载的验收门槛")
-          "u_drift_light": by_payload("drift_share", hi=LIGHT_MAX_KG),
-          "u_spin_light": by_payload("spin_hold", hi=LIGHT_MAX_KG)}
+          "u_drift_light": by_payload("drift_share", hi=LIGHT_FRAC),
+          "u_spin_light": by_payload("spin_hold", hi=LIGHT_FRAC),
+          "u_back_drift_light": by_payload("back_drift", hi=LIGHT_FRAC)}
 
 # The same items on the heavy robots: measured and logged (Curriculum/u_heavy/<item>/{light,heavy}), never enforced.
 HEAVY_ITEMS = {
@@ -196,10 +205,10 @@ class heavy_group:
   def reset(self, env_ids=None) -> None:
     pass
 
-  def __call__(self, env: ManagerBasedRlEnv, terms: list[str], min_kg: float = HEAVY_MIN_KG,
+  def __call__(self, env: ManagerBasedRlEnv, terms: list[str], min_frac: float = HEAVY_FRAC,
                heavy_scale: float = 1.0) -> torch.Tensor:
     out = torch.zeros(env.num_envs, device=env.device)
-    heavy = payload_mask(env, lo=min_kg)
+    heavy = payload_mask(env, lo=min_frac)
     if heavy is None:
       return out
     base = getattr(getattr(env, "u_constraints", None), "base", {})
@@ -213,8 +222,9 @@ class heavy_group:
 
 
 class heavy_log:
-  """Curriculum term: each HEAVY_ITEMS item measured on the light (<= LIGHT_MAX_KG) and on the heavy (>= HEAVY_MIN_KG)
-  robots, smoothed like the constraints; logged as Curriculum/u_heavy/<item>/{light,heavy,gap}. Information only."""
+  """Curriculum term: each HEAVY_ITEMS item measured on the light (<= LIGHT_FRAC of the limit) and on the heavy
+  (>= HEAVY_FRAC) robots, smoothed like the constraints; logged as Curriculum/u_heavy/<item>/{light,heavy,gap}.
+  Information only."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.value: dict[str, float] = {}
@@ -230,7 +240,7 @@ class heavy_log:
       return out
     a = 1.0 - math.exp(-1.0 / ema_steps)
     for item, (metric, params, stat, _) in HEAVY_ITEMS.items():
-      for side, (lo, hi) in (("light", (None, LIGHT_MAX_KG)), ("heavy", (HEAVY_MIN_KG, None))):
+      for side, (lo, hi) in (("light", (None, LIGHT_FRAC)), ("heavy", (HEAVY_FRAC, None))):
         try:
           value, mask = METRICS[metric](env, **params)
         except Exception:
@@ -253,7 +263,10 @@ class heavy_log:
 
 def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -> float | None:
   """A constraint's measurement: mdp.constraints.METRICS or CUSTOM (stat "mean" or "pNN" over the robots it applies
-  to now), or "rate:<name>" from the meter."""
+  to now), "rate:<name>" from the meter, or "lib:<name>" from the shared metrics (src/metrics, lib_meter)."""
+  if metric.startswith("lib:"):
+    m = getattr(env, "u_lib_meter", None)
+    return None if m is None else m.rate(metric[4:])
   if metric.startswith("rate:"):
     m = getattr(env, "u_meter", None)
     return None if m is None else m.rate(metric[5:])
@@ -348,3 +361,34 @@ class constraints:
       out[f"{name}/target"] = torch.tensor(self.target(c, p))
       out[f"{name}/scale"] = torch.tensor(self.scale[name] if p >= c["activate"] else c.get("start_scale", 1.0))
     return out
+
+
+class lib_meter:
+  """Reward term with zero output (tiny weight, so the manager calls it every step): the shared stairs metrics
+  (src/metrics.mj.StairsMeter, the same counters as tinynav's acceptance) over the first `sample` envs; env.u_lib_meter.
+  The "lib:<name>" constraints read its rates (go2-depth 2026-11-12, doc/redesign.md: the constraints use the
+  acceptance's own measures)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    from src.metrics.mj import StairsMeter
+
+    p = cfg.params
+    n = min(int(p.get("sample", 512)), env.num_envs)
+    self.meter = StairsMeter(env, torch.arange(n, device=env.device), wheeled=bool(p.get("wheeled", False)),
+                             ema_steps=float(p.get("ema_steps", 20000.0)), min_steps=float(p.get("min_steps", 200.0)))
+    env.u_lib_meter = self.meter
+    env.u_lib_meter_term = self   # runner.py checkpoints its state
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def state(self) -> dict:
+    return self.meter.state()
+
+  def load(self, state: dict) -> None:
+    self.meter.load(state)
+
+  def __call__(self, env: ManagerBasedRlEnv, wheeled: bool = False, sample: int = 512, ema_steps: float = 20000.0,
+               min_steps: float = 200.0) -> torch.Tensor:
+    self.meter.step(env)
+    return torch.zeros(env.num_envs, device=env.device)

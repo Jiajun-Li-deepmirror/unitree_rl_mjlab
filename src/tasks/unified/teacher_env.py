@@ -24,15 +24,22 @@ import os
 from copy import deepcopy
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+import torch
+from mjlab.envs.mdp import dr
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 import src.tasks.velocity.mdp as mdp
 from src.tasks.velocity.blind_env_cfg import MAP3_STAIR_TERRAIN_NAMES, TEACHER_STAIRS_SHARE
 
+from src.metrics import mj as metrics_mj
+
 from . import constraints as ucons
 from . import curriculum as ucur
+from .models import PRIV_GROUP
 from .robots import URobot, base_env_cfg, unified_recipe
 
 # (foot_contact_forces stays critic-only: world-frame vectors, see symmetry.py)
@@ -75,9 +82,9 @@ def constraint_items(kind: str) -> list[dict]:
     c("side_drift", "u_drift_light", "max", drift, 0.2, 0.15, ["side_drift"], {"term": "side_drift"}, stat="p90"),
     c("straight_drift", "u_drift_light", "max", drift, 0.2, 0.15, ["straight_drift"], {"term": "straight_drift"},
       stat="p90"),
-    c("back_drift", "back_drift", "max", 0.03, 0.1, 0.15, ["side_drift"],
-      {"term": "side_drift", "settled": True, "min_abs_vy": 0.45, "max_payload": 3.0}),
-    # creep and march over the light robots only (<= 3 kg, as the acceptance's unloaded tests; 2026-11-11)
+    c("back_drift", "u_back_drift_light", "max", 0.03, 0.1, 0.15, ["side_drift"],
+      {"term": "side_drift", "settled": True, "min_abs_vy": 0.45}),
+    # creep and march over the light robots only (<= 25% of the payload limit, as the acceptance's unloaded tests)
     c("creep", "u_stand_hold_light", "max", 0.008, 0.03, 0.15, ["standing_position_hold", "standing_speed"],
       {"term": "standing_position_hold"}, stat="p90"),
     c("march", "u_stand_hold_light", "max", 0.04, 0.15, 0.15, ["march_position_hold", "march_hip_default"],
@@ -92,18 +99,23 @@ def constraint_items(kind: str) -> list[dict]:
     c("roll", "u_stairs_roll", "max", 0.105, 0.3, 0.5, [], stat="p90", enforce=False),
   ]
   if legged:
+    # the shared metrics (src/metrics, tinynav's counters; 2026-11-12, doc/redesign.md): per step walked, the tinynav
+    # bars over its 8.15 steps per run (gp3 avg15700's routes): kicks 2 / run -> 0.245, slips 0.2 / run -> 0.0245;
+    # placements mid >= 80%, edge <= 10% as in tinynav
     items += [
-      c("edge", "feet_edge_share", "max", 0.10, 0.25, 0.5, ["feet_edge"], start_scale=0.25),
-      # B2 l10 (passed; tinynav slips 0.3 / run, kicks 2.4-3.3 / climb): 0.46 slides, 0.0375 stumble-s per step-up
-      c("slides", "rate:slide", "max", 0.46, 0.9, 0.5, ["foot_slide_back"], start_scale=0.25),
-      c("kicks", "rate:kick", "max", 0.0375, 0.08, 0.5, ["foot_stumble", "foot_step_touch"], start_scale=0.25),
+      c("edge", "lib:edge", "max", 0.10, 0.25, 0.5, ["feet_edge"], start_scale=0.25),
+      c("mid", "lib:mid", "min", 0.80, 0.6, 0.5, ["feet_edge"], start_scale=0.25),
+      c("slides", "lib:slips", "max", 0.0245, 0.1, 0.5, ["foot_slide_back"], start_scale=0.25),
+      c("kicks", "lib:kicks", "max", 0.245, 0.6, 0.5, ["foot_stumble", "foot_step_touch"], start_scale=0.25),
     ]
   else:
     items += [
       c("wheels_down", "wheels_down", "min", 0.75, 0.5, 0.15, ["wheel_air_drivable"]),
       c("slow_arc", "arc_speed", "min", 0.9, 0.7, 0.15, ["track_linear_velocity"], min_scale=1.0),
-      # Go2W g27b (passed; tinynav slid back 4.3%): 0.29 slides, 0.033 top-landing wheel-s per step-up
-      c("slides", "rate:slide", "max", 0.29, 0.6, 0.5, ["wheel_slide_back", "wheel_nosing"], start_scale=0.25),
+      # slide-back from the shared metrics (tinynav's counter, 2026-11-12): the acceptance's 5% of step-ups. The idle
+      # and top-landing rates stay on the meter's event terms until tinynav's per-climb bars are converted (wheeled
+      # steps per run not measured yet).
+      c("slides", "lib:slide_back", "max", 0.05, 0.15, 0.5, ["wheel_slide_back", "wheel_nosing"], start_scale=0.25),
       c("top_landing", "rate:top", "max", 0.033, 0.1, 0.5, ["wheel_flat_step_air"], start_scale=0.25),
       # As2W a1f (passed; tinynav idle 0.0-0.3 / climb): 0.6 idle lifts per step-up in training
       c("idle", "rate:idle", "max", 0.6, 1.5, 0.5, ["wheel_idle_step"], start_scale=0.25),
@@ -118,17 +130,100 @@ METER_EVENTS = {
 
 
 def _add_privileged(cfg: ManagerBasedRlEnvCfg) -> None:
+  """The privileged terms as their own observation group (models.UPrivLatentModel encodes it into a compact vector;
+  2026-11-12, doc/redesign.md 3.5)."""
   critic = cfg.observations["critic"].terms
-  actor = cfg.observations["actor"].terms
   if "dr_params" not in critic:
     critic["dr_params"] = ObservationTermCfg(
       func=mdp.dr_params, params={"friction_cfg": cfg.events["foot_friction"].params["asset_cfg"]}
     )
+  priv = {}
   for name in PRIVILEGED_ACTOR_TERMS + ("dr_params",):
     term = deepcopy(critic[name])
     term.noise = None
     term.history_length = 0
-    actor[f"priv_{name}"] = term
+    priv[f"priv_{name}"] = term
+  cfg.observations[PRIV_GROUP] = ObservationGroupCfg(terms=priv, concatenate_terms=True, enable_corruption=False)
+
+
+# ---- scan masking: the blind mode (2026-11-12, doc/redesign.md 3.5) ----
+SCAN_MASK_SHARE = 0.4   # of the episodes, the actor's scan is masked: the teacher also learns to walk without it
+
+
+def u_masked(env, inner, **params) -> torch.Tensor:
+  """An observation term's value times the episode's scan flag (0: masked)."""
+  x = inner(env, **params)
+  on = getattr(env, "u_scan_on", None)
+  return x if on is None else x * on[:, None]
+
+
+def scan_flag(env) -> torch.Tensor:
+  on = getattr(env, "u_scan_on", None)
+  if on is None:
+    return torch.ones(env.num_envs, 1, device=env.device)
+  return on[:, None]
+
+
+def u_scan_mask(env, env_ids, share: float = SCAN_MASK_SHARE) -> None:
+  """Reset event: each episode is seen (1) or blind (0); U_SCAN=on / off fixes it (evaluations, students)."""
+  if getattr(env, "u_scan_on", None) is None:
+    env.u_scan_on = torch.ones(env.num_envs, device=env.device)
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device)
+  mode = os.environ.get("U_SCAN", "mix")
+  if mode == "on":
+    v = torch.ones(len(env_ids), device=env.device)
+  elif mode == "off":
+    v = torch.zeros(len(env_ids), device=env.device)
+  else:
+    v = (torch.rand(len(env_ids), device=env.device) >= share).float()
+  env.u_scan_on[env_ids] = v
+
+
+def _add_scan_mask(cfg: ManagerBasedRlEnvCfg) -> None:
+  from src.tasks.velocity.depth_env_cfg import TEACHER_SCAN_NAME
+
+  actor = cfg.observations["actor"].terms
+  term = actor[TEACHER_SCAN_NAME]
+  assert not isinstance(term.func, type), "the actor scan term is a class; u_masked wraps functions"
+  term.params = {**term.params, "inner": term.func}
+  term.func = u_masked
+  actor["scan_flag"] = ObservationTermCfg(func=scan_flag)
+  cfg.observations["critic"].terms["scan_flag"] = ObservationTermCfg(func=scan_flag)
+  cfg.events["u_scan_mask"] = EventTermCfg(mode="reset", func=u_scan_mask, params={})
+
+
+# ---- joint friction and damping, randomized (2026-11-12, doc/redesign.md 3.3) ----
+# Not published for Go2 / Go2W / B2 / B2W; Unitree's as2.xml gives friction loss 1 / 1 / 2 N m and damping 0.2 / 0.2 /
+# 0.5 N m s/rad on its 60 / 60 / 90 N m joints. Uniform from 0 to these shares of each joint group's torque limit
+# (friction 2.5%: As2's 1.7-2.2% inside; damping 1.5x As2's ratios), until real-robot measurements narrow them.
+JOINT_FRICTION_SHARE = 0.025
+JOINT_DAMPING_SHARE = {"hip": 1.5 * 0.2 / 60, "thigh": 1.5 * 0.2 / 60, "calf": 1.5 * 0.5 / 90}
+
+
+def _effort(actuator) -> float | None:
+  a = actuator
+  while not hasattr(a, "effort_limit") and hasattr(a, "base_cfg"):
+    a = a.base_cfg
+  return getattr(a, "effort_limit", None)
+
+
+def _add_joint_dr(cfg: ManagerBasedRlEnvCfg) -> None:
+  for a in cfg.scene.entities["robot"].articulation.actuators:
+    expr = tuple(getattr(a, "target_names_expr", ()) or getattr(getattr(a, "base_cfg", None), "target_names_expr", ()))
+    group = next((g for g in ("hip", "thigh", "calf") if any(g in e for e in expr)), None)
+    effort = _effort(a)
+    if group is None or effort is None:
+      continue   # wheels: their brake / drive model stays as it is
+    # one SceneEntityCfg per event: resolving writes the joint ids into it, and a shared one fails the second check
+    cfg.events[f"u_joint_friction_{group}"] = EventTermCfg(
+      mode="startup", func=dr.joint_friction,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), "ranges": (0.0, JOINT_FRICTION_SHARE * effort),
+              "operation": "abs"})
+    cfg.events[f"u_joint_damping_{group}"] = EventTermCfg(
+      mode="startup", func=dr.joint_damping,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr),
+              "ranges": (0.0, JOINT_DAMPING_SHARE[group] * effort), "operation": "abs"})
 
 
 def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool) -> tuple[list[str], list[str]]:
@@ -147,6 +242,9 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     if terms:
       rewards[f"u_heavy_{item}"] = RewardTermCfg(func=ucons.heavy_group, weight=1.0, params={"terms": terms})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
+  # the shared stairs metrics (tinynav's counters) over 512 robots, for the "lib:" constraints
+  rewards["u_lib_meter"] = RewardTermCfg(func=ucons.lib_meter, weight=1e-9,
+                                         params={"wheeled": kind == "wheeled", "sample": 512})
   return constrained, other
 
 
@@ -190,12 +288,16 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
     new["u_constraints"].params.update({"skip_steps": 0, "warmup": 5, "ema_steps": 50.0})
     new["u_heavy"].params.update({"skip_steps": 0, "ema_steps": 50.0})
     cfg.rewards["u_meter"].params["min_n"] = 50
+    cfg.rewards["u_lib_meter"].params.update({"min_steps": 5.0, "ema_steps": 200.0})
   cfg.curriculum = new
 
 
 def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = base_env_cfg(robot, play=play)
+  metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
   _add_privileged(cfg)
+  _add_scan_mask(cfg)
+  _add_joint_dr(cfg)
   items = constraint_items(robot.kind)
   constrained, other = _rewards(cfg, robot.kind, items, lean)
   if not play:

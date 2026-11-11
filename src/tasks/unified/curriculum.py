@@ -167,6 +167,7 @@ def progress_payload(
   """The payload event's heavy_max (mdp.base_payload_point: the heavy robots' payload is uniform on [0, heavy_max])
   = full_max x env.u_progress / p_full, at most full_max. Read at each robot's reset."""
   del env_ids
+  env.u_payload_full = full_max   # the robot's payload limit: the light / heavy shares (constraints.payload_mask)
   limit = full_max * ramp(getattr(env, "u_progress", 0.0), 0.0, p_full)
   env.event_manager.get_term_cfg(event_name).params["heavy_max"] = limit
   return {"heavy_max": torch.tensor(limit)}

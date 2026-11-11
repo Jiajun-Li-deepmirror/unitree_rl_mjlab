@@ -46,7 +46,7 @@ def _term_map(env, name, term_cfg, joint_names, robot, act_perm, act_sign):
     return [0, 1], [-1.0, -1.0]
   if name == "heading_error":
     return [0], [-1.0]
-  if name == "stand_time":
+  if name in ("stand_time", "scan_flag"):   # scan_flag (2026-11-12): the scan-masking flag, a scalar
     return [0], [1.0]
   if "scan" in name and "sensor_name" in term_cfg.params:
     return base._scan_map(env, term_cfg.params["sensor_name"])
@@ -62,16 +62,15 @@ def _term_map(env, name, term_cfg, joint_names, robot, act_perm, act_sign):
   raise ValueError(f"No mirror for actor observation term {name!r}.")
 
 
-def _build(env):
+def _build_group(env, group: str, act_perm, act_sign):
   robot = env.scene["robot"]
   joint_names = list(robot.joint_names)
   om = env.observation_manager
-  act_perm, act_sign = base._action_map(env)
   perm: list[int] = []
   sign: list[float] = []
   offset = 0
-  for name, term_cfg, dims in zip(om.active_terms["actor"], om._group_obs_term_cfgs["actor"],
-                                  om.group_obs_term_dim["actor"], strict=True):
+  for name, term_cfg, dims in zip(om.active_terms[group], om._group_obs_term_cfgs[group],
+                                  om.group_obs_term_dim[group], strict=True):
     scale = term_cfg.scale
     if scale is not None and not isinstance(scale, (int, float)):
       scale = torch.as_tensor(scale)
@@ -86,7 +85,17 @@ def _build(env):
       perm += [offset + f * len(p) + i for i in p]
       sign += s
     offset += size
-  return base._Mirror(perm, sign, env.device), base._Mirror(act_perm, act_sign, env.device)
+  return base._Mirror(perm, sign, env.device)
+
+
+MIRRORED_GROUPS = ("actor", "actor_priv")   # actor_priv (2026-11-12): the privileged group of models.UPrivLatentModel
+
+
+def _build(env):
+  act_perm, act_sign = base._action_map(env)
+  groups = {g: _build_group(env, g, act_perm, act_sign) for g in MIRRORED_GROUPS
+            if g in env.observation_manager.active_terms}
+  return groups, base._Mirror(act_perm, act_sign, env.device)
 
 
 def mirror_left_right(env, obs=None, actions=None):
@@ -97,11 +106,13 @@ def mirror_left_right(env, obs=None, actions=None):
   if maps is None:
     maps = _build(unwrapped)
     unwrapped._u_left_right_mirror = maps
-  obs_mirror, action_mirror = maps
+  obs_mirrors, action_mirror = maps
   obs_out = actions_out = None
   if obs is not None:
     mirrored = obs.clone()
-    mirrored["actor"] = obs_mirror(obs["actor"])
+    for g, mirror in obs_mirrors.items():
+      if g in obs.keys():
+        mirrored[g] = mirror(obs[g])
     obs_out = torch.cat([obs, mirrored], dim=0)
   if actions is not None:
     actions_out = torch.cat([actions, action_mirror(actions)], dim=0)

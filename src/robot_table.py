@@ -25,14 +25,16 @@ import sys
 # wheel radius (m) / action scale, robot parameters (BLIND_PARAMS), notes. The values are those the chains used up to
 # 2026-11-11 (jobs/fe_robot.sh, jobs/accept_payload.sh, jobs/recipes/unified.py), except (2026-11-11 ~24:00, the user:
 # "先和unitree ros对齐，没有的参数再和官网对齐"): params model=uros (the unitree_ros-aligned model, src/assets/robots/uros.py)
-# for every robot, and the As2 / As2W payload from Unitree's figures (15 / 16 kg).
+# for every robot, and the As2 / As2W payload from Unitree's figures (15 / 16 kg); 2026-11-12 (doc/redesign.md): every
+# payload is Unitree's walking figure (Go2 / Go2W 8 kg, was their 12 kg maximum).
 ROBOTS: dict[str, dict] = {
-  "Go2": dict(kind="legged", train_payload="max=12,x=0.15,y=0.08,z=0.20", accept_payload="12,0.15,0,0.20",
+  "Go2": dict(kind="legged", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
               wall_stop=0.85, foot_r=0.022, params={"model": "uros"},
-              notes="payload: Unitree's figure (max ~12 kg by config); foot sphere 2.2 cm"),
-  "Go2W": dict(kind="wheeled", train_payload="max=12,x=0.15,y=0.08,z=0.20", accept_payload="12,0.15,0,0.20",
+              notes="payload: Unitree's walking figure ~8 kg (max ~12 standing; 2026-11-12 doc/redesign.md: the walking "
+                    "payload for training and acceptance); foot sphere 2.2 cm"),
+  "Go2W": dict(kind="wheeled", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
                wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
-               notes="payload: Unitree's figure; leg kp 20/20/40 (model)"),
+               notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
               wall_stop=0.9, foot_r=0.028, params={"model": "uros"},
               notes="payload: Unitree's figure ~15 kg walking (www.unitree.com/As2, 2026-11-11; was 10, half the body "
