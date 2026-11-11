@@ -17,7 +17,8 @@ Every key is listed once with a status:
   dropped   no longer needed under the unified acceptance
 
   python3 jobs/recipes/unified.py ROBOT          the T / M / P keys and parameters
-  python3 jobs/recipes/unified.py ROBOT --sh     as shell variables (RECIPE_BLIND_T / _M / _P, budgets)
+  python3 jobs/recipes/unified.py ROBOT --sh     as shell variables (RECIPE_BLIND_T / _M / _P / _PARAMS, budgets)
+  python3 jobs/recipes/unified.py ROBOT --params the robot's physical parameters (BLIND_PARAMS)
   python3 jobs/recipes/unified.py --diff         per robot: keys gained / lost against jobs/recipes/<r>.sh
 """
 from __future__ import annotations
@@ -83,6 +84,8 @@ WHEELED = [
     k("marchclear", "T", "verify", "6 cm march lift (the user: march lift too low): Go2W P, As2W T/M -- the march is a "
                                    "flat skill"),
     k("marchpose", "T", "verify", "marching keeps the walking posture tolerance: Go2W P, As2W T/M"),
+    k("desccons", "T", "verify", "descent speed as a constraint (b2wcons' descent item, mean 0.96, up to 2x): replaces "
+                                 "B2W's own set; the 0.8-1.2x stairs speed bar is shared and descents were the slow side"),
     k("restlock", "T", "verify", "at rest the posture terms keep the settled pose (braked wheels: re-posing moves the "
                                  "base): B2W only; the creep bar (1 cm) is the same for all"),
     k("standtgt", "T", "verify", "at rest the legs hold their targets: B2W only, same reason"),
@@ -121,8 +124,9 @@ LEGGED = [
 @dataclass
 class Robot:
     kind: str
-    params: dict
+    params: dict                                   # what the robot is (documented; the chain reads payload etc. from fe_robot.sh)
     keys: list = field(default_factory=list)       # this robot's own keys (Key), each with its reason
+    env: dict = field(default_factory=dict)        # physical parameters the training reads (BLIND_PARAMS, blind_params())
 
 
 ROBOTS = {
@@ -135,13 +139,16 @@ ROBOTS = {
                              "leg_kp": "240/6 -- was the key legkp15: 82 kg on kp 160 crept after stops",
                              "leg_hold_s": "2.0 -- was the key leghold20: legs hold their targets after a stop",
                              "stairs_final_share": "0.35 -- was stairs35: B2W's flat items slid as the share rose past ~0.35"},
-                 [k("marchgait3", "T", "verify", "B2W never stepped marching (0 touchdowns/s at 2000-3000): the clock "
+                 env={"leg_kp_scale": 1.5, "leg_kd_scale": 1.2, "leg_hold_s": 2.0, "stairs_final": 0.35},
+                 keys=[k("marchgait3", "T", "verify", "B2W never stepped marching (0 touchdowns/s at 2000-3000): the clock "
                                                  "pays 3x while marching -- try without it once the common march keys run"),
                   k("standw4w", "T", "verify", "standing hold x4: B2W crept 2.5-3.6 cm after stops (bar 1 cm) -- heavy "
                                                "body on braked wheels"),
                   k("standlongw", "T", "verify", "zero commands held 4-8 s: B2W creep, same reason"),
-                  k("b2wdesc", "T", "verify", "descent target in the B2W constraint set: to be merged into the shared one"),
-                  k("bdhold", "T", "verify", "back_drift multiplier held <= 1.7: B2W overshoot of small sideways speeds")]),
+                  k("b2wcons", "T", "param", "B2W's own constraint set: the shared wheeled set (wheelcons, sidetgt75, "
+                                             "consease) plus desccons for all three"),
+                  k("b2wdesc", "T", "dropped", "tuned b2wcons' descent: desccons for all"),
+                  k("bdhold", "T", "dropped", "capped b2wcons' back_drift, which the shared set does not have")]),
     "go2": Robot("legged", {"payload": "max=12,x=0.15,y=0.08,z=0.20 (Unitree spec)", "wall_stop_m": 0.85, "foot_r_m": 0.022}),
     "as2": Robot("legged", {"payload": "max=10,x=0.15,y=0.08,z=0.20 (half the body weight, no spec found)",
                             "wall_stop_m": 0.9, "foot_r_m": 0.028}),
@@ -158,7 +165,8 @@ def recipe(r: str) -> dict:
     T = [x.name for x in live if x.phase == "T"]
     M = T + [x.name for x in live if x.phase == "M"]
     P = M + [x.name for x in live if x.phase == "P"]
-    return {"T": T, "M": M, "P": P, "params": rob.params, "budgets": BUDGETS, "keys": layers}
+    return {"T": T, "M": M, "P": P, "params": rob.params, "budgets": BUDGETS, "keys": layers,
+            "env": ",".join(f"{a}={b}" for a, b in rob.env.items())}
 
 
 def current(r: str) -> tuple[set, set]:
@@ -181,11 +189,14 @@ def main(argv: list[str]) -> int:
         return 0
     r = argv[0].lower()
     u = recipe(r)
+    if "--params" in argv:
+        print(u["env"]); return 0
     if "--sh" in argv:
         print(f"RECIPE_BLIND_T={','.join(u['T'])}")
         print(f"RECIPE_BLIND_M={','.join(u['M'])}")
         print(f"RECIPE_BLIND_P={','.join(u['P'])}")
         print(f"RECIPE_BLIND_CONS={CONS_INIT}")
+        print(f"RECIPE_BLIND_PARAMS={u['env']}")
         for kk, v in u["budgets"].items():
             print(f"{kk}={v}")
         return 0

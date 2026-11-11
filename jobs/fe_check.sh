@@ -55,7 +55,7 @@ if [ -f $O/REMOTE ] && [ -z "${FE_NO_REMOTE:-}" ] && { [ ! -s $O/REMOTE ] || gre
   q=$O/requests/$(basename $P).req
   rm -f ${P}_verdict.txt
   { printf 'KIND=%q R=%q CK=%q SEED=%q P=%q\n' "$KIND" "$R" "$CK" "$SEED" "$P"
-    for v in BLIND_PILOT BLIND_ANCHOR_COEFF BLIND_ANCHOR_CHECKPOINT BLIND_PHASE_START_IT BLIND_CONS_INIT; do
+    for v in BLIND_PILOT BLIND_PARAMS BLIND_ANCHOR_COEFF BLIND_ANCHOR_CHECKPOINT BLIND_PHASE_START_IT BLIND_CONS_INIT; do
       if [ -n "${!v+x}" ]; then printf 'export %s=%q\n' $v "${!v}"; fi
     done; } > $q.new && mv $q.new $q
   echo "$(date '+%m-%d %T') $KIND $R $CK s$SEED: sent to the relay ($q)" >> $O/checks.out

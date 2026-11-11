@@ -37,7 +37,7 @@ while true; do
       # from the Polish task), imported here as tinynav-sim's blind models are (scripts/import_blind_policy.py)
       # fe_robot.sh first (11-06): the pilot's "payload" key needs BLIND_PAYLOAD (B2 l4 9000 failed here on it)
       PD=logs/probe/${r}_$base
-      timeout 900 $SSH $P "cd $D && source env.sh && source jobs/fe_robot.sh $R > /dev/null && export BLIND_PILOT=$BPILOT BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=\$PWD/$CK && mkdir -p $PD && \$PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $CK --out $PD > $PD/export.log 2>&1 && \$PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $PD/deploy.yaml >> $PD/export.log 2>&1" < /dev/null > /dev/null
+      timeout 900 $SSH $P "cd $D && source env.sh && source jobs/fe_robot.sh $R > /dev/null && export BLIND_PARAMS=\$(python3 jobs/recipes/unified.py $r --params 2> /dev/null) && export BLIND_PILOT=$BPILOT BLIND_ANCHOR_COEFF=0 BLIND_ANCHOR_CHECKPOINT=\$PWD/$CK && mkdir -p $PD && \$PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $CK --out $PD > $PD/export.log 2>&1 && \$PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $PD/deploy.yaml >> $PD/export.log 2>&1" < /dev/null > /dev/null
       mkdir -p $C/gate_pull/$n
       timeout 300 $SSH $P "cat $D/$PD/policy.onnx" < /dev/null > $C/gate_pull/$n/policy.onnx
       timeout 300 $SSH $P "cat $D/$PD/deploy.yaml" < /dev/null > $C/gate_pull/$n/deploy.yaml

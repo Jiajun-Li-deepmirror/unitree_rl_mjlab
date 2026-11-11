@@ -281,6 +281,7 @@ OUT=logs/pkg/${r}_bl2_${TAG}_$PK
 mkdir -p $OUT
 cp $P $OUT/model_$PK.pt && { cp -r $(new_run bl2P_$TAG)/params $OUT/ 2> /dev/null || cp -r $V2_PKG/params $OUT/ 2> /dev/null; }
 echo "$BLIND_PILOT" | sed 's/^,//' > $OUT/blind_pilot.txt
+echo "${BLIND_PARAMS:-}" > $OUT/blind_params.txt   # the robot's physical parameters (jobs/recipes/unified.py), for the depth rounds
 md5sum $OUT/model_$PK.pt | sed "s|$OUT/||" > $OUT/checkpoint.md5
 $PY scripts/go2_blind/export_onnx.py --task Unitree-$R-Blind-Flat-Scratch $OUT/model_$PK.pt --out $OUT > logs/jobs/blind_${r}_export.log 2>&1 \
   && $PY scripts/blind/export_deploy_yaml.py Unitree-$R-Blind-Polish --robot $r --out $OUT/deploy.yaml >> logs/jobs/blind_${r}_export.log 2>&1 \

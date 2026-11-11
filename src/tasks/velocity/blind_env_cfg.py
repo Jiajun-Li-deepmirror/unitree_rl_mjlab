@@ -1454,6 +1454,15 @@ def phase_entropy_coef(phase: str) -> float:
   return coef
 
 
+def blind_params() -> dict[str, str]:
+  """A robot's physical parameters for its recipe (go2-depth 2026-11-11, the user: "配方由代码定义 ... 少量每个机型自己的
+  差异，每项差异写明原因"): BLIND_PARAMS, "key=value,..." from jobs/recipes/unified.py (ROBOTS[r].env, through
+  full_chain.sh; the blind package keeps it as blind_params.txt). Keys: leg_kp_scale / leg_kd_scale (apply_leg_gains),
+  leg_hold_s (apply_leg_hold), stairs_final (the stairs share M ends at). Physics: training, checks and exports alike.
+  The older pilot keys (legkp15, leghold20, stairs35) still do the same where a recipe names them."""
+  return dict(kv.split("=", 1) for kv in os.environ.get("BLIND_PARAMS", "").split(",") if "=" in kv)
+
+
 def apply_leg_hold(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
   """With "leghold" in BLIND_PILOT (B2W, 2026-11-01 ~10:00), the legs' position targets hold still once the robot
   stands still at the zero command (mdp.HeldJointPositionAction, deploy JointPositionAction hold_after_s):
@@ -1464,6 +1473,8 @@ def apply_leg_hold(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
   Training and evaluation tasks call it alike."""
   pilot = os.environ.get("BLIND_PILOT", "").split(",")
   after = [s for t, s in (("leghold", 1.5), ("leghold10", 1.0), ("leghold20", 2.0)) if t in pilot]
+  if "leg_hold_s" in blind_params():
+    after = [float(blind_params()["leg_hold_s"])]
   if after:
     old = cfg.actions["joint_pos"]
     keep = {f.name: getattr(old, f.name) for f in fields(old) if f.init}
@@ -2803,6 +2814,13 @@ def apply_blind_phased(cfg: ManagerBasedRlEnvCfg, phase: str, swing_weight: floa
         c["target"], c["max_scale"] = 0.80, 1.5
       if c["name"] == "side_drift":
         c["max_scale"] = 1.0
+  if "desccons" in pilot and wheeled and "constraints" in cfg.curriculum:
+    # The descent speed as a constraint for every wheeled robot (go2-depth 2026-11-11, the unified recipe; b2wcons'
+    # descent item, B2W_DESCENT_RATIO 0.96 on the mean, stair_speed_deficit up to 2x): the stairs speed bar
+    # (0.8-1.2x) is the same for all, and the descents were the slow side (B2W 0.755-0.80x, Go2W M "下楼慢").
+    cfg.curriculum["constraints"].params["constraints"].append(
+      {"name": "descent", "metric": "stair_speed", "params": {"descend": True}, "target": B2W_DESCENT_RATIO,
+       "sense": "min", "term": "stair_speed_deficit", "lr": 0.5, "max_scale": 2.0})
   if "backcons" in pilot and wheeled and "constraints" in cfg.curriculum:
     # wheelcons' sideways-drift guard as B2W's b2wcons2 back_drift (2026-11-06, the Go2W blind bl2 mixed): the signed
     # drift toward the robot's back walking sideways, median, from 1 s into the command, on flat ground, over the light
@@ -2889,6 +2907,8 @@ def apply_blind_phased(cfg: ManagerBasedRlEnvCfg, phase: str, swing_weight: floa
       # of the robots over 6300..7000) drifting back 5.6% walking sideways and descending at 0.801x, at 8000
       # (0.41-0.50) 6.2-7.2% and 0.755x (bars 5% / 0.8x), climbing 99-100% at both: the polish holds 0.35.
       final = 0.35
+    if "stairs_final" in blind_params():
+      final = float(blind_params()["stairs_final"])   # a robot parameter (jobs/recipes/unified.py; B2W 0.35, as stairs35)
     if phase == "mixed":
       start = int(os.environ.get("BLIND_PHASE_START_IT", PHASE_MIXED_START))
       cfg.curriculum["staged_clock"] = CurriculumTermCfg(
@@ -2985,7 +3005,10 @@ def apply_leg_gains(cfg: ManagerBasedRlEnvCfg, kp_scale: float = 1.5, kd_scale: 
   1.5 s after the stop 0.68-13.9 cm at kp 160, 0.21-0.91 at these gains (2026-10-29, scratchpad
   w17/creep_split.py). Alone (v13wi, 2026-10-29 ~01:00) it left the policy re-posing after stops (creep
   0.18-3.28 at 1000-2000); "standtgt" holds the targets."""
-  if "legkp15" not in os.environ.get("BLIND_PILOT", "").split(","):
+  params = blind_params()
+  if "leg_kp_scale" in params:
+    kp_scale, kd_scale = float(params["leg_kp_scale"]), float(params.get("leg_kd_scale", 1.0))
+  elif "legkp15" not in os.environ.get("BLIND_PILOT", "").split(","):
     return cfg
   entity = cfg.scene.entities["robot"]
   articulation = entity.articulation

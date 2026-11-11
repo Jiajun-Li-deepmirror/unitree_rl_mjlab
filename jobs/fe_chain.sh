@@ -74,6 +74,8 @@ last8() {  # RUN K: the last 8 checkpoints up to model_K (every 100; a run's fin
   echo $out
 }
 PILOT=$(cat $PKG/blind_pilot.txt)${FE_PILOT_EXTRA:-}
+# the robot's physical parameters the blind round trained with (blind_env_cfg.blind_params; packages from 2026-11-11)
+[ -f $PKG/blind_params.txt ] && export BLIND_PARAMS=$(cat $PKG/blind_params.txt)
 export BLIND_PILOT=$PILOT BLIND_ANCHOR_COEFF=0
 TD=logs/rsl_rl/${r}_depth_teacher SD=logs/rsl_rl/${r}_depth_student
 # FE_INIT_RUN (2026-11-10, the reproducible run): the widened start's run dir, one per blind package (blind_init_<pkg>);
