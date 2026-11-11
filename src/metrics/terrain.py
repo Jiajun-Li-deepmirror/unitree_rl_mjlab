@@ -88,12 +88,12 @@ def raster(model: mujoco.MjModel, win, data: mujoco.MjData | None = None, world_
 
 
 def dilate(mask: np.ndarray, r: int) -> np.ndarray:
-  out = mask.copy()
-  for i in range(-r, r + 1):
-    for j in range(-r, r + 1):
-      if i * i + j * j <= r * r:
-        out |= np.roll(np.roll(mask, i, 0), j, 1)
-  return out
+  """The cells within r cells (i^2 + j^2 <= r^2) of a marked one. A distance transform (2026-11-12: the shifted-copy loop
+  of accept_stairs took minutes on an mjlab training terrain, and wrapped around the grid's borders)."""
+  if not mask.any():
+    return mask.copy()
+  from scipy.ndimage import distance_transform_edt
+  return distance_transform_edt(~mask) <= r + 1e-9
 
 
 class Grid:

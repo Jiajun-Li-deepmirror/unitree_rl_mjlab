@@ -1,0 +1,192 @@
+"""The mjlab side of src/metrics (go2-depth 2026-11-12, doc/redesign.md step 1): the same stairs counters as tinynav's
+acceptance, fed from an mjlab environment's batched state.
+
+  add_sensor(cfg)        a feet / wheels contact sensor with each contact's point and normal (up to SLOTS per foot,
+                         nearest first), beside the env's feet_ground_contact (same feet, same terrain)
+  terrain_grid(env)      terrain.Grid over the whole terrain (its static boxes, posed)
+  StairsMeter(env, ids)  per control step: the legged (LeggedStairs) or wheeled (WheeledStairs) counters over env ids
+                         (a fixed sample), only while a robot is on a stairs column; counts decayed with a time constant
+                         of ema_steps; rate(name) gives the acceptance quantities
+
+Differences from tinynav-sim, by necessity: "climbing" (up) is read from the terrain (the raster 0.5 m ahead along the
+heading is higher than under the base) instead of the scenario; a foot's "first contact" is the nearest one (the
+sensor's mindist order) instead of MuJoCo's contact-list order.
+"""
+
+from __future__ import annotations
+
+import math
+
+import mujoco
+import numpy as np
+import torch
+
+from .stairs import LeggedStairs, WheeledStairs
+from .terrain import JUMP, Grid, static_box_geoms
+
+SENSOR = "u_feet_metric"
+SLOTS = 3
+FEET_SENSOR = "feet_ground_contact"
+
+
+def add_sensor(cfg) -> None:
+  """Add the metrics' contact sensor to an env cfg that has feet_ground_contact (its feet and terrain)."""
+  from mjlab.sensor import ContactSensorCfg
+
+  sensors = tuple(cfg.scene.sensors or ())
+  if any(s.name == SENSOR for s in sensors):
+    return
+  feet = next(s for s in sensors if s.name == FEET_SENSOR)
+  cfg.scene.sensors = sensors + (ContactSensorCfg(name=SENSOR, primary=feet.primary, secondary=feet.secondary,
+                                                  fields=("found", "pos", "normal"), reduce="mindist",
+                                                  num_slots=SLOTS),)
+
+
+def terrain_grid(env, res: float = 0.02) -> Grid:
+  """A Grid over all of the env's static terrain boxes, at their posed positions."""
+  model = env.sim.mj_model
+  data = mujoco.MjData(model)
+  mujoco.mj_kinematics(model, data)
+  geoms = static_box_geoms(model)
+  if not geoms:
+    raise RuntimeError("terrain_grid: no static boxes in the model")
+  lo = np.full(3, np.inf)
+  hi = np.full(3, -np.inf)
+  for g in geoms:
+    r = float(np.linalg.norm(model.geom_size[g]))
+    lo = np.minimum(lo, data.geom_xpos[g] - r)
+    hi = np.maximum(hi, data.geom_xpos[g] + r)
+  win = (float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1]), float(lo[2]) - 1.0, float(hi[2]) + 1.0, res)
+  return Grid(model, win, data=data)
+
+
+def _wheel_geom_ids(env) -> np.ndarray:
+  """The global ids of the feet sensor's primary geoms, in the sensor's order."""
+  sensor = env.scene[SENSOR]
+  ids = getattr(sensor, "_primary_geom_ids", None)
+  if ids is not None:
+    return np.asarray(ids)
+  model = env.sim.mj_model
+  pat = sensor.cfg.primary.pattern
+  pats = (pat,) if isinstance(pat, str) else tuple(pat)
+  import re
+
+  out = []
+  for p in pats:
+    rx = re.compile(p)
+    for g in range(model.ngeom):
+      name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
+      if rx.fullmatch(name.split("/")[-1]) and g not in out:
+        out.append(g)
+  return np.asarray(out)
+
+
+class StairsMeter:
+  """The stairs counters over a fixed sample of envs, every control step, while each robot is on a stairs column.
+
+  rate(name) for the acceptance quantities (None before min_steps walked):
+    legged   kicks / slips per step walked ((ups + downs) / feet), mid / edge share of placements
+    wheeled  slide_back (slips / step-ups), idle_start / idle_end per step-up
+  Counts decay with a time constant of ema_steps control steps (the curriculum moves on; old behaviour fades)."""
+
+  def __init__(self, env, ids: torch.Tensor, wheeled: bool, ema_steps: float = 20000.0, min_steps: float = 200.0):
+    self.ids = ids.to(env.device)
+    self.n = len(ids)
+    self.wheeled = wheeled
+    self.decay = math.exp(-1.0 / ema_steps)
+    self.min_steps = min_steps
+    self.grid = terrain_grid(env)
+    s = env.scene[SENSOR]
+    self.feet = s.data.found.shape[1] // SLOTS
+    if wheeled:
+      self.counter = WheeledStairs(self.grid, self.n, self.feet)
+      self.wheel_geoms = torch.as_tensor(_wheel_geom_ids(env), device=env.device)
+    else:
+      self.counter = LeggedStairs(self.grid, self.n, self.feet)
+    self.last_len = None
+    self.prev = {}
+    self.sums: dict[str, float] = {}
+
+  def _state(self, env):
+    ids = self.ids
+    d = env.scene[SENSOR].data
+    F, K = self.feet, SLOTS
+    found = d.found[ids].view(self.n, F, K)[:, :, 0].cpu().numpy()
+    pos = d.pos[ids].view(self.n, F, K, 3).cpu().numpy()
+    nz = d.normal[ids].view(self.n, F, K, 3)[..., 2].abs().cpu().numpy()
+    valid = np.arange(K)[None, None, :] < found[:, :, None]
+    robot = env.scene["robot"]
+    base = robot.data.root_link_pos_w[ids, :2].cpu().numpy()
+    q = robot.data.root_link_quat_w[ids].cpu().numpy()   # w, x, y, z
+    yaw = np.arctan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+    heading = np.stack([np.cos(yaw), np.sin(yaw)], axis=1)
+    h_here = self.grid.h_v(base)
+    h_ahead = self.grid.h_v(base + 0.5 * heading)
+    up = np.nan_to_num(h_ahead, nan=-np.inf) > np.nan_to_num(h_here, nan=np.inf) + JUMP
+    on_stairs = env.command_manager.get_term("twist").is_stair_env[ids].cpu().numpy()
+    return found, pos, nz, valid, base, heading, up, on_stairs
+
+  def step(self, env) -> None:
+    ep = env.episode_length_buf[self.ids].cpu().numpy()
+    if self.last_len is not None:
+      fresh = np.nonzero(ep < self.last_len)[0]
+      if len(fresh):
+        if self.wheeled:
+          for r in fresh:
+            self.counter.st[r] = [dict(on=0, stand=None, nosed=False, last_slide=None, air=0.0, flat_off=False,
+                                       off_L=-1, t_off=0.0, z0=0.0, apex=0.0, z_last=0.0) for _ in range(self.feet)]
+            self.counter.reached[r] = []
+            self.counter.idle[r] = []
+        else:
+          self.counter.reset(fresh)
+    self.last_len = ep
+    found, pos, nz, valid, base, heading, up, active = self._state(env)
+    contact = found > 0
+    if self.wheeled:
+      wp = env.sim.data.geom_xpos[self.ids][:, self.wheel_geoms].cpu().numpy()
+      contacts = [[[(pos[r, w, k], float(nz[r, w, k])) for k in range(SLOTS) if valid[r, w, k]] for w in range(self.feet)]
+                  for r in range(self.n)]
+      t = float(env.common_step_counter) * env.step_dt
+      self.counter.step(t, env.step_dt, contacts, wp, heading, self.grid.near1_v(base), up, active)
+    else:
+      horiz = (valid & (nz < 0.5)).any(axis=2)
+      flat = contact & (~valid | (nz > 0.9)).all(axis=2)
+      self.counter.step(contact, horiz, flat, pos[:, :, 0, :2], heading, up, active)
+    self._accumulate(up)
+
+  def _totals(self, up) -> dict[str, float]:
+    if self.wheeled:
+      c = self.counter.counts(up)
+      return {"ups": float(c["ups"].sum()), "slips": float(c["slips"].sum()),
+              "idle_start": float(c["idle_rear"].sum()), "idle_end": float(c["idle_front"].sum())}
+    c = self.counter.counts()
+    return {k: float(v.sum()) for k, v in c.items()}
+
+  def _accumulate(self, up) -> None:
+    tot = self._totals(up)
+    for k, v in tot.items():
+      inc = v - self.prev.get(k, 0.0)
+      self.prev[k] = v
+      self.sums[k] = self.sums.get(k, 0.0) * self.decay + max(inc, 0.0)
+
+  def rate(self, name: str) -> float | None:
+    s = self.sums
+    if self.wheeled:
+      ups = s.get("ups", 0.0)
+      if ups < self.min_steps:
+        return None
+      return {"slide_back": s.get("slips", 0.0) / ups, "idle_start": s.get("idle_start", 0.0) / ups,
+              "idle_end": s.get("idle_end", 0.0) / ups}.get(name)
+    steps = (s.get("ups", 0.0) + s.get("downs", 0.0)) / self.feet
+    placed = s.get("placed", 0.0)
+    if steps < self.min_steps:
+      return None
+    return {"kicks": s.get("kicks", 0.0) / steps, "slips": s.get("slips", 0.0) / steps,
+            "mid": s.get("mid", 0.0) / placed if placed else None,
+            "edge": s.get("edge", 0.0) / placed if placed else None}.get(name)
+
+  def state(self) -> dict:
+    return {"sums": dict(self.sums)}
+
+  def load(self, state: dict) -> None:
+    self.sums = dict(state.get("sums", {}))

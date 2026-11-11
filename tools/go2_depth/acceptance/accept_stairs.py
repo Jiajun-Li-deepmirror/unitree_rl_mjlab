@@ -127,7 +127,7 @@ def run(sc, seed, grid):
   front = {g for g, n in feet.items() if n[:1].upper() == "F"}
   fl = list(feet)
   legs = None if WHEELED else LeggedStairs(grid, 1, len(fl))   # the shared legged counters (src/metrics/stairs.py)
-  m = dict(kicks=0, mid=0, edge=0, placed=0, slips=0, ups=0, idle_front=0, idle_rear=0, fell=False,
+  m = dict(kicks=0, mid=0, edge=0, placed=0, slips=0, ups=0, downs=0, idle_front=0, idle_rear=0, fell=False,
            roll=0.0, w2=0.0, wn=0, clean=0, edged=0, hd_max=0.0, hd_sum=0.0, r_sum=0.0, hn=0)
   # the flight's start level (under the base at the spawn) and end level (the highest / lowest level ahead)
   hz0 = grid.h(float(data.qpos[root]), float(data.qpos[root + 1]))
@@ -180,7 +180,7 @@ def run(sc, seed, grid):
   return m
 
 
-tot = dict(kicks=0, mid=0, edge=0, placed=0, slips=0, ups=0, idle_front=0, idle_rear=0, falls=0, roll=0.0, w2=0.0,
+tot = dict(kicks=0, mid=0, edge=0, placed=0, slips=0, ups=0, downs=0, idle_front=0, idle_rear=0, falls=0, roll=0.0, w2=0.0,
            wn=0, climbs=0, clean=0, edged=0, hd_sum=0.0, hn=0)
 print(f"{robot} {onnx.stem} ({'wheeled' if WHEELED else 'legged'}), {runs} runs per scenario"
       + (f", payload {PAYLOAD} (kg, x, y, z m)" if PAYLOAD else "") + (f", noslip {NOSLIP}" if NOSLIP else ""), flush=True)
@@ -192,7 +192,7 @@ for sc in SCEN:
     win = (pos[0] - 3.0, pos[0] + 3.0, pos[1] - 6.0, pos[1] + 6.0, pos[2] - 3.5, pos[2] + 0.3, 0.01)
   grid = grids.setdefault((scene, win), Grid(model, win))
   ms = [run(sc, s, grid) for s in range(runs)]
-  agg = {k: sum(mm[k] for mm in ms) for k in ("kicks", "mid", "edge", "placed", "slips", "ups", "idle_front", "idle_rear", "w2", "wn", "clean", "edged")}
+  agg = {k: sum(mm[k] for mm in ms) for k in ("kicks", "mid", "edge", "placed", "slips", "ups", "downs", "idle_front", "idle_rear", "w2", "wn", "clean", "edged")}   # legged ups: foot step-ups (/ 4 = the robot's)
   falls = sum(mm["fell"] for mm in ms)
   roll = max(mm["roll"] for mm in ms)
   for k in agg:
@@ -205,7 +205,7 @@ for sc in SCEN:
     line = (f"slide-back {100 * agg['slips'] / max(agg['ups'], 1):4.1f}% of {agg['ups']} step-ups (clean {agg['clean']}, edge {agg['edged']}) | idle steps start "
             f"{agg['idle_rear'] / runs:.1f} end {agg['idle_front'] / runs:.1f} / run")
   else:
-    line = (f"kicks {agg['kicks'] / runs:.1f} / run | mid-tread {100 * agg['mid'] / max(agg['placed'], 1):4.1f}% edge "
+    line = (f"steps {(agg['ups'] + agg['downs']) / 4 / runs:.1f} / run | kicks {agg['kicks'] / runs:.1f} / run | mid-tread {100 * agg['mid'] / max(agg['placed'], 1):4.1f}% edge "
             f"{100 * agg['edge'] / max(agg['placed'], 1):4.1f}% of {agg['placed']} | slips {agg['slips'] / runs:.1f} / run")
   print(f"  {name:13s} {line} | roll peak {roll:4.1f} deg, rate RMS {wr:.2f} rad/s | falls {falls}/{runs}", flush=True)
   hn = max(sum(mm["hn"] for mm in ms), 1)

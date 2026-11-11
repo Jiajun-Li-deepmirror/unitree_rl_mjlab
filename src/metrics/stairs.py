@@ -9,7 +9,12 @@ its first contact's point (x, y); plus the robot's heading (unit x, y) and wheth
              starts > 6 cm below the same foot's previous stance
   placement  once per stance on a tread 0.15-0.6 m deep along the heading, flat contacts only, over stairs: its
              position along the tread (0 / 1 = the ends); "mid" 0.2-0.8, "edge" within 3 cm of either end
-Counts per robot: kicks, slips, placed, mid, edge. The tinynav bars (doc/redesign.md 2.3): kicks <= 2 per run,
+  ups        (2026-11-12) a stance over stairs that starts more than JUMP above the same foot's previous stance: one
+             foot stepping up; ups / feet = the robot's step-ups, the denominator that makes kicks and slips comparable
+             between tinynav's routes and mjlab's terrain (per step-up instead of per run)
+  downs      the same going down: a stance over stairs starting more than JUMP below the previous one while not climbing
+             ((ups + downs) / feet = the steps a robot walked over)
+Counts per robot: kicks, slips, placed, mid, edge, ups. The tinynav bars (doc/redesign.md 2.3): kicks <= 2 per run,
 mid >= 80% and edge <= 10% of placed, slips <= 0.2 per run.
 """
 
@@ -17,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .terrain import Grid
+from .terrain import JUMP, Grid
 
 STANCE_STEPS = 3      # control steps of contact that make a stance
 SLIP_DROP = 0.06      # m
@@ -39,6 +44,15 @@ class LeggedStairs:
     self.placed = np.zeros(n, np.int64)
     self.mid = np.zeros(n, np.int64)
     self.edge = np.zeros(n, np.int64)
+    self.ups = np.zeros(n, np.int64)
+    self.downs = np.zeros(n, np.int64)
+
+  def reset(self, idx) -> None:
+    """Forget the per-foot state of robots idx (a robot reset in training); the counts stay."""
+    self.on[idx] = 0
+    self.kick[idx] = False
+    self.level[idx] = np.nan
+    self.placed_flag[idx] = False
 
   def step(self, contact: np.ndarray, horiz: np.ndarray, flat: np.ndarray, cp: np.ndarray, heading: np.ndarray,
            up: np.ndarray, active: np.ndarray | None = None) -> None:
@@ -59,6 +73,8 @@ class LeggedStairs:
     start = valid & (self.on == STANCE_STEPS)
     during = valid & (self.on > STANCE_STEPS) & drop & over
     slip_start = start & drop & up[:, None] & over
+    self.ups += (start & has_level & (lv > self.level + JUMP) & over).sum(axis=1)
+    self.downs += (start & has_level & (lv < self.level - JUMP) & over & ~up[:, None]).sum(axis=1)
     self.slips += (slip_start | during).sum(axis=1)
     self.level = np.where(start | during, lv, self.level)
     self.placed_flag = np.where(start, False, self.placed_flag)
@@ -79,7 +95,8 @@ class LeggedStairs:
     self.placed_flag |= cand
 
   def counts(self) -> dict[str, np.ndarray]:
-    return {"kicks": self.kicks, "slips": self.slips, "placed": self.placed, "mid": self.mid, "edge": self.edge}
+    return {"kicks": self.kicks, "slips": self.slips, "placed": self.placed, "mid": self.mid, "edge": self.edge,
+            "ups": self.ups, "downs": self.downs}
 
 
 SLIDE_REPEAT_S = 0.5   # s: a wheel bumping the same riser again within this is one slide-back
