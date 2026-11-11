@@ -3,6 +3,7 @@
 Model converted from the unitree_mujoco As2 (unitree_robots/as2/as2.xml).
 """
 
+import functools
 from pathlib import Path
 
 import mujoco
@@ -31,8 +32,9 @@ def get_assets(meshdir: str) -> dict[str, bytes]:
   return assets
 
 
-def get_spec() -> mujoco.MjSpec:
-  spec = mujoco.MjSpec.from_file(str(uros.xml(As2_XML)))   # the unitree_ros-aligned model with model=uros
+def get_spec(path: Path | None = None) -> mujoco.MjSpec:
+  # path: the model file chosen when the robot config was made (uros.xml: the unitree_ros-aligned one with model=uros)
+  spec = mujoco.MjSpec.from_file(str(path or As2_XML))
   spec.assets = get_assets(spec.meshdir)
   return spec
 
@@ -140,7 +142,7 @@ def get_as2_robot_cfg() -> EntityCfg:
   return EntityCfg(
     init_state=INIT_STATE,
     collisions=(FULL_COLLISION,),
-    spec_fn=get_spec,
+    spec_fn=functools.partial(get_spec, uros.xml(As2_XML)),   # decided now, as the actuators below
     articulation=uros.articulation("as2", As2_ARTICULATION),
   )
 

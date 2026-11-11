@@ -10,6 +10,7 @@ Sphere-box contacts are exact and push up. xmls/scene_go2w.xml is the unitree_mu
 simulation scene (upstream motors, sensors and joint dynamics, mesh wheels) for sim2sim.
 """
 
+import functools
 from pathlib import Path
 
 import mujoco
@@ -37,8 +38,9 @@ def get_assets(meshdir: str) -> dict[str, bytes]:
   return assets
 
 
-def get_spec() -> mujoco.MjSpec:
-  spec = mujoco.MjSpec.from_file(str(uros.xml(GO2W_XML)))   # the unitree_ros-aligned model with model=uros
+def get_spec(path: Path | None = None) -> mujoco.MjSpec:
+  # path: the model file chosen when the robot config was made (uros.xml: the unitree_ros-aligned one with model=uros)
+  spec = mujoco.MjSpec.from_file(str(path or GO2W_XML))
   spec.assets = get_assets(spec.meshdir)
   return spec
 
@@ -154,7 +156,7 @@ def get_go2w_robot_cfg() -> EntityCfg:
   return EntityCfg(
     init_state=INIT_STATE,
     collisions=(FULL_COLLISION,),
-    spec_fn=get_spec,
+    spec_fn=functools.partial(get_spec, uros.xml(GO2W_XML)),   # decided now, as the actuators below
     articulation=uros.articulation("go2w", GO2W_ARTICULATION),
   )
 
