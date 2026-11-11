@@ -3,8 +3,8 @@
 # 部署脚本更新，带 md5 校验；每次运行记录 commit"). Brings the boxes' tree (/root/gpufree-data/go2-depth/depth_fe) from
 # its REPO_COMMIT to COMMIT (default HEAD; it must be pushed or at least committed here):
 #   1. the files git changed between the two (added or modified; a file git deleted is reported, not removed);
-#   2. before: each file's md5 on the box must be its md5 at the box's REPO_COMMIT (or absent for a new file) --
-#      a box edit that is in no commit stops the deploy (--force deploys over it, listing it);
+#   2. before: each file's md5 on the box must be its md5 at the box's REPO_COMMIT, or the box lacks it (deployed as
+#      new) -- a box edit that is in no commit stops the deploy (--force deploys over it, listing it);
 #   3. each file goes in atomically (a new inode: running scripts keep the old text), mode kept;
 #   4. after: every file's md5 must be COMMIT's; then REPO_COMMIT = COMMIT.
 # --check: only steps 1-2 and the drift report. go2-home deploys by itself (no route there): tell it the commit.
@@ -28,7 +28,8 @@ for b in ${BOXES//,/ }; do
   # md5 on the box now vs at OLD
   want=$(for f in "${F[@]}"; do if git cat-file -e "$OLD:$f" 2> /dev/null; then echo "$(git show "$OLD:$f" | md5sum | cut -c1-32) $f"; else echo "absent $f"; fi; done)
   have=$($SSH $P "cd $D && for f in ${F[*]}; do if [ -f \$f ]; then echo \"\$(md5sum < \$f | cut -c1-32) \$f\"; else echo \"absent \$f\"; fi; done" < /dev/null)
-  drift=$(diff <(echo "$want" | sort -k2) <(echo "$have" | sort -k2) | grep '^>' | cut -c3-)
+  # a file the box lacks is deployed as new (e.g. a workstation tool the box never had); only different content stops it
+  drift=$(diff <(echo "$want" | sort -k2) <(echo "$have" | sort -k2) | grep '^>' | cut -c3- | grep -v '^absent ')
   if [ -n "$drift" ]; then
     echo "[$b] on the box and in no commit (md5 differs from $OLD):"; echo "$drift" | sed 's/^/    /'
     if [ $FORCE != 1 ]; then echo "[$b] not deployed (--force deploys over them)"; rc=1; continue; fi
