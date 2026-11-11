@@ -21,13 +21,13 @@ from pathlib import Path
 BOXES = {"t1": "30714", "t2": "31365"}
 SSH = "/home/dm/.cache/go2-depth-work/ssh/r"
 D = "/root/gpufree-data/go2-depth/depth_fe"
-FILES = "logs/jobs/blind_*.txt logs/jobs/fe_*.txt logs/jobs/repro_*.txt logs/jobs/smoke/*.txt logs/jobs/central/central.txt"
+FILES = "logs/jobs/blind_*.txt logs/jobs/fe_*.txt logs/jobs/repro_*.txt logs/jobs/smoke/*.txt logs/jobs/central/central.txt logs/jobs/unified_*.txt"
 # the workstation's central queue (tools/go2_depth/queue/central_queue.py): every line of its log is an event
 CENTRAL_LOG = Path("/home/dm/.cache/go2-depth-work/central/central.log")
 EVENT = re.compile(
     r"started|PICK|PASS|FAIL|TOOL FAULT|PAUSED|removed, going on|DELIVERY|tinynav|widened|inputs \(actor|inputs: P adds|BLIND VIDEOS"
     r"|STAGE-1|STUDENT|TEACHER|repro queue .*(starts|passed|FAILED|skipped|stopped|all done)|no new run dir"
-    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error|central |CURVE ALARM|curve back")
+    r"|ended before|no checkpoint|SMOKE|smoke|inserted|runs as|reused from|Traceback|Error|central |CURVE ALARM|curve back|unified teacher")
 SKIP = re.compile(r"^wrote |actor averaged over")
 STATE = Path(__file__).resolve().parents[3] / "logs/monitor/events_state.json"
 
