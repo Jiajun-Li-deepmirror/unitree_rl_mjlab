@@ -513,7 +513,25 @@ def _add_riser_keepout(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   params = {"sensor_name": src.params["sensor_name"], "asset_cfg": deepcopy(src.params["asset_cfg"])}
   if "foot_radius" in src.params:
     params["foot_radius"] = src.params["foot_radius"]
+  if os.environ.get("U_KICK_KEEPOUT_DIR") == "1":   # only the faces a foot moves towards (riser_keepout's approach)
+    params["approach"] = True
   cfg.rewards[KEEPOUT_TERM] = RewardTermCfg(func=ucons.riser_keepout, weight=-w, params=params)
+
+
+BODY_CLEAR_TERM = "body_clear"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+
+
+def _add_body_clear(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
+  """U_BODY_CLEAR=<w> (a probe's switch, _probe_switches): the cost constraints.body_clear at the weight -w, on the
+  geoms of the illegal-contact termination's sensor. Before _rewards / quality_diff: a cost the M keys do not have,
+  so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint scales it)."""
+  v = os.environ.get("U_BODY_CLEAR")
+  if not v or "illegal_contact" not in cfg.terminations:
+    return
+  w = float(v)
+  assert 0.0 < w <= 50.0, f"U_BODY_CLEAR {v}: the cost's weight"
+  sensor = cfg.terminations["illegal_contact"].params["sensor_name"]
+  cfg.rewards[BODY_CLEAR_TERM] = RewardTermCfg(func=ucons.body_clear, weight=-w, params={"sensor_name": sensor})
 
 
 _M_WEIGHT_NOTED: set[tuple[str, str]] = set()   # (one line per robot and term, whatever the number of its tasks)
@@ -686,8 +704,10 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if os.environ.get("U_STAIR_SPEED_LOADED"):   # a probe's switch (_probe_switches), after stair_speed_deficit
     floor = float(os.environ["U_STAIR_SPEED_LOADED"])
     assert 0.0 <= floor < 1.0 and "stair_speed_deficit" in rewards, f"U_STAIR_SPEED_LOADED {floor}: 0 <= x < 1"
-    rewards["u_stair_speed_loaded"] = RewardTermCfg(func=ucons.stair_speed_loaded, weight=1.0,
-                                                    params={"floor": floor})
+    params = {"floor": floor}
+    if os.environ.get("U_STAIR_SPEED_LOADED_UP") == "1":   # only where the robot is commanded up
+      params |= {"up_only": True, "sensor_name": rewards["stair_speed_deficit"].params["sensor_name"]}
+    rewards["u_stair_speed_loaded"] = RewardTermCfg(func=ucons.stair_speed_loaded, weight=1.0, params=params)
   # the heading switches (probes, _probe_switches): nothing for a robot without the heading observation
   shown = "heading_error" in cfg.observations["critic"].terms
   lines = [t for t, r in rewards.items() if r.func is mdp.straight_drift]
@@ -832,10 +852,18 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          the common payload (half the limit), <x> times it from 2/3 of the limit up, linear in
                          between (constraints.stair_speed_loaded, read in _rewards); the descent / climb items read
                          the robots up to the common payload (read in constraint_items). 0: a heavy robot may stop
-                         on the stairs for nothing -- the acceptance judges only its falls;
+                         on the stairs for nothing -- the acceptance judges only its falls; with
+                         U_STAIR_SPEED_LOADED_UP=1 only where it is commanded up (uprobe_s40, every direction:
+                         the 15-18 cm climbs' falls at 8 kg 49% -> 6%, the descents' 6% -> 21%);
+    U_BODY_CLEAR=<w>     the cost body_clear at the weight -<w>: a point of the bodies whose touch ends the episode
+                         (trunk, hips, the As2's thigh roots) within 3 cm over the terrain or of a step's top next
+                         to it (constraints.body_clear, read in _add_body_clear) -- the climbs' fails are the chin
+                         / the thigh roots on a step, with a payload the more;
     U_KICK_KEEPOUT=<w>   legged: the cost riser_keepout at the weight -<w> -- a swinging foot close to a step face
                          and below its top (constraints.riser_keepout) -- as one of the kicks item's costs (read in
-                         _add_riser_keepout and constraint_items);
+                         _add_riser_keepout and constraint_items); with U_KICK_KEEPOUT_DIR=1 only the faces the
+                         foot is moving towards (uprobe_s39 at weight 4 charged a descent's swing for the face
+                         behind it: the seen mode stopped at the top of 24% of its descents);
     U_M_WEIGHT=<term>:<f>,...  the weight of <term> before the stairs quality (q = 0) times <f>; the P weight from
                          q = Q_IN on as before (m_weights, read in unified_teacher_env_cfg).
   The heading on even ground (2026-11-13: tier 2 on the Go2 candidate, s34 model_6097 -- 12-17 deg off 10 s into a
@@ -937,6 +965,7 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
     _payload_point(cfg, robot)
     other_shares = _add_slopes(cfg)
     _add_riser_keepout(cfg, robot)
+    _add_body_clear(cfg, robot)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

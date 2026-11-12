@@ -1069,7 +1069,8 @@ def loaded_kick_units(ok) -> None:
 
   from src.tasks.unified import teacher_env as te
 
-  keys = ("U_STAIR_SPEED_LOADED", "U_STAIR_SPEED_H", "U_KICK_KEEPOUT", "U_M_WEIGHT", "U_STOP_FEET_DIR")
+  keys = ("U_STAIR_SPEED_LOADED", "U_STAIR_SPEED_H", "U_KICK_KEEPOUT", "U_M_WEIGHT", "U_STOP_FEET_DIR",
+          "U_STAIR_SPEED_LOADED_UP", "U_BODY_CLEAR")
 
   def under(fn, **env: str):
     old = {k: os.environ.pop(k, None) for k in keys}
@@ -1167,6 +1168,119 @@ def loaded_kick_units(ok) -> None:
   ok(f"unit keep-out term: the sum over the swinging feet, on the stairs meter's raster ({out.tolist()}: four feet "
      f"in the air 2.0, the two on the ground left out 0.5)",
      bool(torch.allclose(out, torch.tensor([2.0, 0.5]), atol=1e-4)) and lazy.H.dtype == torch.float32)
+  # (approach, U_KICK_KEEPOUT_DIR=1: only the faces a foot moves towards)
+  near = torch.tensor([[0.97, 0.5, 0.10 + r]])   # 3 cm before the face, 5 cm under its top
+  moves = {"towards it": (0.5, 0.0), "away from it (a descent's foot past the nosing)": (-0.5, 0.0),
+           "along it": (0.0, 0.5), "towards it at 45 deg (the outer ring)": (0.35, 0.35), "at 3 cm/s": (0.03, 0.0)}
+  got = [float(term.zone(near, foot_radius=r, vel=torch.tensor([u]))) for u in moves.values()]
+  ok("unit keep-out approach: a swinging foot 3 cm before a face, under its top -- "
+     + "; ".join(f"{k} {v:.2f}" for k, v in zip(moves, got)) + "; without the option 1.00",
+     got == [1.0, 0.0, 0.0, 0.5, 0.0] and float(term.zone(near, foot_radius=r)) == 1.0)
+  one = torch.tensor([[0.90, 0.5, 0.10 + r]]).repeat(4, 1)
+  env = NS(scene={"robot": NS(data=NS(site_pos_w=torch.stack([one, one]))),
+                  "feet_ground_contact": NS(data=NS(found=torch.zeros(2, 4)))},
+           device="cpu", step_dt=0.02, u_lib_meter=NS(grid=NS(H=H, x0=0.0, y0=0.0, res=0.02)))
+  walk = ucons.riser_keepout(NS(params={}), NS())
+  args = dict(sensor_name="feet_ground_contact", asset_cfg=NS(name="robot", site_ids=[0, 1, 2, 3]), foot_radius=r,
+              approach=True)
+  first = walk(env, **args)
+  env.scene["robot"].data.site_pos_w = env.scene["robot"].data.site_pos_w + torch.tensor([0.02, 0.0, 0.0])
+  second = walk(env, **args)
+  walk.reset(torch.tensor([1]))
+  env.scene["robot"].data.site_pos_w = env.scene["robot"].data.site_pos_w + torch.tensor([0.02, 0.0, 0.0])
+  third = walk(env, **args)
+  ok(f"unit keep-out approach term: no velocity on the first call ({first.tolist()}); the feet moved 2 cm towards "
+     f"the face in a step ({second.tolist()}: the outer ring, 4 x 0.5); after a reset of the second robot it has no "
+     f"velocity for a step ({third.tolist()})",
+     first.tolist() == [0.0, 0.0] and second.tolist() == [2.0, 2.0] and third.tolist() == [2.0, 0.0])
+
+  # -- the trunk clearance (U_BODY_CLEAR) on the same raster: a point's depth, then the term on a robot's geoms
+  import math
+
+  import mujoco
+
+  clear = ucons.body_clear(None, NS())
+  clear.set_grid(H, 0.0, 0.0, 0.02, "cpu")
+  rb = 0.047   # the Go2's chin
+  cases = {"a ball 8 cm before the face, its bottom 3 cm over the step's top": ((0.92, 0.5, 0.18 + rb), rb, 0.0),
+           "its bottom 0.5 cm over the top": ((0.92, 0.5, 0.155 + rb), rb, 0.5),
+           "its bottom 2 cm under the top": ((0.92, 0.5, 0.13 + rb), rb, 1.0),
+           "the ball 10 cm before the face (the ring falls short of it)": ((0.90, 0.5, 0.13 + rb), rb, 0.0),
+           "far from the step, 1.5 cm over the ground": ((0.50, 0.5, 0.015 + rb), rb, 0.3),
+           "over the step, 1.5 cm over its tread": ((1.20, 0.5, 0.165 + rb), rb, 0.3),
+           "beside the 1 m wall (no step face)": ((0.50, 1.75, 0.30), rb, 0.0),
+           "a corner 4 cm before the face, 0.5 cm over the top": ((0.96, 0.5, 0.155), 0.0, 0.5)}
+  got = [float(clear.depth(torch.tensor([[p]]), torch.tensor([rad]))[0, 0]) for p, rad, _ in cases.values()]
+  ok("unit trunk clearance depth: " + "; ".join(f"{k} {v:.2f}" for k, v in zip(cases, got)),
+     bool(np.allclose(got, [want for _, _, want in cases.values()], atol=1e-4)))
+  # (a robot of three geoms -- a box, a ball, a cylinder -- among 12 of the model; the sensor lists the box twice)
+  gid = torch.tensor([5, 7, 9])
+  kind = np.zeros(12, dtype=int)
+  size = np.zeros((12, 3))
+  kind[[5, 7, 9]] = [int(mujoco.mjtGeom.mjGEOM_BOX), int(mujoco.mjtGeom.mjGEOM_SPHERE),
+                     int(mujoco.mjtGeom.mjGEOM_CYLINDER)]
+  size[5], size[7], size[9] = (0.2, 0.05, 0.05), (rb, 0.0, 0.0), (0.046, 0.02, 0.0)
+  xpos = torch.zeros(2, 12, 3)
+  xmat = torch.eye(3).repeat(2, 12, 1, 1)
+  xpos[:, 9] = torch.tensor([0.3, 0.5, 0.5])                     # the cylinder: high, both robots
+  xpos[0, 5], xpos[0, 7] = torch.tensor([0.6, 0.5, 0.30]), torch.tensor([0.92, 0.5, 0.155 + rb])
+  xpos[1, 5], xpos[1, 7] = torch.tensor([0.3, 0.5, 0.22]), torch.tensor([0.3, 0.5, 0.5])
+  xmat[1, 5] = torch.tensor([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])   # the box nose down: 90 deg about y
+  robot = NS(find_geoms=lambda names, preserve_order=False: ([0, 1, 2], list(names)), indexing=NS(geom_ids=gid),
+             data=NS(data=NS(geom_xpos=xpos, geom_xmat=xmat)))
+  slots = [NS(primary_name=n) for n in ("robot/box", "robot/box", "robot/ball", "robot/can")]
+  env = NS(scene={"robot": robot, "touch": NS(_slots=slots)}, device="cpu",
+           sim=NS(mj_model=NS(geom_type=kind, geom_size=size, geom_rbound=np.ones(12))),
+           u_lib_meter=NS(grid=NS(H=H, x0=0.0, y0=0.0, res=0.02)))
+  term_c = ucons.body_clear(None, NS())
+  out = term_c(env, sensor_name="touch")
+  ok(f"unit trunk clearance term: the geoms of the termination's sensor, once each ({term_c.ids.tolist()}), "
+     f"{term_c.local.shape[0]} points (a box's 8 corners, a ball's centre, 2 x 8 on a cylinder's rims); the deepest "
+     f"point per robot ({[round(v, 3) for v in out.tolist()]}: the ball 0.5 cm over the step's top; a box on its nose, "
+     f"its lowest corners 2 cm over the ground -- 17 cm over it unrotated)",
+     term_c.ids.tolist() == [5, 7, 9] and term_c.local.shape[0] == 25
+     and bool(torch.allclose(out, torch.tensor([0.5, 0.2]), atol=1e-4))
+     and sorted(set(term_c.radius.tolist())) == [0.0, float(torch.tensor(rb))])
+  cfg = NS(terminations={"illegal_contact": NS(params={"sensor_name": "touch"})}, rewards={})
+  under(lambda: te._add_body_clear(cfg, None), U_BODY_CLEAR="3")
+  none = NS(terminations={"illegal_contact": NS(params={"sensor_name": "touch"})}, rewards={})
+  under(lambda: te._add_body_clear(none, None))
+  bare = NS(terminations={}, rewards={})
+  under(lambda: te._add_body_clear(bare, None), U_BODY_CLEAR="3")
+  ok("unit trunk clearance switch: U_BODY_CLEAR=3 -- the cost body_clear at -3 on the termination's sensor; nothing "
+     "without the switch, nothing for a task without the termination",
+     list(cfg.rewards) == [te.BODY_CLEAR_TERM] and cfg.rewards["body_clear"].weight == -3.0
+     and cfg.rewards["body_clear"].func is ucons.body_clear
+     and cfg.rewards["body_clear"].params == {"sensor_name": "touch"} and not none.rewards and not bare.rewards)
+
+  # -- "commanded up" (U_STAIR_SPEED_LOADED_UP): 7 robots at the origin on a slope rising along +x (the last: level)
+  gx, gy = torch.meshgrid(torch.arange(-0.5, 0.51, 0.1), torch.arange(-0.2, 0.21, 0.1), indexing="ij")
+  rays = torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=1)
+  slope = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0])
+  hit = torch.cat([rays.expand(7, -1, -1), slope[:, None, None] * rays[None, :, :1]], dim=-1)
+  dist = torch.ones(7, rays.shape[0])
+  hit = torch.cat([hit, torch.tensor([0.3, 0.0, -9.0]).expand(7, 1, 3)], dim=1)   # a ray that hit nothing, ahead
+  dist = torch.cat([dist, -torch.ones(7, 1)], dim=1)
+  yaw = torch.tensor([0.0, 0.0, math.pi, math.pi, 0.0, math.pi / 2, 0.0])
+  quat = torch.stack([torch.cos(yaw / 2), torch.zeros(7), torch.zeros(7), torch.sin(yaw / 2)], dim=1)
+  cmd = torch.tensor([[0.5, 0.0, 0.0], [-0.5, 0.0, 0.0], [0.5, 0.0, 0.0], [-0.5, 0.0, 0.0], [0.0, 0.0, 0.0],
+                      [0.0, -0.5, 0.0], [0.5, 0.0, 0.0]])
+  scan = NS(data=NS(hit_pos_w=hit, pos_w=torch.zeros(7, 3), distances=dist))
+  env = NS(scene={"scan": scan, "robot": NS(data=NS(root_link_quat_w=quat))},
+           command_manager=NS(get_command=lambda name: cmd), num_envs=7, device="cpu")
+  up = ucons.climbing_mask(env, "scan")
+  ok(f"unit commanded up: facing up the slope and walking forward / backing down it / facing down and walking forward "
+     f"/ backing up it / no command / facing across and stepping sideways up it / level ground ({up.tolist()})",
+     up.tolist() == [True, False, False, True, False, True, False])
+  kg7 = torch.full((7,), limit)
+  raw7 = torch.full((7,), 0.6)
+  rm7 = NS(_term_names=["stair_speed_deficit"], get_term_cfg=lambda t: NS(weight=w), _step_reward=(raw7 * w)[:, None])
+  env.payload_kg, env.u_payload_full, env.reward_manager = kg7, limit, rm7
+  both = ucons.stair_speed_loaded(env, floor=0.0)
+  only = ucons.stair_speed_loaded(env, floor=0.0, up_only=True, sensor_name="scan")
+  ok(f"unit loaded cost, up only: full payload, floor 0 -- the cost is taken off every robot without the option "
+     f"({(both / (raw7 * w)).tolist()}), with it off the robots commanded up alone ({(only / (raw7 * w)).tolist()})",
+     bool(torch.allclose(both, -raw7 * w)) and bool(torch.allclose(only, torch.where(up, -raw7 * w, torch.zeros(7)))))
 
   # -- U_M_WEIGHT
   factors = under(te.m_weight_factors, U_M_WEIGHT="a:3, b:0.3,c:0.5,zz:2")

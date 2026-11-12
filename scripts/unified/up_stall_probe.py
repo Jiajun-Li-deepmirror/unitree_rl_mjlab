@@ -70,6 +70,8 @@ def main() -> int:
   ap.add_argument("--steps", type=int, default=3000)
   ap.add_argument("--reward-rows", default="3,4,5", help="rows for the per-term reward split (4.)")
   ap.add_argument("--top", type=int, default=25)
+  ap.add_argument("--reward-payload", default="", help="LO,HI (shares of the full payload): the reward split (4.) "
+                  "over the robots carrying that much only, e.g. 0.75,1 -- the heavy ones")
   a = ap.parse_args()
 
   from mjlab.envs import ManagerBasedRlEnv
@@ -81,6 +83,7 @@ def main() -> int:
   cfg = load_env_cfg(a.task)
   cfg.scene.num_envs = a.num_envs
   failed_now: list[np.ndarray] = []
+  fail_why: dict[int, list] = {}   # robot -> [the terminations, the bodies in contact] at this step (5.)
 
   def wrap(name):
     term = cfg.terminations.get(name)
@@ -93,6 +96,20 @@ def main() -> int:
       ids = out.nonzero().flatten()
       if len(ids):
         failed_now.append(ids.cpu().numpy())
+        bodies = [()] * len(ids)
+        if name == "illegal_contact":   # (read as fail_probe.py reads them)
+          sn = env.scene[kw["sensor_name"]]
+          prim = list(dict.fromkeys(sl.primary_name for sl in sn._slots))
+          d = sn.data
+          if d.force_history is not None:
+            hit = (torch.norm(d.force_history[ids], dim=-1) > kw.get("force_threshold", 10.0)).any(dim=-1)
+          else:
+            hit = d.found[ids] > 0
+          bodies = [tuple(prim[j] for j in np.nonzero(h)[0]) for h in hit.cpu().numpy()]
+        for i, b in zip(ids.tolist(), bodies):
+          w = fail_why.setdefault(i, [set(), set()])
+          w[0].add(name)
+          w[1].update(b)
       return out
     term.func = f
   wrap("illegal_contact")
@@ -176,8 +193,23 @@ def main() -> int:
   terms = list(rm.active_terms)
   rw_rows = torch.tensor([int(x) for x in a.reward_rows.split(",") if x != ""], device=dev)
   rw_on = torch.isin(my_row.long(), rw_rows.long())
-  rsum = {k: torch.zeros(len(terms), device=dev) for k in "ABC"}
-  rcnt = {k: 0 for k in "ABC"}
+  pay = [float(x) for x in a.reward_payload.split(",")] if a.reward_payload else None
+  rsum = {k: torch.zeros(len(terms), device=dev) for k in "ABCD"}
+  rcnt = {k: 0 for k in "ABCD"}
+  fails = []   # (row, kg, terminations, bodies, phase, forward speed, forward command) of each failed episode (5.)
+  cls_edges = torch.tensor([0.25, 2.0 / 3.0], device=dev)   # light / mid / heavy, of the full payload
+  row_edges = torch.tensor([3.5, 6.5], device=dev)          # rows 0-3 / 4-6 / 7 and up
+  fl_sum, fl_cnt = torch.zeros(9, device=dev), torch.zeros(9, device=dev)   # speed / commanded on the flight
+  # (6.) the trunk clearance cost and the "commanded up" mask, read whatever the task's switches
+  from src.tasks.unified import constraints as ucons
+  bc = bc_sensor = None
+  if "illegal_contact" in cfg.terminations:
+    bc, bc_sensor = ucons.body_clear(None, env), cfg.terminations["illegal_contact"].params["sensor_name"]
+  up_sensor = cfg.rewards["stair_speed_deficit"].params["sensor_name"] if "stair_speed_deficit" in cfg.rewards else None
+  BC_W = int(round(0.5 / env.step_dt))
+  bc_hist = torch.zeros(N, BC_W, device=dev)   # the cost over the last 0.5 s, the newest last
+  bc_n, bc_on, bc_sum, up_on = (torch.zeros(3, device=dev) for _ in range(4))   # by phase, settled forward command
+  bc_fail = []   # (terminations, bodies, the cost at the last step before the fail, its max over 0.1 s, over 0.5 s)
   obs = venv.get_observations()
   for _ in range(a.steps):
     hit = scan.data.hit_pos_w
@@ -211,8 +243,12 @@ def main() -> int:
     r_np, sl_np, d_np = ratio.cpu().numpy(), (planar < 0.1).cpu().numpy(), dist.cpu().numpy()
     st_np = settled.cpu().numpy()
     slow_t = planar < 0.1
-    cls = {"A": rw_on & fwd & settled & (phase == 0) & slow_t, "C": rw_on & fwd & settled & (phase == 0) & ~slow_t,
-           "B": rw_on & fwd & settled & (phase == 2)}
+    acc = rw_on
+    if pay is not None:   # (the payload is drawn at a reset: read each step)
+      kg = env.payload_kg.reshape(-1)
+      acc = acc & (kg >= pay[0] * limit) & (kg <= pay[1] * limit)
+    cls = {"A": acc & fwd & settled & (phase == 0) & slow_t, "C": acc & fwd & settled & (phase == 0) & ~slow_t,
+           "B": acc & fwd & settled & (phase == 2), "D": acc & fwd & settled & (phase == 2) & slow_t}
     for i in np.nonzero(fwd_np)[0]:
       for m in (("all", "settled") if st_np[i] else ("all",)):
         speed[m][ph_np[i]].append(r_np[i]); tot[m][ph_np[i]] += 1
@@ -222,7 +258,26 @@ def main() -> int:
                secs=env.episode_length_buf.cpu().numpy() * env.step_dt, fw=ep_fwd_cmd_steps.cpu().numpy().copy(),
                kg=(env.payload_kg.cpu().numpy().reshape(-1).copy() if getattr(env, "payload_kg", None) is not None
                    else np.zeros(N)))
+    if limit:   # (5.) the speed on the flight by payload class and rows
+      on = fwd & settled & (phase == 2)
+      idx = (torch.bucketize(env.payload_kg.reshape(-1).float() / limit, cls_edges, right=True) * 3
+             + torch.bucketize(my_row.float(), row_edges))
+      fl_sum.index_add_(0, idx[on], ratio[on].float())
+      fl_cnt.index_add_(0, idx[on], torch.ones_like(ratio[on].float()))
+    pre["vx"], pre["cx"] = v_b[:, 0].cpu().numpy().copy(), cmd[:, 0].cpu().numpy().copy()
+    if bc is not None:
+      val = bc(env, sensor_name=bc_sensor)
+      bc_hist = torch.roll(bc_hist, -1, dims=1)
+      bc_hist[:, -1] = val
+      ph1 = torch.nn.functional.one_hot(phase, 3).float() * (fwd & settled)[:, None]
+      bc_n += ph1.sum(dim=0)
+      bc_on += (ph1 * (val > 0)[:, None]).sum(dim=0)
+      bc_sum += (ph1 * val[:, None]).sum(dim=0)
+      if up_sensor is not None:
+        up_on += (ph1 * ucons.climbing_mask(env, up_sensor)[:, None]).sum(dim=0)
+      pre["bc"] = bc_hist.cpu().numpy().copy()
     failed_now.clear()
+    fail_why.clear()
     with torch.inference_mode():
       obs, _, dones, _ = venv.step(policy(obs))
     done = dones.cpu().numpy().astype(bool)
@@ -239,11 +294,19 @@ def main() -> int:
       episodes.append((int(my_row[i]), cols[int(my_col[i])], float(pre["dist"][i]), float(pre["cmdd"][i]), bool(bad[i]),
                        float(pre["kg"][i]), int(pre["mp"][i]), int(pre["ph"][i]), float(pre["secs"][i]),
                        float(pre["fw"][i]) / steps_ep))
+      if bad[i]:
+        w = fail_why.get(int(i), [set(), set()])
+        fails.append((int(my_row[i]), float(pre["kg"][i]), tuple(sorted(w[0])), tuple(sorted(w[1])), int(pre["ph"][i]),
+                      float(pre["vx"][i]), float(pre["cx"][i])))
+        if bc is not None:
+          h = pre["bc"][i]
+          bc_fail.append((tuple(sorted(w[0])), tuple(sorted(w[1])), float(h[-1]), float(h[-5:].max()), float(h.max())))
     dn = torch.as_tensor(done, device=dev)
     ground0 = torch.where(dn, torch.nan, ground0)
     max_phase = torch.where(dn, 0, max_phase)
     ep_fwd_cmd_steps = torch.where(dn, 0.0, ep_fwd_cmd_steps)
     fwd_run = torch.where(dn, 0.0, fwd_run)
+    bc_hist[dn] = 0.0
 
   PH = ("before the first riser", "at the first riser (a foot on a step, a rear foot still on the bottom)",
         "on the flight (both rear feet on steps)")
@@ -298,17 +361,26 @@ def main() -> int:
   print(f"4. reward terms per second (weighted), rows {a.reward_rows}, settled forward command > 0.3 m/s: "
         f"A stopped before the first riser ({rcnt['A']} steps), C walking before it ({rcnt['C']}), "
         f"B both rear feet on the steps ({rcnt['B']})")
-  mean = {k: (rsum[k] / max(rcnt[k], 1)).cpu().numpy() for k in "ABC"}
+  mean = {k: (rsum[k] / max(rcnt[k], 1)).cpu().numpy() for k in "ABCD"}
   order = sorted(range(len(terms)), key=lambda j: -abs(mean["A"][j] - mean["B"][j]))
   watch = ("feet_edge", "stance_leg_tilt", "leg_ground_contact", "foot_terrain_clearance", "foot_stumble",
            "foot_step_touch", "action_rate_l2", "track_linear_velocity", "foothold_height_gain", "stair_speed_deficit")
   shown = order[:a.top] + [j for j in range(len(terms)) if terms[j] in watch and j not in order[:a.top]]
-  print(f"  {'term':32s} {'A stopped':>10s} {'C walking':>10s} {'B climbing':>10s} {'A-B':>9s}")
+  far = sorted(range(len(terms)), key=lambda j: -abs(mean["D"][j] - mean["B"][j]))[:8]   # what a stop on the flight costs
+  shown += [j for j in far if j not in shown]
+  print(f"  {'term':32s} {'A stopped':>10s} {'C walking':>10s} {'B climbing':>10s} {'A-B':>9s} {'D on flight':>11s} {'D-B':>9s}")
   for j in shown:
     print(f"  {terms[j]:32s} {mean['A'][j]:10.4f} {mean['C'][j]:10.4f} {mean['B'][j]:10.4f} {mean['A'][j] - mean['B'][j]:9.4f}"
-          + ("  *" if terms[j] in watch else ""))
+          f" {mean['D'][j]:11.4f} {mean['D'][j] - mean['B'][j]:9.4f}" + ("  *" if terms[j] in watch else ""))
   print(f"  {'total (all terms)':32s} {mean['A'].sum():10.4f} {mean['C'].sum():10.4f} {mean['B'].sum():10.4f} "
-        f"{mean['A'].sum() - mean['B'].sum():9.4f}")
+        f"{mean['A'].sum() - mean['B'].sum():9.4f} {mean['D'].sum():11.4f} {mean['D'].sum() - mean['B'].sum():9.4f}")
+  # (2026-11-13, the loaded falls: is a stop on the flight worth more than a fall?)
+  w_end = rm.get_term_cfg("is_terminated").weight if "is_terminated" in terms else float("nan")
+  print(f"  D stopped on the flight (of B, |v| < 0.1; {rcnt['D']} steps): total {mean['D'].sum():.4f} per second"
+        + "".join(f", {t} {mean['D'][terms.index(t)]:.3f}" for t in ("track_linear_velocity", "stair_speed_deficit")
+                  if t in terms)
+        + f"; an episode ended by a fall or an illegal contact: is_terminated's weight now {w_end:.1f}"
+        + (f"; robots carrying {pay[0]:g}-{pay[1]:g} of the full payload ({limit:g} kg) only" if pay else ""))
   missing = [w for w in watch if w not in terms]
   if missing:
     print(f"  (not in this task's reward terms: {', '.join(missing)})")
@@ -325,6 +397,56 @@ def main() -> int:
     print(f"  REWARD ACCOUNT: climbing minus stopped {gain:+.3f} per second on rows {a.reward_rows} "
           f"(stopped {100 * share_a:.0f}% of the classed steps) -> "
           + ("climbing pays" if gain > 0 else "STOPPING PAYS: the policy earns more parked before the first riser"))
+  if limit:   # (2026-11-13, the loaded falls: which payload, which rows, what touches, how fast)
+    print("5. the failed episodes by payload class and rows: fail% of the class's episodes there; of its fails: "
+          "fell_over / illegal_contact, the bodies in contact (share of the fails), the phase at the fail (before the "
+          "first riser / at it / on the flight), the forward speed of the commanded at the fail (p50); and the speed "
+          "/ commanded on the flight (settled forward command, mean)")
+    names = ("light (< 1/4)", "mid", "heavy (>= 2/3)")
+    cut = (0.0, 0.25, 2.0 / 3.0, 9.9)
+    rows_of = ((0, 3), (4, 6), (7, n_rows - 1))
+    for ci, label in enumerate(names):
+      for gi, (r0, r1) in enumerate(rows_of):
+        inside = lambda row, kg: r0 <= row <= r1 and cut[ci] * limit <= kg < cut[ci + 1] * limit   # noqa: E731
+        ep = [e for e in E if inside(e[0], e[5])]
+        fl = [f for f in fails if inside(f[0], f[1])]
+        if not ep:
+          continue
+        k = ci * 3 + gi
+        line = (f"  {label:15s} rows {r0}-{r1}: fail {100 * len(fl) / len(ep):3.0f}% of {len(ep):4d}; on the flight "
+                f"x{float(fl_sum[k] / fl_cnt[k].clamp(min=1)):.2f} ({int(fl_cnt[k])} steps)")
+        if fl:
+          n = len(fl)
+          parts = Counter(b for f in fl for b in f[3])
+          line += (f"; fell_over {100 * sum('fell_over' in f[2] for f in fl) / n:.0f}%, illegal_contact "
+                   f"{100 * sum('illegal_contact' in f[2] for f in fl) / n:.0f}%: "
+                   + ", ".join(f"{b} {100 * c / n:.0f}%" for b, c in parts.most_common(4))
+                   + "; phase " + " / ".join(f"{100 * sum(f[4] == ph for f in fl) / n:.0f}%" for ph in (0, 1, 2))
+                   + f"; speed {np.median([f[5] for f in fl]):.2f} of {np.median([f[6] for f in fl]):.2f} m/s")
+        print(line)
+  if bc is not None:   # (2026-11-13: would a cost on the trunk's clearance have seen the touch coming?)
+    print("6. the trunk clearance cost (constraints.body_clear at its defaults, the bodies of the illegal-contact "
+          "termination; read here, whatever the task's switches): the settled forward-command steps with the cost "
+          "on and its mean, and the share of them commanded up (constraints.climbing_mask), by phase; then the "
+          "cost before the fails -- on at the last step, within 0.1 s, within 0.5 s, its value at the last step")
+    for k in (0, 1, 2):
+      n = float(bc_n[k])
+      if n:
+        print(f"  {PH[k]}: cost on {100 * float(bc_on[k]) / n:.1f}% of {int(n)} steps, mean {float(bc_sum[k]) / n:.3f}"
+              + (f"; commanded up {100 * float(up_on[k]) / n:.0f}%" if up_sensor is not None else ""))
+
+    def before(rows, label):
+      if not rows:
+        return
+      v = np.array([[r[2], r[3], r[4]] for r in rows])
+      print(f"  {label} ({len(rows)}): on at the last step {100 * (v[:, 0] > 0).mean():.0f}%, within 0.1 s "
+            f"{100 * (v[:, 1] > 0).mean():.0f}%, within 0.5 s {100 * (v[:, 2] > 0).mean():.0f}%; value at the last "
+            f"step p10/p50/p90 {q3(v[:, 0])}, max over 0.5 s {q3(v[:, 2])}")
+    touch = [r for r in bc_fail if "illegal_contact" in r[0]]
+    before(touch, "fails with an illegal contact")
+    for b, _ in Counter(b for r in touch for b in r[1]).most_common(5):
+      before([r for r in touch if b in r[1]], f"  with {b}")
+    before([r for r in bc_fail if "illegal_contact" not in r[0]], "fails without one (fell over)")
   env.close()
   return 0
 

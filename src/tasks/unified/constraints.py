@@ -742,7 +742,33 @@ def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_term
   return raw * w * (scale - 1.0) * frac.clamp(0.0, 1.0)
 
 
-def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "stair_speed_deficit") -> torch.Tensor:
+def climbing_mask(env: ManagerBasedRlEnv, sensor_name: str, command_name: str = "twist", near: float = 0.15,
+                  far: float = 0.45, half_width: float = 0.15, rise: float = 0.03) -> torch.Tensor:
+  """Per robot: the ground ahead along the commanded direction (the height scan's hits `near`..`far` from the base,
+  within `half_width` of the line) is more than `rise` higher than the ground as far behind -- it is commanded up a
+  flight (or a kerb). False without a command."""
+  data = env.scene[sensor_name].data
+  cmd = env.command_manager.get_command(command_name)[:, :2]
+  speed = torch.norm(cmd, dim=1)
+  q = env.scene["robot"].data.root_link_quat_w
+  yaw = torch.atan2(2.0 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1.0 - 2.0 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+  c, s = torch.cos(yaw), torch.sin(yaw)
+  d = torch.stack([c * cmd[:, 0] - s * cmd[:, 1], s * cmd[:, 0] + c * cmd[:, 1]], dim=1) / speed.clamp(min=1e-6)[:, None]
+  rel = data.hit_pos_w[..., :2] - data.pos_w[:, None, :2]
+  along = (rel * d[:, None, :]).sum(dim=-1)
+  across = rel[..., 0] * d[:, None, 1] - rel[..., 1] * d[:, None, 0]
+  ok = (data.distances >= 0.0) & (across.abs() <= half_width)
+  z = data.hit_pos_w[..., 2]
+
+  def mean(m: torch.Tensor) -> torch.Tensor:
+    return torch.where(m, z, torch.zeros_like(z)).sum(dim=1) / m.sum(dim=1).clamp(min=1)
+
+  ahead, behind = ok & (along >= near) & (along <= far), ok & (along <= -near) & (along >= -far)
+  return (speed > 1e-3) & ahead.any(dim=1) & behind.any(dim=1) & (mean(ahead) - mean(behind) > rise)
+
+
+def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "stair_speed_deficit",
+                       up_only: bool = False, sensor_name: str | None = None) -> torch.Tensor:
   """Reward term (weight 1, after `term`): going slowly on the stairs costs a heavily loaded robot less -- the full
   cost up to the common payload (COMMON_FRAC of the limit), `floor` times it from the heavy class (HEAVY_FRAC) up,
   linear in between, on top of whatever `term` weighs now (the probe switch U_STAIR_SPEED_LOADED=<floor>,
@@ -756,7 +782,13 @@ def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "
   fall; what is physically out of reach with it is not required. The acceptance judges the stairs speed unloaded and
   at the common payload (80% of the unloaded reading) and at the full payload only the falls: up to the common
   payload nothing changes, above it the robot may take the stairs as slowly as it needs, or not at all. The teacher
-  sees the payload, so its behaviour can depend on it."""
+  sees the payload, so its behaviour can depend on it.
+
+  `up_only` (U_STAIR_SPEED_LOADED_UP=1, 2026-11-13): the discount only where the robot is commanded up
+  (climbing_mask on `sensor_name`). Tier 2 at 8 kg on uprobe_s40 (floor 0, every direction) against its control
+  s38: the falls on the 15-18 cm climbs 49% -> 6%, on the 15-18 cm descents 6% -> 21% (all runs 77 -> 59): a robot
+  that may wait before a climb it cannot make stands on its four feet on the level; one that may wait on a descent
+  stands nose down on the treads with the load, and the descents were no problem with the cost on."""
   out = torch.zeros(env.num_envs, device=env.device)
   kg = getattr(env, "payload_kg", None)
   r = _raw(env, term)
@@ -764,7 +796,10 @@ def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "
     return out
   raw, w = r
   frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
-  return raw * w * (floor - 1.0) * frac.clamp(0.0, 1.0)
+  relief = raw * w * (floor - 1.0) * frac.clamp(0.0, 1.0)
+  if up_only:
+    relief = torch.where(climbing_mask(env, sensor_name), relief, out)
+  return relief
 
 
 class heading_ref:
@@ -872,15 +907,30 @@ class riser_keepout:
   cm) and by at most `max_rise` (the flights' side walls are no steps). The depth in the zone is (top + margin -
   sole) / `cap`, clipped to 0..1 (sole: the centre less `foot_radius`); the foot's value is the larger of its depth
   at r_near and `far_weight` x its depth at r_far. The term's value is the sum over the feet out of contact
-  (`sensor_name`'s found <= 0): a foot standing next to a riser costs nothing."""
+  (`sensor_name`'s found <= 0): a foot standing next to a riser costs nothing.
+
+  `approach` (U_KICK_KEEPOUT_DIR=1, 2026-11-13): only the faces the foot is moving towards -- a ring point counts
+  when the foot's horizontal velocity (its site's displacement over the step; zero on the step after a reset) has
+  more than `approach_speed` along the point's direction and the point lies within the cone `cone` (a cosine: 0.85,
+  32 deg, so one of the 8 directions at least) around that velocity: a foot moving along a face is not closing in
+  on it. Tier 2 on uprobe_s39 (weight 4, every face): the kicks
+  went from 0.53 / 0.51 to 0.49 / 0.41 a step, and the seen mode stopped at the top of 24% of its descents (stop ok
+  74%, the descent's speed x0.65; no stop in the blind mode): going down, a foot past the nosing has the face it
+  just left behind it, and it was charged until it had moved 8 cm out without dropping -- no descent's swing is
+  like that. With `approach` the face behind a foot that moves away from it costs nothing (a kick of the heel
+  against it is still the stumble costs'), and going up the foot pays while it closes in on a riser below its top,
+  not while it rises next to it."""
 
   DIRS = 8
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.H: torch.Tensor | None = None
+    self.prev: torch.Tensor | None = None    # the feet's sites at the last call (approach)
+    self.fresh: torch.Tensor | None = None   # reset since: no velocity on the next call
 
   def reset(self, env_ids=None) -> None:
-    pass
+    if self.fresh is not None:
+      self.fresh[slice(None) if env_ids is None else env_ids] = True
 
   def set_grid(self, H, x0: float, y0: float, res: float, device) -> None:
     from src.metrics.terrain import JUMP
@@ -898,22 +948,32 @@ class riser_keepout:
     return self.H[i, j]
 
   def zone(self, pos: torch.Tensor, foot_radius: float = 0.022, r_near: float = 0.04, r_far: float = 0.08,
-           far_weight: float = 0.5, margin: float = 0.02, cap: float = 0.06, max_rise: float = 0.30) -> torch.Tensor:
-    """Each foot's value, 0..1, from the feet's centres (..., 3)."""
+           far_weight: float = 0.5, margin: float = 0.02, cap: float = 0.06, max_rise: float = 0.30,
+           vel: torch.Tensor | None = None, approach_speed: float = 0.05, cone: float = 0.85) -> torch.Tensor:
+    """Each foot's value, 0..1, from the feet's centres (..., 3); with `vel` (..., 2), the feet's horizontal
+    velocities, only the faces a foot moves towards (the class's `approach`)."""
     sole = pos[..., 2] - foot_radius
     here = self.height(pos[..., :2])
     cost = torch.zeros_like(sole)
+    face = None
+    if vel is not None:
+      along = (vel[..., None, :] * self.ring).sum(dim=-1)
+      face = (along > approach_speed) & (along >= cone * torch.norm(vel, dim=-1, keepdim=True))
     for r, wgt in ((r_near, 1.0), (r_far, far_weight)):
       top = self.height(pos[..., None, :2] + r * self.ring)
       rise = top - here[..., None]
       depth = ((top + margin - sole[..., None]) / cap).clamp(0.0, 1.0)
-      depth = torch.where((rise > self.jump) & (rise <= max_rise), depth, torch.zeros_like(depth))
+      on = (rise > self.jump) & (rise <= max_rise)
+      if face is not None:
+        on = on & face
+      depth = torch.where(on, depth, torch.zeros_like(depth))
       cost = torch.maximum(cost, wgt * depth.amax(dim=-1))
     return cost
 
   def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, asset_cfg, foot_radius: float = 0.022,
                r_near: float = 0.04, r_far: float = 0.08, far_weight: float = 0.5, margin: float = 0.02,
-               cap: float = 0.06, max_rise: float = 0.30) -> torch.Tensor:
+               cap: float = 0.06, max_rise: float = 0.30, approach: bool = False,
+               approach_speed: float = 0.05) -> torch.Tensor:
     if self.H is None:
       grid = getattr(getattr(env, "u_lib_meter", None), "grid", None)
       if grid is None:
@@ -922,8 +982,103 @@ class riser_keepout:
       self.set_grid(grid.H, grid.x0, grid.y0, grid.res, env.device)
     pos = env.scene[asset_cfg.name].data.site_pos_w[:, asset_cfg.site_ids]
     swing = env.scene[sensor_name].data.found <= 0
-    cost = self.zone(pos, foot_radius, r_near, r_far, far_weight, margin, cap, max_rise)
+    vel = None
+    if approach:
+      if self.prev is None:
+        self.prev, self.fresh = pos.clone(), torch.ones(pos.shape[0], dtype=torch.bool, device=pos.device)
+      vel = (pos[..., :2] - self.prev[..., :2]) / env.step_dt
+      vel = torch.where(self.fresh[:, None, None], torch.zeros_like(vel), vel)
+      self.prev, self.fresh = pos.clone(), torch.zeros_like(self.fresh)
+    cost = self.zone(pos, foot_radius, r_near, r_far, far_weight, margin, cap, max_rise, vel, approach_speed)
     return (cost * swing.float()).sum(dim=1)
+
+
+class body_clear(riser_keepout):
+  """Reward term (the probe switch U_BODY_CLEAR=<w>, teacher_env._add_body_clear): the bodies whose touch ends the
+  episode -- the geoms of the illegal-contact termination's sensor `sensor_name`: trunk, hips, the As2's thigh roots
+  -- close to a step. Each geom is a set of surface points (a box's corners, 8 points on each rim of a cylinder, a
+  sphere's or a capsule end's centre with its radius). A point is in the zone when it is less than `margin` over
+  the terrain under it, or within `reach` over the ground of a step face (the keep-out's: higher than the cell
+  under the point by more than the metrics' JUMP and by at most `max_rise`, so the flights' side walls are none)
+  and lower than its top + `margin`. Its depth is (top + margin - the point's height) / `cap`, clipped to 0..1; the
+  term's value is the deepest point's.
+
+  2026-11-13, where the Go2 candidate (uprobe_s29 model_5598) fails its climbs, robots spread over the rows
+  (up_stall_probe 5.): 69-89% of the fails on the rows 7-9 are illegal contacts whatever the payload (light 50% of
+  the episodes there, mid 60%, heavy 81%), 55-79% of them the chin (base3_collision) on a step, half before the
+  rear feet are on the flight; the As2 probes fail on FL / FR_thigh1 on the low rows and on base1 / base2 at the
+  first riser of the high ones (go2-home's stall check). Tier 2 with a payload: the Go2 falls on 36% / 18% of the
+  15-18 cm climbs at the common 4 kg and on 49% at 8 kg, wherever the load sits (front, centre, rear: 49-62%),
+  against a few of the unloaded runs. The touch itself costs once and ends the episode (-40): nothing tells the
+  policy how close the trunk was on the runs that got through. This cost is there on every step a trunk point is
+  within the margin of a step, loaded or not -- a loaded trunk rides lower on the same gains, and pays it sooner."""
+
+  RIM = 8
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    self.ids: torch.Tensor | None = None   # the geoms (the model's ids)
+    self.local: torch.Tensor | None = None    # (K, 3) the surface points, each in its geom's frame
+    self.owner: torch.Tensor | None = None    # (K,) the index into `ids` of the point's geom
+    self.radius: torch.Tensor | None = None   # (K,) a ball around the point (spheres, capsule ends), else 0
+
+  def points(self, env: ManagerBasedRlEnv, sensor_name: str, asset_name: str) -> None:
+    import mujoco
+
+    asset = env.scene[asset_name]
+    names = list(dict.fromkeys(sl.primary_name for sl in env.scene[sensor_name]._slots))
+    local_names = [n.split("/")[-1] for n in names]
+    own, found = asset.find_geoms(local_names, preserve_order=True)
+    assert len(own) == len(names), f"body_clear: {names} against the robot's geoms {found}"
+    self.ids = asset.indexing.geom_ids[own].long()
+    model = env.sim.mj_model
+    local, owner, radius = [], [], []
+    ang = [2.0 * math.pi * k / self.RIM for k in range(self.RIM)]
+    for n, gid in enumerate(self.ids.tolist()):
+      kind, size = int(model.geom_type[gid]), [float(x) for x in model.geom_size[gid]]
+      if kind == mujoco.mjtGeom.mjGEOM_BOX:
+        pts = [((sx * size[0], sy * size[1], sz * size[2]), 0.0) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+      elif kind == mujoco.mjtGeom.mjGEOM_CYLINDER:
+        pts = [((size[0] * math.cos(t), size[0] * math.sin(t), e * size[1]), 0.0) for e in (-1, 1) for t in ang]
+      elif kind == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        pts = [((0.0, 0.0, e * size[1]), size[0]) for e in (-1, 1)]
+      elif kind == mujoco.mjtGeom.mjGEOM_SPHERE:
+        pts = [((0.0, 0.0, 0.0), size[0])]
+      else:   # (a mesh or an ellipsoid: its centre and its bounding radius -- deeper than the surface is)
+        pts = [((0.0, 0.0, 0.0), float(model.geom_rbound[gid]))]
+      for p, rad in pts:
+        local.append(p); owner.append(n); radius.append(rad)
+    self.local = torch.tensor(local, dtype=torch.float32, device=env.device)
+    self.owner = torch.tensor(owner, dtype=torch.long, device=env.device)
+    self.radius = torch.tensor(radius, dtype=torch.float32, device=env.device)
+
+  def depth(self, pos: torch.Tensor, radius: torch.Tensor, reach: float = 0.05, margin: float = 0.03,
+            cap: float = 0.05, max_rise: float = 0.30) -> torch.Tensor:
+    """Each point's depth in the zone, 0..1, from the points (..., K, 3) and their balls' radii (K,)."""
+    low = pos[..., 2] - radius
+    here = self.height(pos[..., :2])
+    out = ((here + margin - low) / cap).clamp(0.0, 1.0)
+    top = self.height(pos[..., None, :2] + (radius[:, None, None] + reach) * self.ring)
+    rise = top - here[..., None]
+    side = ((top + margin - low[..., None]) / cap).clamp(0.0, 1.0)
+    side = torch.where((rise > self.jump) & (rise <= max_rise), side, torch.zeros_like(side))
+    return torch.maximum(out, side.amax(dim=-1))
+
+  def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, asset_name: str = "robot", reach: float = 0.05,
+               margin: float = 0.03, cap: float = 0.05, max_rise: float = 0.30) -> torch.Tensor:
+    if self.H is None:
+      grid = getattr(getattr(env, "u_lib_meter", None), "grid", None)
+      if grid is None:
+        from src.metrics.mj import terrain_grid
+        grid = terrain_grid(env)
+      self.set_grid(grid.H, grid.x0, grid.y0, grid.res, env.device)
+    if self.ids is None:
+      self.points(env, sensor_name, asset_name)
+    sim = env.scene[asset_name].data.data   # (the simulation's arrays: only these geoms' poses are read)
+    centre = sim.geom_xpos[:, self.ids][:, self.owner]   # (N, K, 3)
+    frame = sim.geom_xmat[:, self.ids][:, self.owner]    # (N, K, 3, 3)
+    pos = centre + torch.einsum("nkij,kj->nki", frame, self.local)
+    return self.depth(pos, self.radius, reach, margin, cap, max_rise).amax(dim=1)
 
 
 class heavy_log:
