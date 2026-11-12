@@ -356,6 +356,9 @@ class progress:
     rows = getattr(self._env, "u_rows", None)
     if rows is not None:
       out["rows"] = {k: v.cpu().tolist() for k, v in rows.items()}
+    cls = getattr(self._env, "u_pay_class", None)   # (teacher_env.sticky_payload: the rows are the class's)
+    if cls is not None:
+      out["pay_class"] = cls.cpu().tolist()
     return out
 
   def load(self, state: dict, env: ManagerBasedRlEnv) -> None:
@@ -388,6 +391,9 @@ class progress:
       env.u_rows = {k: torch.tensor(v, device=dev, dtype=dt) for k, v in rows.items()}
       print("[unified] difficulty rows restored: "
             + ", ".join(f"{k} {float(env.u_rows[k].float().mean()):.2f}" for k in ROWS) + f"; quality {self.q:.3f}")
+      cls = state.get("pay_class")
+      if cls is not None and len(cls) == n:   # (read only by teacher_env.sticky_payload)
+        env.u_pay_class = torch.tensor(cls, device=dev, dtype=torch.long)
     elif n:   # a checkpoint from before the rows: all start at the robot's restored row
       lv = env.scene.terrain.terrain_levels
       env.u_rows = {k: lv.clone() for k in ROWS}
@@ -619,7 +625,11 @@ def progress_stairs_share(
     ev_row = None if fixed is None else fixed[env_ids]
     ev_now = torch.zeros_like(bad) if ev_row is None else ev_row >= 0
     # the finished episodes' payload class and scan mode (both redrawn by reset events, after the curriculum)
-    pay = pay_class(env, env_ids) if ev_row is not None and bool(ev_now.any()) else None
+    pay = pay_class(env, env_ids)
+    pay_t = None if pay is None else torch.tensor(pay, device=bad.device)
+    cls_fails = getattr(env, "u_class_fail", None)
+    if cls_fails is None:
+      cls_fails = env.u_class_fail = {}
     scan = getattr(env, "u_scan_on", None)
     seen = None if scan is None else scan[env_ids] > 0.5
     for k in ROWS:
@@ -630,6 +640,16 @@ def progress_stairs_share(
         f = float(bad[tr].float().mean())
         a = fail_alpha * min(1.0, float(tr.sum()) / 8.0)   # a handful of episodes moves it less
         fails[k] = f if k not in fails else fails[k] + a * (f - fails[k])
+        if k != "other" and pay_t is not None:
+          # the same by the finished episode's payload class (2026-11-13: with the payload drawn anew at every reset
+          # the heavy episodes ran on rows earned by light ones; teacher_env.sticky_payload)
+          for ci, cname in enumerate(PAY_CLASSES):
+            trc = tr & (pay_t == ci)
+            if bool(trc.any()):
+              fc = float(bad[trc].float().mean())
+              ac = fail_alpha * min(1.0, float(trc.sum()) / 8.0)
+              key = f"{cname}_{k}_fail"
+              cls_fails[key] = fc if key not in cls_fails else cls_fails[key] + ac * (fc - cls_fails[key])
       if counted and k != "other" and ev_row is not None:
         e = was[k] & ev_now
         if bool(e.any()):
@@ -662,6 +682,16 @@ def progress_stairs_share(
          "down_level": down, "other_level": m(rows["other"])}
   for k, v in fails.items():
     out[f"{k}_fail"] = torch.tensor(v)
+  for k, v in (getattr(env, "u_class_fail", None) or {}).items():   # <class>_<family>_fail, the training robots
+    out[k] = torch.tensor(v)
+  cls = getattr(env, "u_pay_class", None)
+  if cls is not None:   # each payload class's rows (teacher_env.sticky_payload: the class stays with the robot)
+    tr_cls = cls if fixed is None else torch.where(fixed < 0, cls, torch.full_like(cls, -1))
+    for ci, cname in enumerate(PAY_CLASSES):
+      sel = tr_cls == ci
+      if bool(sel.any()):
+        out[f"{cname}_up_level"] = rows["up"][sel].float().mean()
+        out[f"{cname}_down_level"] = rows["down"][sel].float().mean()
   for k, v in (getattr(env, "u_eval_fail", None) or {}).items():
     out[f"eval_{k}_fail"] = torch.tensor(v)
   for k in (getattr(env, "u_eval_split", None) or {}):

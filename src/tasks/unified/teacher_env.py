@@ -388,6 +388,67 @@ def _payload_point(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   ev.params["pos_ranges"] = box
 
 
+def sticky_payload(env, env_ids, inner, redraw: float, light_range: tuple[float, float], heavy_max: float,
+                   heavy_share: float, corner_share: float = 0.0, **params) -> None:
+  """Reset event: `inner` (mdp.base_payload_point) with the payload class staying with the robot (2026-11-13, the
+  probe switch U_PAYLOAD_STICKY). The payload was drawn anew at every reset while a robot's three difficulty rows
+  stay with it (curriculum.progress_stairs_share): a heavy episode started on a row earned by light ones -- the Go2
+  teacher at 5100 it: the heavy robots failed 70-76% of their episodes at the training rows, the light ones 23%
+  (fixed rows: 0.37-0.42 against 0.11-0.13) -- and its fall sent the robot's next, light episode a row down.
+  Now each robot keeps a class, light / mid / heavy (curriculum.PAY_CLASSES): its payload below LIGHT_FRAC, up to
+  HEAVY_FRAC or above HEAVY_FRAC of the event's limit now (heavy_max, which follows the progress), and draws the
+  class anew with probability `redraw` at a reset. The mass and the point are drawn at every reset as before,
+  inside the class. The classes' shares and the draws within each are the inner event's own (the light range, or
+  [0, heavy_max] for heavy_share of the robots, corner_share of those at the corner), so the payloads over all the
+  robots are distributed as before; which robot carries which is what changes, and each class's rows find its own
+  frontier. The evaluation robots (env.u_eval_mask) draw their class at every reset: their stairs rows are fixed,
+  and every class then stands on every row and tile alike. env.u_pay_class: each robot's class (-1 before its
+  first draw), saved with the rows (curriculum.progress)."""
+  from .constraints import HEAVY_FRAC, LIGHT_FRAC
+
+  assert not params.get("corner_terrain_names") and params.get("ramp_steps", 0) <= 0, \
+    "sticky_payload: the corner on every tile and no ramp of the event's own"
+  dev = env.device
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=dev)
+  env_ids = env_ids.to(dev, dtype=torch.long)
+  n = len(env_ids)
+  if n == 0:
+    return
+  cls = getattr(env, "u_pay_class", None)
+  if cls is None or len(cls) != env.num_envs:
+    cls = env.u_pay_class = torch.full((env.num_envs,), -1, dtype=torch.long, device=dev)
+  hs, cs = float(heavy_share), float(corner_share)
+  # of all the robots: the light range, the corner, and the three bands of [0, heavy_max]
+  w_range, w_corner = 1.0 - hs, hs * cs
+  w_band = [hs * (1.0 - cs) * f for f in (LIGHT_FRAC, HEAVY_FRAC - LIGHT_FRAC, 1.0 - HEAVY_FRAC)]
+  p_cls = [w_range + w_band[0], w_band[1], w_band[2] + w_corner]
+  new = (cls[env_ids] < 0) | (torch.rand(n, device=dev) < redraw)
+  ev = getattr(env, "u_eval_mask", None)
+  if ev is not None:
+    new = new | ev[env_ids]
+  if bool(new.any()):
+    cls[env_ids[new]] = torch.multinomial(torch.tensor(p_cls, device=dev), int(new.sum()), replacement=True)
+  c = cls[env_ids]
+  u = torch.rand(n, device=dev)
+  in_range = (c == 0) & (u < w_range / max(p_cls[0], 1e-9))
+  at_corner = (c == 2) & (u < w_corner / max(p_cls[2], 1e-9))
+  inner(env, env_ids[in_range], light_range=light_range, heavy_max=heavy_max, heavy_share=0.0, corner_share=0.0,
+        **params)
+  inner(env, env_ids[at_corner], light_range=light_range, heavy_max=heavy_max, heavy_share=1.0, corner_share=1.0,
+        **params)
+  edges = (0.0, LIGHT_FRAC * heavy_max, HEAVY_FRAC * heavy_max, heavy_max)
+  for k in range(3):   # (the inner event's light range is uniform: the band's)
+    band = (c == k) & ~in_range & ~at_corner
+    inner(env, env_ids[band], light_range=(edges[k], edges[k + 1]), heavy_max=heavy_max, heavy_share=0.0,
+          corner_share=0.0, **params)
+
+
+# the inner event's per-world model fields and recompute level (mjlab's requires_model_fields marks the function)
+sticky_payload.model_fields = mdp.base_payload_point.model_fields
+sticky_payload.recompute = mdp.base_payload_point.recompute
+
+
 # ---- slopes (2026-11-12; the user, through the students' session: "斜坡可以稍微加一点，你定") ----
 SLOPE_SHARE = 0.10   # of the episodes on the other ground (not stairs), half on each sloped tile
 SLOPE_MAX = 0.25     # the top row's gradient along the tile's axes (14 deg; 16 deg at most, between them)
@@ -551,7 +612,9 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          multiplier was at the cap);
     U_LOADED_FALL=<k>    a fall or an illegal contact costs a loaded robot more: 1x at a quarter of the payload limit
                          -> k times at the limit (constraints.loaded_fall, set up in _rewards: the heavy evaluation
-                         robots failed three times as many fixed-row stairs episodes as the light ones)."""
+                         robots failed three times as many fixed-row stairs episodes as the light ones);
+    U_PAYLOAD_STICKY=<x> the payload class (light / mid / heavy) stays with the robot and is drawn anew with
+                         probability x at a reset (sticky_payload; unset: the payload anew at every reset)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -570,6 +633,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
   if v:
     for name in ("u_meter", "u_lib_meter"):
       cfg.rewards[name].params["ema_steps"] = float(v)
+  v = os.environ.get("U_PAYLOAD_STICKY")
+  if v:
+    ev = cfg.events["base_payload"]
+    assert ev.func is mdp.base_payload_point and 0.0 <= float(v) <= 1.0, f"U_PAYLOAD_STICKY {v}: a probability"
+    ev.params = {**ev.params, "inner": ev.func, "redraw": float(v)}
+    ev.func = sticky_payload
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:

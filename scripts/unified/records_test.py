@@ -561,6 +561,77 @@ def units(ok, out: Path) -> None:
      and "survive_up_seen" not in g and "survive_down" not in g and g.count(" vs ") == 1)
   wheel_counter(ok)
   meter_eval_mask(ok)
+  sticky_payload_units(ok)
+
+
+def sticky_payload_units(ok) -> None:
+  """teacher_env.sticky_payload (U_PAYLOAD_STICKY): the payload class stays with the robot, the mass is drawn inside
+  the class at every reset, the evaluation robots draw their class anew, and the payloads over all the robots are
+  distributed as the inner event's. The inner event here: mdp.base_payload_point's mass draw alone."""
+  from src.tasks.unified import teacher_env
+  from src.tasks.unified.constraints import HEAVY_FRAC, LIGHT_FRAC
+
+  n, hm = 60000, 8.0
+
+  def inner(env, env_ids, light_range, heavy_max, heavy_share, corner_share=0.0, **kw):
+    k = len(env_ids)
+    heavy = torch.rand(k) < heavy_share
+    m = torch.where(heavy, torch.rand(k) * heavy_max,
+                    light_range[0] + torch.rand(k) * (light_range[1] - light_range[0]))
+    corner = heavy & (torch.rand(k) < corner_share)
+    m = torch.where(corner, heavy_max * (0.75 + 0.25 * torch.rand(k)), m)
+    env.payload_kg[env_ids] = m
+
+  band = lambda m: (m > LIGHT_FRAC * hm).long() + (m >= HEAVY_FRAC * hm).long()   # noqa: E731
+  p = dict(inner=inner, light_range=(-1.0, 2.0), heavy_max=hm, heavy_share=0.5, corner_share=0.3,
+           pos_ranges=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.3)), base_com_range=0.05, ramp_steps=0)
+  env = NS(num_envs=n, device="cpu", payload_kg=torch.zeros(n), u_eval_mask=torch.arange(n) < n // 10)
+  ids = torch.arange(n)
+  teacher_env.sticky_payload(env, ids, redraw=0.0, **p)
+  c0, m0 = env.u_pay_class.clone(), env.payload_kg.clone()
+  ok("sticky payload: every robot has a class after its first reset, and its mass is in the class's band",
+     bool((c0 >= 0).all()) and bool((band(m0) == c0).all()))
+  hs, cs = 0.5, 0.3
+  exact = [1 - hs + hs * (1 - cs) * LIGHT_FRAC, hs * (1 - cs) * (HEAVY_FRAC - LIGHT_FRAC),
+           hs * (cs + (1 - cs) * (1 - HEAVY_FRAC))]
+  got = [float((c0 == k).float().mean()) for k in range(3)]
+  ok(f"sticky payload: the classes' shares are the inner event's ({[round(v, 3) for v in got]})",
+     all(abs(g - e) < 0.01 for g, e in zip(got, exact)))
+  plain = NS(payload_kg=torch.zeros(n))
+  inner(plain, ids, **{k: v for k, v in p.items() if k != "inner"})
+  q = torch.tensor([0.1, 0.3, 0.5, 0.7, 0.9])
+  ok("sticky payload: the masses over all the robots are distributed as the inner event's",
+     float((torch.quantile(m0, q) - torch.quantile(plain.payload_kg, q)).abs().max()) < 0.25
+     and abs(float((m0 >= 0.75 * hm).float().mean()) - hs * (cs + (1 - cs) * 0.25)) < 0.01
+     and abs(float((m0 < 0).float().mean()) - (1 - hs) / 3) < 0.01)
+  teacher_env.sticky_payload(env, ids, redraw=0.0, **p)
+  tr = ~env.u_eval_mask
+  ok("sticky payload: at the next reset the training robots keep their class and draw a new mass inside it",
+     bool((env.u_pay_class[tr] == c0[tr]).all()) and bool((band(env.payload_kg) == env.u_pay_class).all())
+     and float((env.payload_kg[tr] != m0[tr]).float().mean()) > 0.99)
+  ok("sticky payload: the evaluation robots draw their class anew at every reset",
+     0.4 < float((env.u_pay_class[~tr] != c0[~tr]).float().mean()) < 0.7)
+  c1 = env.u_pay_class.clone()
+  teacher_env.sticky_payload(env, ids, redraw=0.2, **p)
+  moved = float((env.u_pay_class[tr] != c1[tr]).float().mean())
+  ok(f"sticky payload: redraw 0.2 moves the class of 0.2 x (1 - sum p^2) of the robots ({moved:.3f})",
+     abs(moved - 0.2 * (1 - sum(e * e for e in exact))) < 0.01)
+  c2, m2 = env.u_pay_class.clone(), env.payload_kg.clone()
+  sub = ids[::3]
+  teacher_env.sticky_payload(env, sub, redraw=1.0, **p)
+  rest = torch.ones(n, dtype=torch.bool)
+  rest[sub] = False
+  ok("sticky payload: a reset of some robots leaves the others' class and payload",
+     bool((env.u_pay_class[rest] == c2[rest]).all()) and bool((env.payload_kg[rest] == m2[rest]).all()))
+  half = dict(p, heavy_max=4.0)   # (the limit follows the progress: the classes are bands of the limit now)
+  teacher_env.sticky_payload(env, ids, redraw=0.0, **half)
+  hv = env.u_pay_class == 2
+  ok("sticky payload: at half the limit the heavy class carries the top third of half the limit",
+     float(env.payload_kg[hv].min()) >= HEAVY_FRAC * 4.0 - 1e-6 and float(env.payload_kg[hv].max()) <= 4.0 + 1e-6)
+  from src.tasks.velocity import mdp
+  ok("sticky payload: the event carries the inner event's model fields and recompute level",
+     teacher_env.sticky_payload.model_fields == mdp.base_payload_point.model_fields
+     and teacher_env.sticky_payload.recompute == mdp.base_payload_point.recompute)
 
 
 def meter_eval_mask(ok) -> None:
