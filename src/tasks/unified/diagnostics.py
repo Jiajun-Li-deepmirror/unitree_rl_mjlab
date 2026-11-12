@@ -980,11 +980,20 @@ class Recorder:
     return {"p_done": (cur.get("p") or 0.0) >= 1.0, "q_done": (cur.get("q") or 0.0) >= 1.0, "miss": miss}
 
   def _weights(self) -> dict:
+    """The current weights of the reward terms the constraints scale, and of every other term whose weight is no
+    longer the one this block first saw (the quality stage's and the recipe's ramps, a probe's switch-added terms
+    such as body_clear): the start event's `rewards` has every term's weight at the start."""
     cons = getattr(self.env, "u_constraints", None)
     if cons is None:
       return {}
     rm = self.env.reward_manager
-    return {t: rm.get_term_cfg(t).weight for t in cons.base}
+    out = {t: rm.get_term_cfg(t).weight for t in cons.base}
+    first = self.__dict__.setdefault("_weights_first", {})
+    for t in rm.active_terms:
+      w = rm.get_term_cfg(t).weight
+      if t not in out and w != first.setdefault(t, w):
+        out[t] = w
+    return out
 
   def _policy(self, args: dict) -> dict:
     std = args.get("action_std")
