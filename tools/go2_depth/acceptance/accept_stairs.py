@@ -16,9 +16,11 @@ contact; its level = the raster under the contact point. Metrics (sum over the r
                within 1.0 m of the base); split front / rear wheels                                      (wheeled)
   stability    over stairs: peak |roll| (deg) and the RMS of the body roll / pitch rates (rad/s)
 plus falls. Output: one line per scenario and a TOTAL line with the verdict against the initial bars
-(stairs-acceptance-requirements memory): legged kicks <= 2 / climb, mid >= 80%, edge <= 10%, slips <= 0.2 / climb,
-roll <= 6 deg; wheeled slide-back <= 5% of step-ups, idle steps start (rear) <= 0.5 and end (front) <= 1.0 per climb,
-roll <= 4 deg; falls 0. Run from a tinynav-sim worktree's mujoco/ with ROBOT_ASSETS and MUJOCO_GL=egl.
+(stairs-acceptance-requirements memory): legged kicks <= 2 / climb, mid >= 80%, edge <= 10%, slips <= 0.2 / climb;
+wheeled slide-back <= 5% of step-ups, idle steps start (rear) <= 0.5 per climb, heading off the flight <= 3 deg (mean);
+falls 0. The peak roll is a reading, not a bar (doc/acceptance.md since 2026-11-10: recorded only, the gates never
+counted it; 2026-11-12 the user: no bar on roll, the heading stays judged -- the line no longer prints "roll ... FAIL").
+Run from a tinynav-sim worktree's mujoco/ with ROBOT_ASSETS and MUJOCO_GL=egl.
 """
 import copy
 import math
@@ -224,7 +226,7 @@ if WHEELED:
   checks = [("slide-back", sb <= 5.0, f"{sb:.1f}%"), ("start idle", tot["idle_rear"] / n <= 0.5, f"{tot['idle_rear'] / n:.1f}"),
             # the top landing is judged by slide_gate.sh's L0 climbs alone (2026-11-10, doc/acceptance.md): info here
             ("end idle (info)", True, f"{tot['idle_front'] / n:.1f}"),
-            ("roll", tot["roll"] <= 4.0, f"{tot['roll']:.1f} deg"), ("falls", tot["falls"] == 0, str(tot["falls"]))]
+            ("roll (info)", True, f"{tot['roll']:.1f} deg"), ("falls", tot["falls"] == 0, str(tot["falls"]))]
   # heading off the flights' axis on the stairs, mean (11-07, the user: "它不是头朝前上楼梯"; Go2W blind g20b 18300 5.6 deg
   # on the up flights, the deployed go2w blind_v2 / depth_v5_ws 1.5-1.6). WHEELED_HEADING_BAR (deg) overrides the bar.
   hdm = tot["hd_sum"] / max(tot["hn"], 1)
@@ -232,14 +234,15 @@ if WHEELED:
 else:
   mid = 100 * tot["mid"] / max(tot["placed"], 1)
   edge = 100 * tot["edge"] / max(tot["placed"], 1)
-  # LEGGED_BARS="kicks=,mid=,edge=,slips=,roll=" (2026-11-06): the initial bars calibrated on a deployed baseline (no B2
+  # LEGGED_BARS="kicks=,mid=,edge=,slips=" (2026-11-06; a roll= is accepted and unused since 2026-11-12, the roll is a
+  # reading): the initial bars calibrated on a deployed baseline (no B2
   # meets kicks <= 2 / mid >= 80: deployed depth b2_depth_v3_fe 3.1 / 76.6%, blind b2_fe_mixed_5000 6.1 / 78.3%).
   bars = {"kicks": 2.0, "mid": 80.0, "edge": 10.0, "slips": 0.2, "roll": 6.0}
   bars.update({k: float(v) for k, v in (kv.split("=") for kv in filter(None, os.environ.get("LEGGED_BARS", "").split(",")))})
   checks = [("kicks", tot["kicks"] / n <= bars["kicks"], f"{tot['kicks'] / n:.1f}/run"),
             ("mid-tread", mid >= bars["mid"], f"{mid:.1f}%"), ("edge", edge <= bars["edge"], f"{edge:.1f}%"),
             ("slips", tot["slips"] / n <= bars["slips"], f"{tot['slips'] / n:.1f}/run"),
-            ("roll", tot["roll"] <= bars["roll"], f"{tot['roll']:.1f} deg"), ("falls", tot["falls"] == 0, str(tot["falls"]))]
+            ("roll (info)", True, f"{tot['roll']:.1f} deg"), ("falls", tot["falls"] == 0, str(tot["falls"]))]
 fails = [k for k, ok, _ in checks if not ok]
 print(f"TOTAL {robot} {onnx.stem}{' payload ' + PAYLOAD if PAYLOAD else ''}: " + " | ".join(f"{k} {v}{'' if ok else ' FAIL'}" for k, ok, v in checks)
       + f" | rate RMS {wr:.2f} rad/s -> {'PASS' if not fails else 'FAIL ' + ', '.join(fails)}", flush=True)
