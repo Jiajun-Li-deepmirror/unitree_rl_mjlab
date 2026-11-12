@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""stairs_gate.py R PREFIX [--pay N] (unitree-rl-mjlab-62 2026-11-13; go2-depth's gate design, option (b) of doc/redesign.md's
+"""stairs_gate.py R PREFIX [--pay N] [--typ] (unitree-rl-mjlab-62 2026-11-13; go2-depth's gate design, option (b) of doc/redesign.md's
 teacher gate): does a teacher checkpoint pass the stairs part of its gate? Read from tier-2's own stairs test
 (scripts/go2_blind/eval_stairs.py --metrics, Unitree-<R>-U-Teacher-Stairs, unloaded) in both scan modes:
 PREFIX_on.txt and PREFIX_off.txt. jobs/unified/stairs_gate.sh runs them; jobs/unified/teacher.sh calls it on a seed's
@@ -18,6 +18,12 @@ Judged, in each scan mode (the students' bars unless said):
                an entry: the students' bars. Fewer than MIN_EVENTS counted: untested (a tool fault)
 --pay N: also PREFIX_pay.txt (the seen mode with the walking payload, 8 kg at the acceptance's point), judged on its
 falls only (traverse + stop <= N); its speed, four feet and counts reported.
+--typ: also PREFIX_typ_on.txt / PREFIX_typ_off.txt (both scan modes with the typical payload, jobs/accept_payload.sh R
+typical), judged as the students' typical condition judges its stairs (accept_judge.typical()) at the teacher's
+tolerances: falls <= FALLS_MAX, stop ok, four feet and the counts as unloaded, and the flight speed at least
+accept_judge.STAIRS_SPEED_REL of the same mode's unloaded reading in every band and direction. Why (11-13): Go2 s38
+6097 fell 43 / 27 and Go2W s28 4997 (every unloaded stairs item passed) 11 / 24 at the typical 4 kg, 10-36% on the
+15-18 cm climbs; the students' acceptance takes no fall there, so such a teacher's students fail 7000 iterations later.
 Reported only: the stalled share, the heading on the flight.
 First line: "PASS ...", "FAIL (gap G): <reasons>" (G: the summed relative shortfall, for picking the best judged at the
 cap) or "FAULT: <what could not be read>". Exit 0 / 1 / 4.
@@ -76,7 +82,54 @@ def feet(t: str) -> list[tuple[str, str, float]]:
     r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", t, re.M)]
 
 
-def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
+def mode_checks(r: str, path: str, t: str, tag: str, bars: dict, bad: list, missing: list, detail: list) -> float:
+  """One run's falls, stop ok, four feet and counts (both the unloaded and the typical runs); returns its gap."""
+  wheeled = r in at.WHEELED
+  gap = 0.0
+  falls = aj.stairs_fall_counts(path)
+  if falls is None:
+    missing.append(f"{tag}: no falls line")
+  else:
+    detail.append(f"{tag}: falls {falls}")
+    if falls > FALLS_MAX:
+      bad.append(f"{tag} 摔倒 {falls}")
+      gap += 1.0 + 0.1 * (falls - FALLS_MAX)
+  so = stop_ok(t)
+  if so is None:
+    missing.append(f"{tag}: no stop ok")
+  else:
+    detail.append(f"{tag}: stop ok {so:.0f}%")
+    if so < STOP_OK_MIN:
+      bad.append(f"{tag} 停不稳 {so:.0f}%")
+      gap += (STOP_OK_MIN - so) / STOP_OK_MIN
+  short = [(b, d, v) for b, d, v in feet(t) if v < at.stop_feet_bar(r, b, d)]
+  if short:
+    bad.append(f"{tag} 停住缺脚 " + "，".join(f"{b} {d} {v:.2f}" for b, d, v in short))
+    gap += sum(at.stop_feet_bar(r, b, d) - v for b, d, v in short)
+  sm = aj.stairs_metrics(path)
+  n = sm.get("ups") if wheeled else sm.get("steps")
+  if n is None:
+    missing.append(f"{tag}: no stairs counts")
+  elif n < MIN_EVENTS:
+    missing.append(f"{tag}: {n:.0f} events counted (< {MIN_EVENTS})")
+  else:
+    for k, (sense, bar) in bars.items():
+      v = sm.get(k)
+      if v is None:
+        missing.append(f"{tag}: no {k}")
+        continue
+      detail.append(f"{tag}: {k} {v:.3f} ({'<=' if sense == 'max' else '>='} {bar})")
+      if (sense == "max" and v > bar) or (sense == "min" and v < bar):
+        bad.append(f"{tag} {k} {v:.3f}")
+        gap += (v / bar - 1.0) if sense == "max" else (bar / max(v, 1e-6) - 1.0)
+  st = re.search(r"^stalled on the traverse .*?: ([\d.]+)% of", t, re.M)
+  ha, hu = aj.stairs_heading(path)
+  detail.append(f"{tag}: stalled {st.group(1) if st else '-'}%, heading {ha if ha is not None else '-'} deg"
+                f" (15-18cm up {hu if hu is not None else '-'}) (reported)")
+  return gap
+
+
+def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) -> tuple[str, int]:
   wheeled = r in at.WHEELED
   kind = "wheeled" if wheeled else "legged"
   entry = TEACHER_COUNT_BARS.get(r)
@@ -89,26 +142,6 @@ def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
     if not t:
       missing.append(f"{tag}: no output ({path})")
       continue
-    falls = aj.stairs_fall_counts(path)
-    if falls is None:
-      missing.append(f"{tag}: no falls line")
-    else:
-      detail.append(f"{tag}: falls {falls}")
-      if falls > FALLS_MAX:
-        bad.append(f"{tag} 摔倒 {falls}")
-        gap += 1.0 + 0.1 * (falls - FALLS_MAX)
-    so = stop_ok(t)
-    if so is None:
-      missing.append(f"{tag}: no stop ok")
-    else:
-      detail.append(f"{tag}: stop ok {so:.0f}%")
-      if so < STOP_OK_MIN:
-        bad.append(f"{tag} 停不稳 {so:.0f}%")
-        gap += (STOP_OK_MIN - so) / STOP_OK_MIN
-    short = [(b, d, v) for b, d, v in feet(t) if v < at.stop_feet_bar(r, b, d)]
-    if short:
-      bad.append(f"{tag} 停住缺脚 " + "，".join(f"{b} {d} {v:.2f}" for b, d, v in short))
-      gap += sum(at.stop_feet_bar(r, b, d) - v for b, d, v in short)
     sp = speeds(t)
     for d in ("up", "down"):
       if d not in sp:
@@ -118,26 +151,33 @@ def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
         gap += min(abs(sp[d] - SPEED_RANGE[0]), abs(sp[d] - SPEED_RANGE[1]))
     if sp:
       detail.append(f"{tag}: speed " + " ".join(f"{d} x{v:.2f}" for d, v in sp.items()))
-    sm = aj.stairs_metrics(path)
-    n = sm.get("ups") if wheeled else sm.get("steps")
-    if n is None:
-      missing.append(f"{tag}: no stairs counts")
-    elif n < MIN_EVENTS:
-      missing.append(f"{tag}: {n:.0f} events counted (< {MIN_EVENTS})")
-    else:
-      for k, (sense, bar) in bars.items():
-        v = sm.get(k)
-        if v is None:
-          missing.append(f"{tag}: no {k}")
-          continue
-        detail.append(f"{tag}: {k} {v:.3f} ({'<=' if sense == 'max' else '>='} {bar})")
-        if (sense == "max" and v > bar) or (sense == "min" and v < bar):
-          bad.append(f"{tag} {k} {v:.3f}")
-          gap += (v / bar - 1.0) if sense == "max" else (bar / max(v, 1e-6) - 1.0)
-    st = re.search(r"^stalled on the traverse .*?: ([\d.]+)% of", t, re.M)
-    ha, hu = aj.stairs_heading(path)
-    detail.append(f"{tag}: stalled {st.group(1) if st else '-'}%, heading {ha if ha is not None else '-'} deg"
-                  f" (15-18cm up {hu if hu is not None else '-'}) (reported)")
+    gap += mode_checks(r, path, t, tag, bars, bad, missing, detail)
+  # the typical payload (--typ): both modes as the students' typical condition judges its stairs, the speed against
+  # the same mode's unloaded run band by band
+  if typ:
+    for mode in ("on", "off"):
+      path = f"{prefix}_typ_{mode}.txt"
+      t = aj.txt(path)
+      tag = f"常用负载 scan {mode}"
+      if not t:
+        missing.append(f"{tag}: no output ({path})")
+        continue
+      su, st_ = aj.flight_speeds(f"{prefix}_{mode}.txt"), aj.flight_speeds(path)
+      if not su or not st_:
+        missing.append(f"{tag}: no flight speeds")
+      else:
+        slow = [(k, st_.get(k, float("nan")), b) for k, b in su.items()
+                if b == b and not st_.get(k, float("nan")) >= aj.STAIRS_SPEED_REL * b]
+        if slow:
+          bad.append(f"{tag} 楼梯速度低于空载的 {aj.STAIRS_SPEED_REL:.0%}："
+                     + "、".join(f"{k[0]} {'上' if k[1] == 'up' else '下'} {v:.2f}/{b:.2f}" for k, v, b in slow))
+          gap += sum(1.0 - (v / b if v == v else 0.0) / aj.STAIRS_SPEED_REL for _k, v, b in slow)
+        detail.append(f"{tag}: speed (typical / unloaded, m/s) " + " ".join(
+          f"{k[0]} {k[1]} {st_.get(k, float('nan')):.2f}/{b:.2f}" for k, b in su.items()))
+      gap += mode_checks(r, path, t, tag, bars, bad, missing, detail)
+      lr = aj.stairs_reach(path)
+      if lr:
+        detail.append(f"{tag} per band (reported): {lr}")
   # the walking payload (go2-depth 11-13, the user's hard rule "带负载一定不能摔"): PREFIX_pay.txt -- the seen mode,
   # 8 kg at the acceptance's point -- judged on its falls only (pay_falls); speed, four feet and the counts reported
   if pay_falls is not None:
@@ -171,6 +211,8 @@ def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
 
 def main() -> int:
   args = sys.argv[1:]
+  typ = "--typ" in args
+  args = [a for a in args if a != "--typ"]
   pay = None
   if "--pay" in args:
     i = args.index("--pay")
@@ -180,7 +222,7 @@ def main() -> int:
     print(__doc__)
     return 2
   try:
-    out, rc = judge(args[0], args[1], pay)
+    out, rc = judge(args[0], args[1], pay, typ)
   except Exception as e:   # a tool fault, not a fail
     print(f"FAULT: stairs gate error: {type(e).__name__}: {e}")
     return 4
