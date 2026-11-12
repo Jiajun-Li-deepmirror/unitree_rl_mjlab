@@ -297,6 +297,10 @@ def main() -> int:
   names = {(e["ev"], e.get("name")) for e in ev}
   ok("A start first", kinds[0] == "start" and ev[0]["code"] == "test000" and len(ev[0]["items"]) == len(items))
   ok("A no fault", "fault" not in kinds)
+  now = __import__("time").time()
+  status_a = json.loads((out / "A/records/status.json").read_text())
+  ok("A times: the events', the records' and the status' clock is the wall clock (to the second)",
+     all(abs(now - x["t"]) < 600 for x in ev + snaps) and abs(now - status_a["t"]) < 600 and ev[-1]["t"] >= ev[0]["t"])
   ok("A exception + end", "exception" in kinds and ev[-1]["ev"] == "end" and ev[-1]["reason"] == "exception")
   ok("A checkpoints", kinds.count("checkpoint") == 12)
   ok("A milestone p 0.5", any(e["ev"] == "milestone" and e["name"] == "p" and e["mark"] == 0.5 for e in ev))

@@ -88,14 +88,16 @@ def records(name: str, r: dict, alarms: list[str]) -> list[str]:
   """One line per seed from its records' status (diagnostics.py), and the alarms they give."""
   lines = []
   now = float(r["NOW"]) if r.get("NOW", "").isdigit() else time.time()
-  latest = {}   # run name's seed -> its newest status
+  latest = {}   # the run's name without its date (ufull_s0, uprobe_s0: a probe beside a seed is its own line) -> newest
   for st in r.get("STATUS", []):
     run = Path(str(st.get("run_dir", "?"))).name
-    seed = (re.search(r"_s(\d+)$", run) or [None, run])[1]
-    if seed not in latest or (st.get("t") or 0) > (latest[seed].get("t") or 0):
+    seed = re.sub(r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_", "", run)
+    if seed not in latest or ((st.get("t") or 0), run) > ((latest[seed].get("t") or 0), latest[seed]["run"]):
       latest[seed] = st | {"run": run}
   for seed, st in sorted(latest.items()):
     age = (now - float(st.get("t_end") or st.get("t") or now)) / 60.0
+    if "probe" in seed:   # a probe resumes an old checkpoint: the reference schedule (from zero) is not its own
+      st = st | {"expect": {}, "alerts": [a for a in st.get("alerts") or [] if not a.startswith("late:")]}
     late = sorted(k for k, (by, at) in (st.get("expect") or {}).items() if at is None and (st.get("it") or 0) >= by)
     todo = sorted(((by, k) for k, (by, at) in (st.get("expect") or {}).items() if at is None and (st.get("it") or 0) < by))
     nxt = f", next milestone {todo[0][1]} by {todo[0][0]}" if todo else ""

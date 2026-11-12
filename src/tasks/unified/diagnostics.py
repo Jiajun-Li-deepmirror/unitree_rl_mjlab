@@ -171,7 +171,8 @@ def expectations() -> list[dict]:
 
 
 def _clean(x):
-  """JSON-safe: numbers rounded to 5 significant digits, non-finite ones as strings, tensors and arrays as lists."""
+  """JSON-safe: numbers rounded to 5 significant digits (never coarser than one decimal: a clock time keeps its
+  seconds), non-finite ones as strings, tensors and arrays as lists."""
   if isinstance(x, dict):
     return {str(k): _clean(v) for k, v in x.items()}
   if isinstance(x, (list, tuple, deque)):
@@ -186,7 +187,11 @@ def _clean(x):
     return int(x)
   if isinstance(x, (float, np.floating)):
     x = float(x)
-    return float(f"{x:.5g}") if math.isfinite(x) else str(x)
+    if not math.isfinite(x):
+      return str(x)
+    # (2026-11-12, the from-zero runs' first minutes: 5 digits turned every "t" -- time.time() -- into 1794500000.0,
+    # so the records had no times: no DEAD alarm, no iterations per hour in the report)
+    return round(x, 1) if abs(x) >= 1e4 else float(f"{x:.5g}")
   if x is None or isinstance(x, str):
     return x
   return str(x)
