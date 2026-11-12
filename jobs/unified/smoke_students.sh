@@ -20,9 +20,13 @@ N=${S_ITERS:-20}
 rm -f logs/jobs/unified_${r}_blind_smoke.pick logs/jobs/unified_${r}_depth_smoke.pick
 STAMP=$(mktemp) && touch $STAMP   # (the pair test's verdict must be newer)
 trap 'rm -f $STAMP' EXIT
+SL=logs/jobs/unified_${r}_students.txt
+L0=$(cat $SL 2> /dev/null | wc -l)   # (the students log's lines from this smoke on)
 SMOKE=1 TEACHER=$T S1_ITERS=$N S2_ITERS=$N NUM_ENVS=${NUM_ENVS:-512} SAVE_EVERY=10 \
   CANDIDATES=avg AVG_N=2 AVG_CANDS=1 TN_GATE=${TN_GATE:-skip} bash jobs/unified/students.sh $R
 fails=()
+tail -n +$((L0 + 1)) $SL 2> /dev/null | grep -qE "SMOKE teacher stop check: STOPCHECK (PASS|WARN|FAIL)" \
+  || fails+=("the teacher stop check gave no reading ($SL)")
 for kind in blind depth; do
   for st in 1 2; do
     f=logs/jobs/unified_${r}_${kind}${st}_smoke.log

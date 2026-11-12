@@ -280,6 +280,7 @@ def main() -> int:
   origin_xy = terrain.env_origins[:, :2].clone() if stairs else None
 
   alive_at_fail = torch.zeros(n, dtype=torch.bool, device=dev)   # standing when its camera failed: the robots tested
+  hist_dev = 0.0   # the self-check: the shown history against the environment's, before the failures
   for k in range(steps):
     t = k * dt
     alive_at_fail |= alive & (t >= fail_t) & (t - dt < fail_t)
@@ -292,6 +293,11 @@ def main() -> int:
     with torch.no_grad():
       shown = obs.clone(False)
       shown["depth"] = fb.depth_seen(k, t, obs["depth"])
+      # self-check (go2-depth's review 11-12): before its failure a robot is shown the environment's own history --
+      # the robots on their first episode (a reset restarts the environment's capture clock and history)
+      pre = alive & (t < fail_t)
+      if pre.any():
+        hist_dev = max(hist_dev, float((shown["depth"][pre] - obs["depth"][pre]).abs().max()))
       a_depth = depth_policy(shown)
       a_blind = blind(obs)
       act = torch.where(fallback.unsqueeze(1), a_blind, a_depth)
@@ -437,9 +443,15 @@ def main() -> int:
         f"max {rpd[sel].max() if sel.any() else float('nan'):.1f} deg (reported)")
   print(f"standing at their failure (tested): {int(aaf.sum())} / {n}; cells under {TESTED_BAR:.0%}: "
         f"{', '.join(untested) if untested else 'none'}")
+  print(f"self-check: the shown depth history against the environment's before the failures, max difference "
+        f"{hist_dev:.2e} (should be 0)")
   # a fail among the tested robots is a fail; otherwise too few tested robots leave it UNTESTED (pair_accept.sh: run
-  # again, then a tool fault -- not a fail)
-  if bad:
+  # again, then a tool fault -- not a fail). A failed self-check first: the depth student was not shown what the
+  # environment captures (its capture timing changed), so no reading here stands
+  if hist_dev > 1e-6:
+    verdict = (f"UNTESTED: self-check -- the shown depth history differs from the environment's before the failures "
+               f"(max {hist_dev:.2e}): the environment's capture timing no longer matches DEPTH_UPDATE_PERIOD_STEPS")
+  elif bad:
     verdict = "FAIL: " + "；".join(bad)
   elif untested:
     verdict = f"UNTESTED: {len(untested)} cells with under {TESTED_BAR:.0%} of their robots standing at their failure ({'; '.join(untested[:8])})"
