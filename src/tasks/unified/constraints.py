@@ -69,6 +69,10 @@ Since the from-zero retrain (2026-11-12, after the peer review; doc/unified_teac
     logged and judged by the gate like the others. The survival items (teacher_env.constraint_items: survive_up,
     survive_down) are such: "evalfail:<family>", the light evaluation robots' fail rate on the worst of the
     acceptance's step-height bands (curriculum.eval_worst_band), per scan mode.
+  - the stop creep on the acceptance's time base (2026-11-12, `stop_creep`): the net displacement from 2 s after the
+    robot was last disturbed, over a window of up to 4 s, instead of the distance from the hold anchor over the
+    whole stand. An item whose measure changes starts afresh on a checkpoint from before the change (multiplier 1,
+    no readings: `constraints.load`, the items' signatures).
 """
 
 from __future__ import annotations
@@ -223,6 +227,175 @@ class meter:
     return torch.zeros(env.num_envs, device=env.device)
 
 
+class stop_creep:
+  """Reward term with zero output (a tiny nonzero weight; after `term` in the reward dict: it reads the clock that
+  term updated this step): the stop creep the way the acceptance measures it (go2-depth 2026-11-12).
+
+  The acceptance (scripts/blind/eval/eval_standing.py) releases the command, waits 2 s and takes the base's net
+  displacement over the following 4 s; each group's mean must stay under 1 cm. The earlier measure
+  (mdp.constraints' stand_hold on `term`) is the distance from the hold anchor: the anchor locks as soon as the base
+  has settled (~0.6 s into the stand) and stays for the whole stand (4-8 s), so the reading also holds the rest of
+  the slide before the acceptance's 2 s mark and grows with the stand's length. The Go2 teacher at 2300 under the
+  training randomization (unitree-rl-mjlab-62's comparison, 1060 stops, no pushes): the anchor measure p50 1.0 /
+  p90 2.1 cm, the acceptance's p50 0.34 / p90 0.96 cm; the anchor's smoothing was 3-5% of the gap. The creep
+  multiplier sat at its 3x cap against a 0.64 cm target on a p90 the lineage does not meet on that measure.
+
+  Here: `settle_s` after the robot was last disturbed -- the stand began or it was pushed (the hold term's own
+  clock, excused_since; a new episode restarts it) -- the base position is kept as the reference, and from then on
+  value = the distance from it. It counts (mask) while the window since the reference is `min_window_s` ..
+  `window_s` long: a shorter one has seen too little of the acceptance's 4 s, a longer one is past it. A moving
+  command, a push or a new episode ends the window. The value is not scaled up to 4 s (a slide that decays reads
+  nearly the same over 2 s as over 4; a steady drift reads up to a quarter low on average).
+
+  env.u_stop_creep; the constraints read it as "u_stop_creep" (every robot) / "u_stop_creep_light".
+
+  The march's drift, the same way (`key` "u_march_drift" on march_position_hold, `repeat`; 2026-11-12). The
+  acceptance (scripts/blind/eval/march_eval.py) stands 3 s, marches 5 s and takes the net displacement over those
+  5 s; the mean over the robots must stay under 5 cm. The earlier measure was the p90 of the distance from the
+  march's anchor over the whole march (10-20 s) against 4 cm: at the 3x cap on every Go2W seed with 6-7 cm, while
+  seed 1's model_2600 passed the acceptance's march with 3.2 cm (Go2 model_3300: 2.5 cm over 5 s, 9.6 cm over
+  20 s -- a steady drift, about 0.5 cm/s, no start transient). With `repeat` the windows are chained: a new
+  reference every `window_s`, each window counted over its last `window_s - min_window_s`. The first reference is
+  taken `settle_s` after the march began or the last push, as the hold term's own excuse (its push_window): a
+  march here may begin out of a walk, the acceptance's begins out of a stand.
+
+  `key`: the attribute on env this instance is kept under (params["key"]; "u_stop_creep" without one)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    n, dev = env.num_envs, env.device
+    self.ref = torch.zeros(n, 2, device=dev)
+    self.has_ref = torch.zeros(n, dtype=torch.bool, device=dev)
+    self.k = torch.zeros(n, dtype=torch.long, device=dev)       # which window the reference belongs to (repeat)
+    self.value = torch.zeros(n, device=dev)                     # distance from the reference (m)
+    self.mask = torch.zeros(n, dtype=torch.bool, device=dev)    # the robots whose value counts now
+    setattr(env, (getattr(cfg, "params", None) or {}).get("key") or "u_stop_creep", self)
+
+  def reset(self, env_ids=None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.has_ref[env_ids] = False
+    self.mask[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, term: str = "standing_position_hold", settle_s: float = 2.0,
+               window_s: float = 4.0, min_window_s: float = 2.0, repeat: bool = False,
+               key: str | None = None) -> torch.Tensor:
+    del key   # (read in __init__)
+    cfg = env.reward_manager.get_term_cfg(term)
+    assert cfg.params.get("push_window") is not None, f"stop_creep: {term} keeps no clock without push_window"
+    t = cfg.func
+    standing = t.was_standing   # at the zero command / marching now (the hold term ran earlier in this step)
+    # in env steps (whole numbers: the windows' edges fall on the same step whatever the rounding)
+    settle_n, window_n, min_n = (round(x / env.step_dt) for x in (settle_s, window_s, min_window_s))
+    w = env.common_step_counter - t.excused_since - settle_n   # since the reference was due (the stand began / a push)
+    pos = env.scene["robot"].data.root_link_pos_w[:, :2]
+    settled = standing & (w >= 0)
+    k = torch.div(w.clamp(min=0), window_n, rounding_mode="floor") if repeat else torch.zeros_like(self.k)
+    take = settled & (~self.has_ref | (k != self.k))
+    self.ref = torch.where(take.unsqueeze(1), pos, self.ref)
+    self.k = torch.where(take, k, self.k)
+    self.has_ref = settled
+    phase = w - k * window_n
+    self.value = torch.norm(pos - self.ref, dim=1)
+    self.mask = settled & (phase >= min_n) & (phase <= window_n)
+    return torch.zeros(env.num_envs, device=env.device)
+
+
+class march_reset:
+  """Reward term with zero output (a tiny nonzero weight): whether a march sets a splayed stance back, the way the
+  acceptance measures it (go2-depth 2026-11-12).
+
+  The acceptance (scripts/blind/eval/march_eval.py) turns every hip 8 deg in or out, stands 3 s, marches 5 s and
+  reads the worst hip's distance from its default at the end: the mean over the robots must stay under 2 deg
+  ("没复位" above it). Until now no measure in the training read it: the hips' cost (march_hip_default) hung on the
+  march item's drift reading. On the acceptance's test the Go2 teacher at 3300 read 2.4 deg (5.4 before the march),
+  the Go2W seed 1 at 2600 1.2 deg (7.4 before).
+
+  Here: when a march begins, the worst hip's distance from its default is kept (`start`); the robots that began with
+  at least `min_start` (the stance had something to set back: a reset with splayed hips, events' reset_hip_splay,
+  then a stand or a march at once) count `after_s` .. `until_s` into the march, value = the worst hip's distance
+  then (rad). A march out of a walk begins with the hips near their default and is not counted: it would read the
+  march's own hip motion, not the reset. The hips are `term`'s (the cost this item scales).
+
+  env.u_march_reset; the constraints read it as "u_march_hip" (every robot) / "u_march_hip_light"."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    n, dev = env.num_envs, env.device
+    self.was = torch.zeros(n, dtype=torch.bool, device=dev)     # marching at the last step
+    self.since = torch.zeros(n, dtype=torch.long, device=dev)   # the env step the march began at
+    self.start = torch.zeros(n, device=dev)                     # the worst hip's distance from default then (rad)
+    self.value = torch.zeros(n, device=dev)                     # the worst hip's distance from default now (rad)
+    self.mask = torch.zeros(n, dtype=torch.bool, device=dev)    # the robots whose value counts now
+    env.u_march_reset = self
+
+  def reset(self, env_ids=None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.was[env_ids] = False
+    self.mask[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, term: str = "march_hip_default", command_name: str = "twist",
+               after_s: float = 4.0, until_s: float = 5.0, min_start: float = 0.05) -> torch.Tensor:
+    acfg = env.reward_manager.get_term_cfg(term).params["asset_cfg"]
+    data = env.scene[acfg.name].data
+    off = (data.joint_pos[:, acfg.joint_ids] - data.default_joint_pos[:, acfg.joint_ids]).abs().amax(dim=1)
+    marching = env.command_manager.get_term(command_name).march
+    new = marching & ~self.was
+    step = env.common_step_counter
+    self.since = torch.where(new, torch.full_like(self.since, step), self.since)
+    self.start = torch.where(new, off, self.start)
+    self.was = marching.clone()
+    n = step - self.since
+    self.value = off
+    self.mask = (marching & (self.start >= min_start) & (n >= round(after_s / env.step_dt))
+                 & (n <= round(until_s / env.step_dt)))
+    return torch.zeros(env.num_envs, device=env.device)
+
+
+def _tracker(env: ManagerBasedRlEnv, key: str, term: str) -> tuple[torch.Tensor, torch.Tensor]:
+  t = getattr(env, key, None)
+  if t is None:
+    raise RuntimeError(f"{key}: the {term} reward term is not in this environment (teacher_env._rewards)")
+  return t.value, t.mask
+
+
+def _light(value: torch.Tensor, mask: torch.Tensor, env: ManagerBasedRlEnv,
+           max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+  """`mask` over the light robots (<= LIGHT_FRAC of the payload limit): the acceptance's flat tests carry none."""
+  pm = payload_mask(env, hi=LIGHT_FRAC if max_frac is None else max_frac)
+  return value, (mask if pm is None else mask & pm)
+
+
+def _stop_creep(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
+  """`stop_creep`'s reading: the distance from where the robot stood 2 s after it was last disturbed, over the
+  robots 2-4 s past that point."""
+  return _tracker(env, "u_stop_creep", "stop_creep")
+
+
+def _stop_creep_light(env: ManagerBasedRlEnv, max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+  """The same over the light robots (<= LIGHT_FRAC of the payload limit): the acceptance's stop test carries none."""
+  return _light(*_stop_creep(env), env, max_frac)
+
+
+def _march_drift(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
+  """The march's drift (`stop_creep` on march_position_hold, chained 5 s windows): the distance from where the
+  robot was at the window's start, over the robots in the last second of a window."""
+  return _tracker(env, "u_march_drift", "stop_creep (key u_march_drift)")
+
+
+def _march_drift_light(env: ManagerBasedRlEnv, max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+  return _light(*_march_drift(env), env, max_frac)
+
+
+def _march_hip(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
+  """`march_reset`'s reading: the worst hip's distance from its default (rad) 4-5 s into a march that began with
+  the stance splayed."""
+  return _tracker(env, "u_march_reset", "march_reset")
+
+
+def _march_hip_light(env: ManagerBasedRlEnv, max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+  return _light(*_march_hip(env), env, max_frac)
+
+
 def _stairs_stop_feet(env: ManagerBasedRlEnv, sensor_name: str = "feet_ground_contact",
                       max_speed: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
   """All four feet / wheels down (the acceptance's stairs stop-feet, bar 0.9 of the robots), over the robots on a
@@ -293,6 +466,9 @@ def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
 
 
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light,
+          "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
+          "u_march_drift": _march_drift, "u_march_drift_light": _march_drift_light,
+          "u_march_hip": _march_hip, "u_march_hip_light": _march_hip_light,
           # the flat items on the light robots (2026-11-11, the user: "现有的轻载约束 ... 只统计 ≤ 3 kg，继续对着无负载的验收门槛")
           "u_drift_light": by_payload("drift_share", hi=LIGHT_FRAC),
           "u_spin_light": by_payload("spin_hold", hi=LIGHT_FRAC),
@@ -300,8 +476,12 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
 
 # The same items on the heavy robots: measured and logged (Curriculum/u_heavy/<item>/{light,heavy}), never enforced.
 HEAVY_ITEMS = {
-  "creep": ("stand_hold", {"term": "standing_position_hold"}, "p90", ["standing_position_hold", "standing_speed"]),
-  "march": ("stand_hold", {"term": "march_position_hold"}, "p90", ["march_position_hold", "march_hip_default"]),
+  # (creep: the acceptance's time base and statistic since 2026-11-12, as the constraint; before: stand_hold, p90)
+  "creep": ("u_stop_creep", {}, "mean", ["standing_position_hold", "standing_speed"]),
+  # (march: the same since 2026-11-12 -- the drift over 5 s and, as its own item, the hips' reset; before: one item,
+  # stand_hold on the march's anchor, p90, with both terms)
+  "march": ("u_march_drift", {}, "mean", ["march_position_hold"]),
+  "march_hip": ("u_march_hip", {}, "mean", ["march_hip_default"]),
   "side_drift": ("drift_share", {"term": "side_drift"}, "p90", ["side_drift"]),
   "straight_drift": ("drift_share", {"term": "straight_drift"}, "p90", ["straight_drift"]),
   "spin": ("spin_hold", {}, "mean", ["spin_position_hold"]),
@@ -372,7 +552,7 @@ class heavy_log:
     for item, (metric, params, stat, _) in HEAVY_ITEMS.items():
       for side, (lo, hi) in (("light", (None, LIGHT_FRAC)), ("heavy", (HEAVY_FRAC, None))):
         try:
-          value, mask = METRICS[metric](env, **params)
+          value, mask = (CUSTOM.get(metric) or METRICS[metric])(env, **params)
         except Exception:
           continue
         pm = payload_mask(env, lo, hi)
@@ -418,6 +598,20 @@ def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", scan: str |
   return float(v.mean()) if stat == "mean" else float(torch.quantile(v, float(stat[1:]) / 100.0))
 
 
+def item_sig(c: dict) -> str:
+  """How constraint c is measured: its metric and statistic (constraints.load)."""
+  return f"{c['metric']}|{c.get('stat', 'mean')}"
+
+
+# The signatures of the items whose measure has changed since the checkpoints that carry none (2026-11-12).
+LEGACY_SIG = {"creep": "u_stand_hold_light|p90", "march": "u_stand_hold_light|p90"}
+
+# An item split off another one: {new item: (the item its terms hung on, that item's signature then)}. A checkpoint
+# from before the split gives the new item the multiplier its terms had (2026-11-12: march_hip_default was scaled
+# by the march item; the hips' cost keeps its weight across the resume, the new reading moves it from there).
+SPLIT_FROM = {"march_hip": ("march", "u_stand_hold_light|p90")}
+
+
 class constraints:
   """Curriculum term (after `progress`): the constraints (see the module docstring). `items` is a list of
   {"name", "metric", "params", "stat", "sense" ("min": value >= target, "max": value <= target), "target" (the
@@ -451,6 +645,9 @@ class constraints:
     self.ref_step = None
     self.last_update = 0
     self.last_step = None
+    # how each item is measured (into the checkpoint: `load` starts an item afresh when it has changed)
+    self.sig: dict[str, str] = {c["name"]: item_sig(c) for c in (getattr(cfg, "params", None) or {}).get("items", [])}
+    self.redefined: list[str] = []         # the items `load` started afresh
     env.u_constraints = self
 
   def reset(self, env_ids=None) -> None:
@@ -458,11 +655,14 @@ class constraints:
 
   def state(self) -> dict:
     return {"scale": dict(self.scale), "value": dict(self.value), "values": dict(self.values),
-            "count": dict(self.count), "relax": dict(self.relax), "ref": dict(self.ref)}
+            "count": dict(self.count), "relax": dict(self.relax), "ref": dict(self.ref), "sig": dict(self.sig)}
 
   def load(self, state: dict) -> None:
     """A checkpoint's multipliers and readings. One from before the scan modes' split (no "values") gives the
-    multipliers; its readings are taken afresh."""
+    multipliers; its readings are taken afresh. An item measured another way than in the checkpoint (its
+    signature; LEGACY_SIG for a checkpoint from before they were saved) starts afresh: multiplier 1, no readings --
+    a multiplier that another quantity drove says nothing about this one (2026-11-12: the creep item's sat at its 3x
+    cap on the anchor measure)."""
     self.scale = dict(state["scale"])
     self.value = dict(state.get("value", {}))
     self.values = dict(state.get("values", {}))
@@ -470,6 +670,28 @@ class constraints:
     self.relax.update({f: bool(v) for f, v in (state.get("relax") or {}).items() if f in self.relax})
     # (a checkpoint from before the stairs families' reference has none: it starts at the first judged reading)
     self.ref = {f: float(v) for f, v in (state.get("ref") or {}).items()}
+    old = state.get("sig")
+    self.redefined = []
+    for name, sig in self.sig.items():
+      was = LEGACY_SIG.get(name, sig) if old is None else old.get(name, sig)
+      if was == sig:
+        continue
+      self.scale.pop(name, None)
+      self.value.pop(name, None)
+      for k in [k for k in {*self.values, *self.count} if k == name or k.startswith(name + "@")]:
+        self.values.pop(k, None)
+        self.count.pop(k, None)
+      self.redefined.append(name)
+      print(f"[unified] constraint {name}: measured as {sig} now, {was} in the checkpoint -- its multiplier and "
+            f"readings start afresh")
+    for name, (src, src_sig) in SPLIT_FROM.items():
+      if name not in self.sig or name in state["scale"] or src not in state["scale"]:
+        continue
+      if (LEGACY_SIG.get(src) if old is None else old.get(src)) != src_sig:
+        continue
+      self.scale[name] = float(state["scale"][src])
+      print(f"[unified] constraint {name}: split off {src} -- it starts at {src}'s multiplier in the checkpoint "
+            f"({self.scale[name]:.2f})")
 
   @staticmethod
   def on(c: dict, p: float, q: float) -> bool:

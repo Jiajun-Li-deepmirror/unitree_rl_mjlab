@@ -20,6 +20,8 @@ CPU feed the real `episodes` term and the real Recorder a scripted "training" in
 
   no run: the real curriculum._eval_fail, constraints._families and constraints.measure on a few hundred made-up
         evaluation episodes (the stairs families' relaxing against the reference, the survival items' reading),
+        constraints.stop_creep on scripted stands (the acceptance's time base: a push, a command and a new episode
+        end the window), constraints.load on a checkpoint whose creep item was measured another way,
         and teacher_gate.py on a made-up TensorBoard file (a gate-only item judged at the bar of the code on disk)
 
 -- and checks that the records hold exactly what was fed in (every episode counted once, per ground / cause / body),
@@ -359,6 +361,172 @@ def units(ok, out: Path) -> None:
   feed([0.0] * 5 + [0.5] * 2 + [None] * 2, 0)
   ok("unit survive: a split of other rows is counted afresh", not ucur._split_fits({"light": {}}, 9)
      and ucur._split_fits(ucur._split_new(9), 9) and not ucur._split_fits(ucur._split_new(8), 9))
+
+  # constraints.stop_creep: the creep on the acceptance's time base, on scripted stands. Every robot slides 3 cm in
+  # the 2 s after its stand begins (step 50) and drifts 2 mm/s from then on:
+  #   0  stands on                          -> counted 4-6 s into the stand, reading 2 mm/s x (2..4 s) = 4..8 mm
+  #   1  pushed 3 s into the stand          -> the reference is retaken 2 s after the push, counted 4-6 s after it
+  #   2  gets a command 3.5 s into it       -> never counted
+  #   3  a new episode 5 s into it          -> the window ends there; counted again 4-6 s into the new stand
+  #   4  as robot 0 with the full payload   -> counted by u_stop_creep, not by u_stop_creep_light
+  dt, n, start = 0.02, 5, 50
+  hold = NS(was_standing=torch.zeros(n, dtype=torch.bool), excused_since=torch.zeros(n, dtype=torch.long))
+  pos = torch.zeros(n, 3)
+  cenv = NS(num_envs=n, device="cpu", common_step_counter=0, step_dt=dt, u_payload_full=8.0, u_slope_cols=None,
+            payload_kg=torch.tensor([0.0, 0.0, 0.0, 0.0, 8.0]), scene={"robot": NS(data=NS(root_link_pos_w=pos))},
+            reward_manager=NS(get_term_cfg=lambda name: NS(params={"push_window": 2.0}, func=hold)))
+  sc = ucons.stop_creep(None, cenv)
+  since = torch.full((n,), start, dtype=torch.long)   # when each robot's stand began / it was last pushed
+  seen: dict[int, list[tuple[float, float]]] = {i: [] for i in range(n)}   # robot -> (s into the stand, reading)
+  light_n = all_n = 0
+  for step in range(1, start + 600):
+    tau = (step - start) * dt
+    cenv.common_step_counter = step
+    standing = torch.full((n,), step >= start)
+    standing[2] = start <= step < start + int(3.5 / dt)
+    if step == start + int(3.0 / dt):
+      since[1] = step          # the push (the hold term stamps its clock)
+    if step == start + int(5.0 / dt):
+      sc.reset(torch.tensor([3]))
+      since[3] = step          # the hold term after its own reset: a new stand
+    hold.was_standing, hold.excused_since = standing, since.clone()
+    pos[:, 0] = 0.03 * min(max(tau, 0.0), 2.0) / 2.0 + 0.002 * max(tau - 2.0, 0.0)
+    sc(cenv)
+    value, mask = ucons.CUSTOM["u_stop_creep"](cenv)
+    for i in torch.nonzero(mask).flatten().tolist():
+      seen[i].append((tau, float(value[i])))
+    all_n += int(mask.sum())
+    light_n += int(ucons.CUSTOM["u_stop_creep_light"](cenv)[1].sum())
+    if step == start + int(5.0 / dt) - 1:
+      mid = ucons.measure(cenv, "u_stop_creep_light", "mean")   # 5 s in: robots 0 and 3, 3 s past their reference
+  span = lambda i: (round(seen[i][0][0], 2), round(seen[i][-1][0], 2)) if seen[i] else None   # noqa: E731
+  peak = lambda i: max(v for _, v in seen[i])   # noqa: E731
+  ok(f"unit creep: counted 4-6 s into the stand, the slide before the 2 s mark left out ({span(0)}, peak "
+     f"{1000 * peak(0):.1f} mm of a 3.8 cm path)", span(0) == (4.0, 6.0) and abs(peak(0) - 0.008) < 2e-4
+     and abs(seen[0][0][1] - 0.004) < 2e-4)
+  ok(f"unit creep: a push restarts the 2 s ({span(1)})", span(1) == (7.0, 9.0) and abs(peak(1) - 0.008) < 2e-4)
+  ok("unit creep: a stand that ends before the window is not counted", not seen[2])
+  ok(f"unit creep: a new episode ends the window and starts another ({span(3)})",
+     [round(t, 2) for t, _ in seen[3]][:2] == [4.0, 4.02] and round(max(t for t, _ in seen[3] if t < 6.0), 2) == 4.98
+     and round(min(t for t, _ in seen[3] if t > 6.0), 2) == 9.0 and span(3) == (4.0, 11.0)
+     and abs(max(v for t, v in seen[3] if t < 6.0) - 0.006) < 2e-4 and abs(peak(3) - 0.008) < 2e-4)
+  ok(f"unit creep: the light measure leaves the loaded robot out ({light_n} of {all_n} readings; mean at 5 s "
+     f"{1000 * mid:.1f} mm)", seen[4] == seen[0] and all_n - light_n == len(seen[4]) and abs(mid - 0.006) < 2e-4)
+  # the march's drift: the same tracker under its own key, chained 5 s windows. Every robot drifts 6 mm/s from the
+  # start of its march (step 50):
+  #   0  marches on                         -> counted 6-7, 11-12, 16-17 s into the march (the last second of each
+  #                                            5 s window after the 2 s), reading 6 mm/s x (4..5 s) = 24..30 mm
+  #   1  pushed 6.5 s into the march        -> the first window ends there; counted again 12.5-13.5 s into it
+  #   2  gets a command 5 s into it         -> never counted
+  #   3  as robot 0 with the full payload   -> counted by u_march_drift, not by u_march_drift_light
+  n = 4
+  mhold = NS(was_standing=torch.zeros(n, dtype=torch.bool), excused_since=torch.zeros(n, dtype=torch.long))
+  mpos = torch.zeros(n, 3)
+  menv = NS(num_envs=n, device="cpu", common_step_counter=0, step_dt=dt, u_payload_full=8.0, u_slope_cols=None,
+            payload_kg=torch.tensor([0.0, 0.0, 0.0, 8.0]), scene={"robot": NS(data=NS(root_link_pos_w=mpos))},
+            reward_manager=NS(get_term_cfg=lambda name: NS(params={"push_window": 2.0}, func=mhold)))
+  md = ucons.stop_creep(NS(params={"key": "u_march_drift"}), menv)
+  since = torch.full((n,), start, dtype=torch.long)
+  seen = {i: [] for i in range(n)}
+  light_n = all_n = 0
+  for step in range(1, start + 1000):
+    tau = (step - start) * dt
+    menv.common_step_counter = step
+    marching = torch.full((n,), step >= start)
+    marching[2] = start <= step < start + int(5.0 / dt)
+    if step == start + int(6.5 / dt):
+      since[1] = step
+    mhold.was_standing, mhold.excused_since = marching, since.clone()
+    mpos[:, 0] = 0.006 * max(tau, 0.0)
+    md(menv, term="march_position_hold", settle_s=2.0, window_s=5.0, min_window_s=4.0, repeat=True, key="u_march_drift")
+    value, mask = ucons.CUSTOM["u_march_drift"](menv)
+    for i in torch.nonzero(mask).flatten().tolist():
+      seen[i].append((round(tau, 2), float(value[i])))
+    all_n += int(mask.sum())
+    light_n += int(ucons.CUSTOM["u_march_drift_light"](menv)[1].sum())
+  times = lambda i: [t for t, _ in seen[i]]   # noqa: E731
+  edges = lambda i: [t for j, t in enumerate(times(i)) if j == 0 or round(t - times(i)[j - 1], 2) > 0.02]   # noqa: E731
+  ok(f"unit march: its own key; chained 5 s windows, each counted over its last second (from {edges(0)}, "
+     f"{len(seen[0])} readings of {1000 * min(v for _, v in seen[0]):.0f}-{1000 * max(v for _, v in seen[0]):.0f} mm)",
+     menv.u_march_drift is md and not hasattr(menv, "u_stop_creep") and edges(0) == [6.0, 11.0, 16.0]
+     and len(seen[0]) == 150 and times(0)[-1] == 16.98 and abs(min(v for _, v in seen[0]) - 0.024) < 2e-4
+     and abs(max(v for _, v in seen[0]) - 0.02988) < 2e-4)
+  ok(f"unit march: a push ends the window and restarts the 2 s (from {edges(1)})",
+     edges(1) == [6.0, 12.5, 17.5] and 6.48 in times(1) and 6.5 not in times(1) and 13.48 in times(1)
+     and abs(max(v for _, v in seen[1]) - 0.02988) < 2e-4)
+  ok("unit march: a march that ends before a window's last second is not counted", not seen[2])
+  ok(f"unit march: the light measure leaves the loaded robot out ({light_n} of {all_n} readings)",
+     seen[3] == seen[0] and all_n - light_n == len(seen[3]))
+  # constraints.march_reset: the hips' reset over a march. Hips 0 / 3 / 6 / 9 of 12 joints; the worst one starts
+  # `h0` off its default and reaches `h1` 3 s into the march (step 50):
+  #   0  0.14 -> 0.02 rad                   -> counted 4-5 s into the march, reading 0.02
+  #   1  0.01 -> 0.01 (no splay)            -> never counted (nothing to set back)
+  #   2  as 0, a command 3 s into it        -> never counted
+  #   3  as 0, a new episode 4.5 s into it  -> counted 4-4.5 s; the next march begins at 0.02: not counted
+  #   4  as 0 with the full payload         -> counted by u_march_hip, not by u_march_hip_light
+  n, hips = 5, [0, 3, 6, 9]
+  h0 = torch.tensor([0.14, 0.01, 0.14, 0.14, 0.14])
+  h1 = torch.tensor([0.02, 0.01, 0.02, 0.02, 0.02])
+  jpos, jdef = torch.zeros(n, 12), torch.full((n, 12), 0.3)
+  twist = NS(march=torch.zeros(n, dtype=torch.bool))
+  henv = NS(num_envs=n, device="cpu", common_step_counter=0, step_dt=dt, u_payload_full=8.0, u_slope_cols=None,
+            payload_kg=torch.tensor([0.0, 0.0, 0.0, 0.0, 8.0]),
+            scene={"robot": NS(data=NS(joint_pos=jpos, default_joint_pos=jdef))},
+            command_manager=NS(get_term=lambda name: twist),
+            reward_manager=NS(get_term_cfg=lambda name: NS(params={"asset_cfg": NS(name="robot", joint_ids=hips)})))
+  mr = ucons.march_reset(None, henv)
+  seen = {i: [] for i in range(n)}
+  light_n = all_n = 0
+  for step in range(1, start + 500):
+    tau = (step - start) * dt
+    henv.common_step_counter = step
+    marching = torch.full((n,), step >= start)
+    marching[2] = start <= step < start + int(3.0 / dt)
+    if step == start + int(4.5 / dt):
+      mr.reset(torch.tensor([3]))
+    twist.march = marching
+    off = h0 + (h1 - h0) * min(max(tau, 0.0), 3.0) / 3.0
+    jpos[:] = jdef
+    jpos[:, hips] = jdef[:, hips] + 0.5 * off.unsqueeze(1)
+    jpos[:, 6] = jdef[:, 6] - off          # the worst hip (to the other side)
+    jpos[:, 1] = jdef[:, 1] + 1.0          # not a hip: left out
+    mr(henv)
+    value, mask = ucons.CUSTOM["u_march_hip"](henv)
+    for i in torch.nonzero(mask).flatten().tolist():
+      seen[i].append((round(tau, 2), float(value[i])))
+    all_n += int(mask.sum())
+    light_n += int(ucons.CUSTOM["u_march_hip_light"](henv)[1].sum())
+  span = lambda i: (seen[i][0][0], seen[i][-1][0]) if seen[i] else None   # noqa: E731
+  ok(f"unit hips: a march from a splayed stance is read 4-5 s in, the worst hip's distance ({span(0)}, "
+     f"{seen[0][0][1]:.3f} rad)", span(0) == (4.0, 5.0) and all(abs(v - 0.02) < 1e-6 for _, v in seen[0]))
+  ok("unit hips: a march from the default stance and one that ends early are not counted", not seen[1] and not seen[2])
+  ok(f"unit hips: a new episode ends the reading; its march from 0.02 rad is not counted ({span(3)})",
+     span(3) == (4.0, 4.48))
+  ok(f"unit hips: the light measure leaves the loaded robot out ({light_n} of {all_n} readings)",
+     seen[4] == seen[0] and all_n - light_n == len(seen[4]))
+  # constraints.load: an item measured another way than in the checkpoint starts afresh, the others are kept; an
+  # item split off another one starts at that one's multiplier
+  items = constraint_items("legged")
+  old_state = {"scale": {c["name"]: 2.0 for c in items if c["name"] != "march_hip"} | {"creep": 3.0, "march": 2.5},
+               "value": {c["name"]: 0.5 for c in items},
+               "values": {f"{c['name']}@{m}": 0.5 for c in items for m in ucons.MODES},
+               "count": {f"{c['name']}@{m}": 900 for c in items for m in ucons.MODES}, "relax": {}, "ref": {}}
+  cons = ucons.constraints(NS(params={"items": items}), NS())
+  cons.load(dict(old_state))
+  ok(f"unit load: a checkpoint from before the creep and march measures -- they start afresh, the rest is kept "
+     f"({cons.redefined})", cons.redefined == ["creep", "march"] and not {"creep", "march"} & {*cons.scale, *cons.value}
+     and not [k for k in {*cons.values, *cons.count} if k.startswith(("creep@", "march@"))] and cons.scale["spin"] == 2.0
+     and cons.count["spin@seen"] == 900 and cons.values["creep_total@blind"] == 0.5)
+  ok(f"unit load: march_hip, split off march, starts at march's multiplier then ({cons.scale.get('march_hip')})",
+     cons.scale.get("march_hip") == 2.5)
+  cons2 = ucons.constraints(NS(params={"items": items}), NS())
+  cons2.load(dict(old_state) | {"sig": cons.state()["sig"]})
+  ok("unit load: a checkpoint of the same measures is taken whole", not cons2.redefined and cons2.scale["creep"] == 3.0
+     and cons2.count["creep@seen"] == 900 and cons2.scale["march"] == 2.5 and "march_hip" not in cons2.scale)
+  cons3 = ucons.constraints(NS(params={"items": items}), NS())
+  cons3.load(dict(old_state) | {"sig": cons.state()["sig"] | {"march": "u_stand_hold_light|mean"}})
+  ok(f"unit load: any item whose signature differs ({cons3.redefined})", cons3.redefined == ["march"]
+     and "march" not in cons3.scale and cons3.scale["creep"] == 3.0 and "march_hip" not in cons3.scale)
 
   # teacher_gate.py: a gate-only item at the bar of the code on disk, the others at the bar the training logged
   from torch.utils.tensorboard import SummaryWriter

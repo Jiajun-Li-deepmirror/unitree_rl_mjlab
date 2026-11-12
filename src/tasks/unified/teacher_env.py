@@ -32,6 +32,7 @@ base it starts from). On top of the base:
 from __future__ import annotations
 
 import inspect
+import math
 import os
 from copy import deepcopy
 from dataclasses import replace
@@ -123,10 +124,28 @@ def constraint_items(kind: str) -> list[dict]:
     c("back_drift", "u_back_drift_light", "max", 0.03, 0.1, 0.15, ["side_drift"],
       {"term": "side_drift", "settled": True, "min_abs_vy": 0.45}),
     # creep and march over the light robots only (<= 25% of the payload limit, as the acceptance's unloaded tests)
-    c("creep", "u_stand_hold_light", "max", 0.008, 0.03, 0.15, ["standing_position_hold", "standing_speed"],
-      {"term": "standing_position_hold"}, stat="p90"),
-    c("march", "u_stand_hold_light", "max", 0.04, 0.15, 0.15, ["march_position_hold", "march_hip_default"],
-      {"term": "march_position_hold"}, stat="p90"),
+    # creep (2026-11-12): on the acceptance's time base and statistic -- the net displacement from 2 s after the
+    # stand began or the last push, windows 2-4 s long, the mean; bar: the acceptance's 1 cm (the teacher's own target
+    # 0.8 cm, under the training randomization: the acceptance's play configuration is milder). Before: the distance
+    # from the hold anchor over the whole stand, p90 <= 0.8 cm (teacher 0.64) -- the Go2 teacher read 1.7-1.8 cm
+    # at 3000 with the multiplier at its 3x cap, where the acceptance's measure on the same robots gave a p90 of
+    # 0.96 cm (constraints.stop_creep). That reading stays in the records as creep_total, logged only.
+    c("creep", "u_stop_creep_light", "max", 0.01, 0.03, 0.15, ["standing_position_hold", "standing_speed"]),
+    c("creep_total", "u_stand_hold_light", "max", None, 0.03, 0.15, [], {"term": "standing_position_hold"},
+      stat="p90", enforce=False),
+    # march (2026-11-12): as the acceptance's two march readings, each its own item with its own cost term.
+    #   march: the net displacement over 5 s of marching, the mean, bar 5 cm (the teacher's own target 4 cm) --
+    #     constraints.stop_creep on march_position_hold, chained 5 s windows.
+    #   march_hip: the worst hip's distance from its default 4-5 s into a march that began with the stance splayed,
+    #     the mean, bar 2 deg (teacher 1.6) -- constraints.march_reset. New: the hips' cost hung on the drift reading.
+    #   march_total: the measure until now, logged only -- the p90 of the distance from the march's anchor over the
+    #     whole march (10-20 s) against 4 cm (teacher 3.2). The Go2W seeds sat at its 3x cap with 6-7 cm while seed
+    #     1's model_2600 passed the acceptance's march (3.2 cm over 5 s, hips 1.2 deg); the Go2 teacher at 3300 read
+    #     4.0-4.5 cm there and 2.5 cm / 2.4 deg on the acceptance: its one miss was the hips, which nothing measured.
+    c("march", "u_march_drift_light", "max", 0.05, 0.15, 0.15, ["march_position_hold"]),
+    c("march_hip", "u_march_hip_light", "max", math.radians(2.0), 0.10, 0.15, ["march_hip_default"]),
+    c("march_total", "u_stand_hold_light", "max", None, 0.15, 0.15, [], {"term": "march_position_hold"},
+      stat="p90", enforce=False),
     c("spin", "u_spin_light", "max", 0.05, 0.15, 0.15, ["spin_position_hold"]),
     # stairs: the quality stage (q; off and at the recipe's M weights until the robots climb)
     # (family: descent relaxes on the descents' fail rate, climb on the climbing columns', the rest on the worse)
@@ -420,6 +439,13 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     if terms:
       rewards[f"u_heavy_{item}"] = RewardTermCfg(func=ucons.heavy_group, weight=1.0, params={"terms": terms})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
+  # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
+  rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
+  # the march's drift the same way (after march_position_hold) and the hips' reset over a march
+  rewards["u_march_drift"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={
+    "key": "u_march_drift", "term": "march_position_hold", "settle_s": 2.0, "window_s": 5.0, "min_window_s": 4.0,
+    "repeat": True})
+  rewards["u_march_reset"] = RewardTermCfg(func=ucons.march_reset, weight=1e-9, params={})
   # the shared stairs metrics (tinynav's counters) over 512 robots, for the "lib:" constraints
   rewards["u_lib_meter"] = RewardTermCfg(func=ucons.lib_meter, weight=1e-9,
                                          params={"wheeled": kind == "wheeled", "sample": 512})
