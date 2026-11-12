@@ -11,17 +11,19 @@ through a takeover on what it is shown (the last frame of a stalled stream, or f
 kept. One state machine per robot picks whose action is applied:
 
   reset        fallback, healthy_s = 0
-  each step    fault = no depth frame yet, or the newest frame older than STALE_S (0.5 s), or BLIND_FRAMES (3)
-               frames in a row with no reading (frames come at 10 Hz, every DEPTH_UPDATE_PERIOD_STEPS)
+  each step    fault = no depth frame yet, or the newest frame older than STALE_S (0.5 s), or occluded: BLIND_FRAMES
+               (3) frames in a row with no reading, and MONITOR_HOLD_S (1.0 s) on after the readings come back (the
+               bridge's occlusion monitor; frames come at 10 Hz, every DEPTH_UPDATE_PERIOD_STEPS)
                fault -> fallback, healthy_s = 0; else, in fallback, healthy_s += dt and at HEALTHY_S (1.0 s) back to
-               the depth student
+               the depth student -- the deployment's timing (go2-depth's review 11-12 item 7)
   action       fallback ? blind : depth
 
-The failure, per robot: half "stall" (no new frame: the depth student sees the frame of the failure moment; the
-takeover comes 0.5 s on), half "blind" (frames with no reading anywhere -- the pipeline's no-reading value, max range,
-1.0 normalized; the takeover on the third such frame); half of each for the rest of the run, half for RECOVER_S
-(3 s), then the camera works again and the depth student takes back over after 1.0 s healthy. The failure time is
-drawn per robot: flat, in [2, 5] s; stairs, in [1, 7] s (the start of the flight to its end at the 0.5 m/s command).
+The failure, per robot (a seeded permutation, balanced): half "stall" (no new frame: the depth student's history
+stays as it was; the takeover 0.5 s after the last frame), half "blind" (frames with no reading anywhere -- the
+pipeline's no-reading value, max range, 1.0 normalized -- shifted into the history one capture at a time; the takeover
+on the third); half of each for the rest of the run, half for RECOVER_S (3 s), then the camera works again and the
+depth student takes back over by the timing above. The failure time is drawn per robot: flat, in [2, 5] s; stairs,
+in [1, 7] s (the start of the flight to its end at the 0.5 m/s command).
 
 --part flat    the 44 flat commands of accept_matrix.py x 16 robots (ramped 2 m/s^2 / 3 rad/s^2), plus 96 robots at
                the zero command, 11 s
@@ -31,17 +33,19 @@ drawn per robot: flat, in [2, 5] s; stairs, in [1, 7] s (the start of the flight
                "steps" from 1.0 m (the 2 m central platform's edge) to 3.6 m, else "platform"
 The payload is the environment's (U_PAYLOAD, as every check: 0 kg unloaded, the walking payload loaded).
 
-Judged (doc/redesign.md 2.2.1):
-  1. no fall (both conditions), after the failure and before it too -- the pair drives from the start (the blind
-     student for the first second), and a robot down before its failure was never tested; the two are reported apart.
-     Only the robots standing when their camera failed count as tested (the takeovers and the readings below)
+Tested: the robots standing when their camera failed (a fall before it is the students' own acceptance's, reported
+apart). Judged (doc/redesign.md 2.2.1), from the failure to the end:
+  1. no fall (both conditions)
   2. unloaded, stairs: the robots that took over on the steps reach >= REACH_BAR (0.90)
-  3. unloaded, flat: from 2 s after the takeover, 1 s mean velocity at 80-120% of the command (each command's robots
-     pooled, every axis of at least 0.05, as accept_matrix.py)
-Reported only: the lowest planar speed within 1 s of the takeover (share of the command), the time back to 80%,
-the roll / pitch peaks after the takeover, the creep of the standing robots over the 4 s after it.
-Last line: "camera_fail verdict: PASS" or "camera_fail verdict: FAIL: <reasons>". Run with UNIFIED_TASKS=1 from the
-repo root; jobs/unified/pair_accept.sh runs both parts in both conditions.
+  3. unloaded, flat: the robots whose camera stays failed, mean velocity from 2 s after the takeover to the end at
+     80-120% of the command (each command's robots pooled, every axis of at least 0.05, as accept_matrix.py)
+A cell -- a flat command, the standing group, a stairs band and direction -- with under TESTED_BAR (90%) of its robots
+tested, or no takeover on the steps at all, makes it UNTESTED (pair_accept.sh: run again, then a tool fault) unless
+a judged item already failed. Reported only: the recovered robots' speed after the handback, the lowest speed within
+1 s of the takeover (share of the command), the time back to 80%, the roll / pitch peaks after the takeover, the creep
+of the standing robots over the 4 s after it.
+Last line: "camera_fail verdict: PASS", "... FAIL: <reasons>" or "... UNTESTED: <cells>". Run with UNIFIED_TASKS=1
+from the repo root; jobs/unified/pair_accept.sh runs both parts in both conditions.
 """
 
 from __future__ import annotations
@@ -71,6 +75,8 @@ from src.tasks.velocity.depth_env_cfg import TEACHER_SCAN_NAME  # noqa: E402
 from src.tasks.velocity.mdp.depth import DEPTH_UPDATE_PERIOD_STEPS  # noqa: E402
 
 STALE_S, BLIND_FRAMES, HEALTHY_S, RECOVER_S = 0.5, 3, 1.0, 3.0
+MONITOR_HOLD_S = 1.0   # the occlusion monitor keeps flagging this long after the frames have readings again
+TESTED_BAR = 0.90      # a cell (command, band x direction) with fewer of its robots standing at their failure: untested
 NO_READING = 1.0       # a depth pixel without a reading: max range, normalized (mdp.depth.preprocess_ray_depth)
 REACH_BAR, SPEED_TOL = 0.90, 0.2
 LIN_ACCEL, YAW_ACCEL = 2.0, 3.0
@@ -107,28 +113,30 @@ class Fallback:
     self.received = torch.zeros(n, dtype=torch.bool, device=dev)
     self.last_frame = torch.full((n,), -1e9, device=dev)
     self.invalid_run = torch.zeros(n, dtype=torch.long, device=dev)
+    self.occluded_until = torch.full((n,), -1e9, device=dev)   # the occlusion monitor's hold (MONITOR_HOLD_S)
     self.healthy = torch.zeros(n, device=dev)
     self.fallback = torch.ones(n, dtype=torch.bool, device=dev)
     self.takeover = torch.full((n,), -1.0, device=dev)   # the first takeover at or after the failure (s)
     self.handback = torch.full((n,), -1.0, device=dev)   # the depth student back after it (s)
-    self.frozen = None
+    self.hist = None                                      # the frames the depth student is shown (its history)
 
   def failing(self, t: float) -> torch.Tensor:
     return (t >= self.fail_t) & ~(self.recover & (t >= self.fail_t + RECOVER_S))
 
-  def depth_seen(self, t: float, depth: torch.Tensor) -> torch.Tensor:
-    """What the depth student is shown this step."""
-    f = self.failing(t)
-    if self.frozen is None:
-      self.frozen = depth.clone()
-    start = f & self.stall & (self.frozen_at_start(t))
-    self.frozen = torch.where(start.view(-1, *([1] * (depth.dim() - 1))), depth, self.frozen)
-    shown = torch.where((f & self.stall).view(-1, *([1] * (depth.dim() - 1))), self.frozen, depth)
-    return torch.where((f & ~self.stall).view(-1, *([1] * (depth.dim() - 1))), torch.full_like(depth, NO_READING), shown)
-
-  def frozen_at_start(self, t: float) -> torch.Tensor:
-    # the step the stall begins: the frame then is the one kept
-    return (t >= self.fail_t) & (t - self.dt < self.fail_t)
+  def depth_seen(self, k: int, t: float, depth: torch.Tensor) -> torch.Tensor:
+    """What the depth student is shown this step: its frame history, a frame shifted in at each capture (10 Hz, the
+    environment's own capture steps) -- the live newest frame while the camera works, a frame with no reading while
+    blinded (so the history goes [valid, blinded] and then all blinded), none while stalled (the history stays as it
+    was at the failure). go2-depth's review 11-12 item 8."""
+    if self.hist is None:
+      self.hist = depth.clone()
+    if k % DEPTH_UPDATE_PERIOD_STEPS == 0:
+      f = self.failing(t)
+      newest = depth[:, -1:]
+      newest = torch.where((f & ~self.stall).view(-1, 1, 1, 1), torch.full_like(newest, NO_READING), newest)
+      shifted = torch.cat([self.hist[:, 1:], newest], dim=1)
+      self.hist = torch.where((f & self.stall).view(-1, 1, 1, 1), self.hist, shifted)
+    return self.hist
 
   def step(self, k: int, t: float) -> torch.Tensor:
     f = self.failing(t)
@@ -139,7 +147,11 @@ class Fallback:
     blank = f & ~self.stall
     self.invalid_run = torch.where(got, torch.where(blank, self.invalid_run + 1, torch.zeros_like(self.invalid_run)),
                                    self.invalid_run)
-    fault = ~self.received | (t - self.last_frame > STALE_S + 1e-6) | (self.invalid_run >= BLIND_FRAMES)
+    # the occlusion monitor (tinynav-sim sim/depth_monitor.py, the bridge's): occluded from the BLIND_FRAMES-th frame
+    # without a reading, and still for MONITOR_HOLD_S after the frames come back (go2-depth's review 11-12 item 7)
+    occluded = self.invalid_run >= BLIND_FRAMES
+    self.occluded_until = torch.where(occluded, torch.full_like(self.occluded_until, t + MONITOR_HOLD_S), self.occluded_until)
+    fault = ~self.received | (t - self.last_frame > STALE_S + 1e-6) | occluded | (t < self.occluded_until - 1e-6)
     was = self.fallback.clone()
     self.healthy = torch.where(fault, torch.zeros_like(self.healthy),
                                torch.where(self.fallback, self.healthy + self.dt, self.healthy))
@@ -215,8 +227,11 @@ def main() -> int:
 
   # the scenario: commands, failure times and modes
   idx = torch.arange(n, device=dev)
-  stall = idx % 2 == 0
-  recover = (idx // 2) % 2 == 0
+  # the failure modes by a seeded permutation, balanced (half stall / half blind x half recovering), not tied to the
+  # command or tile order (go2-depth's review 11-12 item 12: at small scales index parity followed the command)
+  perm = torch.randperm(n, generator=torch.Generator().manual_seed(a.seed)).to(dev)
+  stall = perm % 2 == 0
+  recover = (perm // 2) % 2 == 0
   if stairs:
     gen = cfg.scene.terrain.terrain_generator
     cum = np.cumsum(np.full(len(names), 1.0 / len(names)))
@@ -255,6 +270,8 @@ def main() -> int:
   where_take = torch.zeros(n, dtype=torch.long, device=dev)   # 0 none, 1 platform, 2 steps
   vel_win = torch.zeros(n, 3, device=dev)
   vel_n = torch.zeros(n, device=dev)
+  vel_back = torch.zeros(n, 3, device=dev)
+  vel_back_n = torch.zeros(n, device=dev)
   min_ratio = torch.full((n,), float("inf"), device=dev)
   back80 = torch.full((n,), float("nan"), device=dev)
   rp_peak = torch.zeros(n, device=dev)
@@ -274,7 +291,7 @@ def main() -> int:
     fallback = fb.step(k, t)
     with torch.no_grad():
       shown = obs.clone(False)
-      shown["depth"] = fb.depth_seen(t, obs["depth"])
+      shown["depth"] = fb.depth_seen(k, t, obs["depth"])
       a_depth = depth_policy(shown)
       a_blind = blind(obs)
       act = torch.where(fallback.unsqueeze(1), a_blind, a_depth)
@@ -296,9 +313,14 @@ def main() -> int:
     # readings after the takeover
     since = t - fb.takeover
     v = torch.cat([robot.data.root_link_lin_vel_b[:, :2], robot.data.root_link_ang_vel_b[:, 2:3]], dim=1)
-    win = took & alive & (since >= 2.0) & (since < 3.0)
+    # the judged speed (go2-depth's review 11-12 item 9): the robots whose camera stays failed, from 2 s after the
+    # takeover to the end of the run; the recovering ones: from the handback on, reported only
+    win = took & alive & ~recover & (since >= 2.0)
     vel_win += torch.where(win.unsqueeze(1), v, torch.zeros_like(v))
     vel_n += win.float()
+    back = (fb.handback >= 0) & alive_at_fail & alive & recover & (t >= fb.handback)
+    vel_back += torch.where(back.unsqueeze(1), v, torch.zeros_like(v))
+    vel_back_n += back.float()
     ratio = torch.where(standing, torch.ones_like(planar),
                         torch.where(turning, v[:, 2] / torch.where(C[:, 2] == 0, torch.ones_like(planar), C[:, 2]),
                                     v[:, :2].norm(dim=1) / planar))
@@ -330,10 +352,12 @@ def main() -> int:
   print(f"falls after the failure {int(fa.sum())} / {n} (stall {int((fa & stall_np).sum())}, blind {int((fa & ~stall_np).sum())}; "
         f"recovering {int((fa & rec_np).sum())}, failed to the end {int((fa & ~rec_np).sum())}); before it {int(fbf.sum())}")
   bad = []
-  # every fall fails it: before the failure the pair drives too (the blind student for the first second, then the
-  # depth one) -- and a robot down before its failure was never tested, so a pass must not rest on it
-  if fa.sum() + fbf.sum() > 0:
-    bad.append(f"摔倒 {int(fa.sum() + fbf.sum())}/{n}（失效前 {int(fbf.sum())}，失效后 {int(fa.sum())}）")
+  # judged: the falls from the failure on (doc/redesign.md 2.2.1); a robot down before its failure is the students'
+  # own acceptance's (reported here apart) and was not tested -- a cell with too few tested robots is UNTESTED below
+  if fa.sum() > 0:
+    bad.append(f"失效后摔倒 {int(fa.sum())}/{int(took.sum())}")
+  aaf = alive_at_fail.cpu().numpy()
+  untested = []   # the cells with fewer than TESTED_BAR of their robots standing at their failure
   mr = min_ratio.cpu().numpy()
   b80 = back80.cpu().numpy()
   rpd = np.degrees(rp_peak.cpu().numpy())
@@ -346,45 +370,82 @@ def main() -> int:
       band = f"{100 * (lo + (hi - lo) * lvl / STAIR_ROWS):.0f}-{100 * (lo + (hi - lo) * (lvl + 1) / STAIR_ROWS):.0f}cm"
       for d in ("up", "down"):
         m = (env_level == lvl) & (env_dir == d)
+        if aaf[m].mean() < TESTED_BAR:
+          untested.append(f"{band} {d} {aaf[m].mean():.0%}")
         s, p = m & on_steps, m & took & (wt == 1)
         rs = rch[s].mean() if s.any() else float("nan")
         rp_ = rch[p].mean() if p.any() else float("nan")
         print(f"{band:>9} {d:>4} | {int(s.sum()):8d} {rs:6.0%} | {int(p.sum()):8d} {rp_:6.0%} | {int(fa[m].sum()):4d} | {int(rb[m].sum())}")
     rate = rch[on_steps].mean() if on_steps.any() else float("nan")
     print(f"took over on the steps: {int(on_steps.sum())}, reached {rate:.1%} (bar {REACH_BAR:.0%}, judged unloaded)")
-    if not loaded and (not on_steps.any() or not rate >= REACH_BAR):
-      bad.append(f"台阶上切换后到达率 {rate:.1%}")
+    if not loaded:
+      if not on_steps.any():
+        untested.append("no takeover on the steps")
+      elif not rate >= REACH_BAR:
+        bad.append(f"台阶上切换后到达率 {rate:.1%}")
   else:
     vm = (vel_win / vel_n.clamp(min=1).unsqueeze(1)).cpu().numpy()
     vn = vel_n.cpu().numpy()
-    fails = []
-    print(f"{'command (vx, vy, wz)':>22} | {'2-3 s after the takeover':>24} | falls | lowest in 1 s | back to 80% s")
-    for ci, c in enumerate(CMDS):
-      sl = slice(ci * per_cmd, (ci + 1) * per_cmd)
-      ok = (vn[sl] > 0) & ~fa[sl]
-      mean = vm[sl][ok].mean(0) if ok.any() else np.full(3, np.nan)
-      parts, cb = [], False
+    vb = (vel_back / vel_back_n.clamp(min=1).unsqueeze(1)).cpu().numpy()
+    vbn = vel_back_n.cpu().numpy()
+    fails, noread = [], 0
+    print(f"{'command (vx, vy, wz)':>22} | {'failed: 2 s on to the end':>26} | {'recovered: after handback':>26} | "
+          f"falls | lowest in 1 s | back to 80% s")
+
+    def ratios(mean, c):
+      out, bad_ = [], False
       for axis, nm in enumerate("xyw"):
         if abs(c[axis]) >= 0.05:
           r = mean[axis] / c[axis]
-          parts.append(f"{nm}{r * 100:.0f}%")
-          cb |= not (abs(r - 1.0) <= SPEED_TOL)
-      if cb:
+          out.append(f"{nm}{r * 100:.0f}%")
+          bad_ |= not (abs(r - 1.0) <= SPEED_TOL)
+      return " ".join(out), bad_
+
+    for ci, c in enumerate(CMDS):
+      sl = slice(ci * per_cmd, (ci + 1) * per_cmd)
+      if aaf[sl].mean() < TESTED_BAR:
+        untested.append(f"{c} {aaf[sl].mean():.0%}")
+      ok = (vn[sl] > 0) & ~fa[sl]
+      okb = (vbn[sl] > 0) & ~fa[sl]
+      judged, cb = ratios(vm[sl][ok].mean(0) if ok.any() else np.full(3, np.nan), c)
+      shown_back, _ = ratios(vb[sl][okb].mean(0) if okb.any() else np.full(3, np.nan), c)
+      if not ok.any():
+        # no robot of it gave a reading (none stayed failed and standing): untested, not a speed fail -- a fall
+        # among them is judged above
+        noread += 1
+        if not fa[sl].any():
+          untested.append(f"{c} no speed reading")
+      elif cb:
         fails.append(str(c))
-      print(f"{str(c):>22} | {' '.join(parts):>24} | {int(fa[sl].sum()):2d}/{per_cmd} | "
+      print(f"{str(c):>22} | {judged:>26} | {shown_back:>26} | {int(fa[sl].sum()):2d}/{per_cmd} | "
             f"{np.nanmin(np.where(np.isfinite(mr[sl]), mr[sl], np.nan)) if np.isfinite(mr[sl]).any() else float('nan'):5.0%} | "
             f"{np.nanmedian(b80[sl]) if np.isfinite(b80[sl]).any() else float('nan'):.2f}")
-    st = standing.cpu().numpy() & took
+    stand_m = standing.cpu().numpy()
+    if stand_m.any() and aaf[stand_m].mean() < TESTED_BAR:
+      untested.append(f"standing {aaf[stand_m].mean():.0%}")
+    st = stand_m & took
     cr = creep.cpu().numpy()[st]
     print(f"standing: {int(st.sum())} robots, creep over the 4 s after the takeover median {100 * np.median(cr) if cr.size else float('nan'):.1f} cm, "
           f"p90 {100 * np.quantile(cr, 0.9) if cr.size else float('nan'):.1f} cm (reported)")
-    print(f"speed 2 s after the takeover: {len(CMDS) - len(fails)} of {len(CMDS)} commands at 80-120% (judged unloaded)")
+    print(f"speed from 2 s after the takeover to the end (the robots whose camera stays failed): "
+          f"{len(CMDS) - noread - len(fails)} of the {len(CMDS) - noread} commands with a reading at 80-120% "
+          f"({noread} without one; judged unloaded)")
     if not loaded and fails:
       bad.append(f"切换后速度不在 80–120%：{len(fails)} 条指令（{'; '.join(fails[:6])}{' …' if len(fails) > 6 else ''}）")
   sel = took & np.isfinite(rpd)
   print(f"roll / pitch peak after the takeover: median {np.median(rpd[sel]) if sel.any() else float('nan'):.1f} deg, "
         f"max {rpd[sel].max() if sel.any() else float('nan'):.1f} deg (reported)")
-  print("camera_fail verdict: " + ("PASS" if not bad else "FAIL: " + "；".join(bad)))
+  print(f"standing at their failure (tested): {int(aaf.sum())} / {n}; cells under {TESTED_BAR:.0%}: "
+        f"{', '.join(untested) if untested else 'none'}")
+  # a fail among the tested robots is a fail; otherwise too few tested robots leave it UNTESTED (pair_accept.sh: run
+  # again, then a tool fault -- not a fail)
+  if bad:
+    verdict = "FAIL: " + "；".join(bad)
+  elif untested:
+    verdict = f"UNTESTED: {len(untested)} cells with under {TESTED_BAR:.0%} of their robots standing at their failure ({'; '.join(untested[:8])})"
+  else:
+    verdict = "PASS"
+  print("camera_fail verdict: " + verdict)
   env.close()
   return 0
 

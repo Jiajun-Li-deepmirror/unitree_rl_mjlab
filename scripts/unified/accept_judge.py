@@ -61,11 +61,23 @@ def stand_posture(path: str) -> tuple[float | None, int | None]:
 
 
 def stopmove(path: str) -> tuple[float | None, int | None]:
-  """stop_then_move: (the largest "after stop" p90 deviation, falls over all groups)."""
+  """stop_then_move: (the largest "after stop" p90 deviation, falls over all groups; a group printed "all fell"
+  counts its robots -- the header's "N robots per group")."""
   p = {"stopmove": path}
+  t = txt(path)
   dev = at.posture_vals(p)
-  falls = [int(a) for a, _b in re.findall(r"\|\s*(\d+)/(\d+)\s*$", txt(path), re.M)]
+  falls = [int(a) for a, _b in re.findall(r"\|\s*(\d+)/(\d+)\s*$", t, re.M)]
+  allfell = len(re.findall(r"\|\s*all fell\s*$", t, re.M))
+  if allfell:
+    m = re.search(r"(\d+) robots per group", t)
+    falls.append(allfell * (int(m.group(1)) if m else 1))
   return dev, (sum(falls) if falls else None)
+
+
+def stairs_fall_counts(path: str) -> int | None:
+  """eval_stairs.py's exact fall count, traverse + stop (its "falls:" line, 2026-11-12); None without it."""
+  m = re.search(r"^falls: traverse (\d+) of \d+, stop (\d+) of \d+", txt(path), re.M)
+  return None if m is None else int(m.group(1)) + int(m.group(2))
 
 
 def stairs_metrics(path: str) -> dict[str, float]:
@@ -83,11 +95,28 @@ def stairs_metrics(path: str) -> dict[str, float]:
 
 
 def stairs_falls(path: str) -> int | None:
-  """Any fall in eval_stairs' table (traverse or stop), in % of the robots of each row."""
+  """Any fall in eval_stairs (traverse or stop): the exact count of its "falls:" line, else (a file from before it)
+  the table's whole percents of each row summed -- which read one or two robots of a row as 0%."""
+  n = stairs_fall_counts(path)
+  if n is not None:
+    return n
   rows = re.findall(r"^\s*[\d-]+cm\s+(?:up|down)\s*\|\s*\d+%\s+(\d+)%.*\|\s*\d+%\s+(\d+)%", txt(path), re.M)
   if not rows:
     return None
   return sum(int(a) + int(b) for a, b in rows)
+
+
+# What the judge cannot read is a tool fault, not a fail (the user's "fault != fail"): an item whose reason is one of
+# these, when every reason is one, makes the verdict FAULT (accept.sh: exit 4, no fallback to another teacher seed).
+MISSING = ("未测", "评测中")
+
+
+def verdict_line(bad: list[str]) -> str:
+  if not bad:
+    return "PASS"
+  if all(any(w in b for w in MISSING) for b in bad):
+    return "FAULT: " + "；".join(bad)
+  return "FAIL: " + "；".join(bad)
 
 
 # The typical payload's stairs speed: at least this share of the same test's unloaded reading, per band and direction
@@ -116,8 +145,9 @@ def comparison_falls(p: dict) -> dict[str, int | None]:
 def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
   """The typical payload (doc/redesign.md 2.2, 2026-11-12): the loaded condition's tests (wheeled: also the wheels
   down) with the typical payload, every item at the unloaded bar, and no fall in any of them. Not run: the 44 flat
-  commands, the gait clock and the map3 flights -- so the stairs reach and speed (both map3's) are not judged here;
-  the stairs items are eval_stairs' own: stop ok, all feet down when stopped, the counts, no fall."""
+  commands, the gait clock and the map3 flights, so map3's stairs reach is not judged here; the stairs items are
+  eval_stairs' own: stop ok, all feet down when stopped, the counts, no fall, and the speed on the flight at least
+  STAIRS_SPEED_REL of the same test's unloaded reading in every band and direction."""
   p = {k: f"{prefix}_{k}_typ.txt" for k in at.KINDS}
   cells = at.goal_cells(r, 1, "", p, [])
   bad, detail = [], []
@@ -147,10 +177,15 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
       bad.append("常用负载 楼梯：停不稳")
     feet = [(m.group(1), m.group(2), float(m.group(3))) for m in re.finditer(
       r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", txt(p["stairs"]), re.M)]
-    if any(v < at.stop_feet_bar(r, b, d) for b, d, v in feet):
+    if not feet:
+      bad.append("常用负载 楼梯停住四脚着地：未测")
+    elif any(v < at.stop_feet_bar(r, b, d) for b, d, v in feet):
       bad.append("常用负载 楼梯：停住缺脚")
-    if stairs_falls(p["stairs"]):
-      bad.append("常用负载 楼梯：摔倒")
+    tf = stairs_falls(p["stairs"])
+    if tf is None:
+      bad.append("常用负载 楼梯摔倒：未测")
+    elif tf > 0:
+      bad.append(f"常用负载 楼梯：摔倒 {tf}")
   # stairs speed: against the unloaded reading of the same test, band by band
   su, st_ = flight_speeds(f"{prefix}_stairs.txt"), flight_speeds(p["stairs"])
   if not su or not st_:
@@ -185,6 +220,8 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
         bad.append("常用负载 楼梯计数：" + "、".join(tags))
   # no fall in any test run (goal_cells' own fall item reads the 44 flat commands, not run here: per test instead)
   cf = comparison_falls(p)
+  if any(v is None for v in cf.values()):
+    bad.append("常用负载摔倒：未测（" + "、".join(k for k, v in cf.items() if v is None) + "）")
   if any(v for v in cf.values() if v):
     bad.append("常用负载：摔倒（" + "、".join(k for k, v in cf.items() if v) + "）")
   if wheeled:
@@ -197,6 +234,20 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
+  """accept_judge.py R PREFIX [--typical]: --typical (accept.sh, when the robot has a typical payload and the
+  condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for."""
+  try:
+    return judge(argv)
+  except Exception as e:   # a malformed line or file: what the judge cannot read is a tool fault, not a fail
+    import traceback
+    print(f"FAULT: judge error: {type(e).__name__}: {e}")
+    traceback.print_exc(file=sys.stdout)
+    return 0
+
+
+def judge(argv: list[str]) -> int:
+  expect_typ = "--typical" in argv
+  argv = [a for a in argv if a != "--typical"]
   r, prefix = argv[0], argv[1]
   wheeled = r in at.WHEELED
   at.STOP_FEET_DEPLOYED = {}   # the fixed bar (doc/redesign.md 2.2)
@@ -241,13 +292,22 @@ def main(argv: list[str]) -> int:
         tags.append(f"mid {sm['mid']:.3f}")
       if tags:
         bad.append("楼梯计数：" + "、".join(tags))
+  # unloaded stairs: 0 falls, counted exactly (traverse and stop; accept_tables' fall item reads the traverse's whole
+  # percent only -- doc/redesign.md 2.2 "空载测试全部 0 摔", go2-depth's review 11-12 item 15)
+  uf = stairs_falls(p["stairs"])
+  detail.append(f"空载楼梯：摔倒 {uf}" + ("（精确计数）" if stairs_fall_counts(p["stairs"]) is not None else "（各档百分比之和）"))
+  if uf is None:
+    bad.append("空载楼梯摔倒：未测")
+  elif uf > 0:
+    bad.append(f"空载楼梯：摔倒 {uf}")
   # loaded stairs: 0 falls
   lf = stairs_falls(f"{prefix}_stairs_pay.txt")
-  detail.append(f"负载楼梯：摔倒合计 {lf}（各档百分比之和）")
+  detail.append(f"负载楼梯：摔倒 {lf}" + ("（精确计数）" if stairs_fall_counts(f"{prefix}_stairs_pay.txt") is not None
+                                          else "（各档百分比之和）"))
   if lf is None:
     bad.append("负载楼梯：未测")
   elif lf > 0:
-    bad.append("负载楼梯：摔倒")
+    bad.append(f"负载楼梯：摔倒 {lf}")
   # loaded: the falls in the four comparison-only tests count too (doc/redesign.md 2.5 item 10); their readings do not
   lfalls = comparison_falls({k: f"{prefix}_{k}_pay.txt" for k in at.KINDS})
   detail.append("负载（只出读数的四项）摔倒：" + "，".join(f"{k} {v}" for k, v in lfalls.items()))
@@ -256,13 +316,13 @@ def main(argv: list[str]) -> int:
   elif any(v > 0 for v in lfalls.values()):
     bad.append("负载对比项：摔倒（" + "、".join(k for k, v in lfalls.items() if v) + "）")
   # the typical payload (doc/redesign.md 2.2; robots without one: not run)
-  if any(os.path.exists(f"{prefix}_{k}_typ.txt") for k in ("stand", "drift3", "stairs")):
+  if expect_typ or any(os.path.exists(f"{prefix}_{k}_typ.txt") for k in ("stand", "drift3", "stairs")):
     tb, td = typical(r, prefix, wheeled)
     bad += tb
     detail += td
   else:
-    detail.append("常用负载：本机型没有这一档，未测")
-  print("PASS" if not bad else "FAIL: " + "；".join(bad))
+    detail.append("常用负载：本机型没有这一档，不测")
+  print(verdict_line(bad))
   for line in detail:
     print("  " + line)
   print("  空载 / 负载 对比（不判）：")
