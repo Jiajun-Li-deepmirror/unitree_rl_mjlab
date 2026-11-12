@@ -34,7 +34,9 @@ def _register() -> None:
       # had. At 0.01 the Go2W teacher v2's action std grew 1.0 -> 1.22 by 1200 it (the old Go2W blind T: 0.57 at 300)
       # and 85% of its episodes ended in illegal contacts (calves / thighs down); the deployed Go2W blind policy has
       # none on the same aligned model. Legged 0.01 (the Go2 teacher: std 0.75, falls 15% at 1370 it).
-      entropy = 0.005 if robot.kind == "wheeled" else 0.01
+      # Legged too since 2026-11-12: the Go2 teacher's std rose 0.66 -> 1.05 once its flat constraints pressed (the
+      # blind recipes' "lowent" -- 0.005 -- was what every training from zero had, legged and wheeled).
+      entropy = 0.005
       rl_cfg = make_blind_ppo_runner_cfg(f"{robot.key}_u_teacher", max_iterations=MAX_ITERATIONS, entropy_coef=entropy)
       rl_cfg.clip_actions = PHASE_CLIP_ACTIONS
       # the actor encodes the privileged group into a compact vector (models.py, 2026-11-12)

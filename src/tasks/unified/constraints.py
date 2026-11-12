@@ -363,6 +363,10 @@ class constraints:
         tgt = self.target(c, p)
         norm = max(abs(tgt), 1e-6)
         short = (tgt - self.value[name]) / norm if c["sense"] == "min" else (self.value[name] - tgt) / norm
+        # at most lr per update (2026-11-12): the shortfall relative to a small target (creep 0.009 m) was 5x, and
+        # the Go2 teacher's creep / march multipliers went 1 -> 3 in a dozen updates, drift 0.5 -> 2.3 as the flat
+        # targets tightened by progress 0.45; its action std 0.66 -> 1.05, falls 10% -> 46%
+        short = max(-1.0, min(1.0, short))
         self.scale[name] = min(max(self.scale[name] + c["lr"] * short, c.get("min_scale", 0.5)), c["max_scale"])
     self._apply(env, items, p)
     out = {"relaxing": torch.tensor(float(failing))}

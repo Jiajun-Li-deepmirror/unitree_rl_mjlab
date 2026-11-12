@@ -36,6 +36,8 @@ start() {   # SEED
     local rr="" rk="" d
     for d in $(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort -r); do
       rk=$(ls $d/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
+      # RESUME_AT=K: that run's model_K instead of its latest (going back before a run went wrong)
+      [ -n "${RESUME_AT:-}" ] && { [ -f $d/model_${RESUME_AT}.pt ] && rk=$RESUME_AT || rk=""; }
       [ -n "$rk" ] && { rr=$d; break; }
     done
     [ -n "$rk" ] && res="--agent.resume=True --agent.load-run=^$(basename $rr)\$ --agent.load-checkpoint=^model_${rk}\.pt\$" \
