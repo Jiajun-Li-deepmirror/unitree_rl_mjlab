@@ -29,7 +29,9 @@ export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
 SMOKE=${SMOKE:-0}
 L=logs/jobs/unified_${r}_students.txt PICK=logs/jobs/unified_${r}_$VARIANT.pick
 log() { echo "$(date '+%m-%d %H:%M:%S') $R students: $([ $SMOKE = 1 ] && echo 'SMOKE ')$*" >> $L; }
-S1=${S1_ITERS:-4000} S2=${S2_ITERS:-3000} ENVS=$(( ${NUM_ENVS:-4096} / 2 )) SEED=${SEED:-0}
+source jobs/unified/formal.env   # the formal run's parameters, frozen with the commit
+S1=${S1_ITERS:-$F_STUDENT_S1_ITERS} S2=${S2_ITERS:-$F_STUDENT_S2_ITERS} SEED=${SEED:-$F_STUDENT_SEED}
+ENVS=$([ -n "${NUM_ENVS:-}" ] && echo $(( NUM_ENVS / 2 )) || echo $F_STUDENT_ENVS_EACH)
 SAVE=""; [ -n "${SAVE_EVERY:-}" ] && SAVE="--agent.save-interval=$SAVE_EVERY"
 FALLBACK=${FALLBACK:-$([ -n "${TEACHER:-}" ] && echo 0 || echo 1)}; [ $SMOKE = 1 ] && FALLBACK=0
 T=${TEACHER:-}
@@ -78,7 +80,7 @@ for kind in $KINDS; do rm -f logs/jobs/unified_${r}_$kind$SFX.pick logs/jobs/uni
 while true; do
   [ -f "$T" ] || { log "no teacher checkpoint $T"; exit 2; }
   T=$(cd $(dirname $T) && pwd)/$(basename $T)
-  log "teacher $T (seed $TSEED, code $(cat REPO_COMMIT 2>/dev/null)); kinds $KINDS; stage 1 $S1 it, stage 2 $S2 it, $ENVS robots each"
+  log "teacher $T (seed $TSEED, code $(cat REPO_COMMIT 2>/dev/null), formal.env $(md5sum jobs/unified/formal.env | cut -c1-8)); kinds $KINDS; stage 1 $S1 it, stage 2 $S2 it, $ENVS robots each"
   # the teacher's stops on flat before its students (jobs/unified/stop_check.sh; go2-depth's decision 11-12): a
   # recipe check -- a group over 1% falls stops here for the recipe to be fixed; smoke: 32 robots per group, not judged
   if [ "${STOP_CHECK:-1}" = 1 ]; then
@@ -126,9 +128,9 @@ while true; do
   [ -n "$next" ] || { WHY="no kept teacher seed left (tried:$TRIED; kept: ${KEPT:-none})"; break; }
   [ -n "${envs:-}" ] || { WHY="$PICK.others has no robot count"; break; }
   cp $PICK $PICK.seed$TSEED 2> /dev/null
-  log "fallback: kinds$failed failed their acceptance on teacher seed $TSEED; resuming teacher seed $next (its latest checkpoint, $envs robots, cap ${TEACHER_CAP:-30000})"
+  log "fallback: kinds$failed failed their acceptance on teacher seed $TSEED; resuming teacher seed $next (its latest checkpoint, $envs robots, cap ${TEACHER_CAP:-$F_FALLBACK_TEACHER_CAP})"
   TRIED="$TRIED$next "
-  NUM_ENVS=$envs PARALLEL=0 RESUME_LATEST=1 ITERS_TOTAL=1 bash jobs/unified/teacher.sh $R $VARIANT "$next" ${TEACHER_CAP:-30000}
+  NUM_ENVS=$envs PARALLEL=0 RESUME_LATEST=1 ITERS_TOTAL=1 bash jobs/unified/teacher.sh $R $VARIANT "$next" ${TEACHER_CAP:-$F_FALLBACK_TEACHER_CAP}
   if [ ! -s $PICK ] || ! grep -q "seed $next" $PICK; then WHY="teacher seed $next did not pass its gate"; break; fi
   T=$(cut -d' ' -f1 $PICK) TSEED=$next KINDS=$failed
 done

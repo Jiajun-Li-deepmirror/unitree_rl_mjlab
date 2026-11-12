@@ -3,9 +3,10 @@
 # src/tasks/unified): the unified privileged teacher of robot R (Go2, Go2W) from zero, one run through the whole
 # curriculum, on several seeds.
 #   VARIANT  full (default: the recipe's shaping terms kept) or lean (core rewards + constrained costs only)
-#   SEEDS    "0 1" (default); PARALLEL=1 trains them side by side on this GPU at NUM_ENVS / seeds robots each
-#            (default 4096 in all), else one after the other at NUM_ENVS (4096)
-#   ITERS    the cap (default 30000); a seed stops at its cap or when another seed has passed
+#   SEEDS    F_TEACHER_SEEDS (jobs/unified/formal.env: "0 1"); PARALLEL (F_TEACHER_PARALLEL: 1) trains them side by
+#            side on this GPU at NUM_ENVS / seeds robots each (NUM_ENVS default F_TEACHER_ENVS_PER_SEED x seeds), else
+#            one after the other at NUM_ENVS
+#   ITERS    the cap (F_TEACHER_ITERS: 12000); a seed stops at its cap or when another seed has passed
 # Every GATE_EVERY s (default 900) scripts/unified/teacher_gate.py judges each running seed on its constraints in
 # training; the first to pass is the pick: logs/jobs/unified_<r>_<variant>.pick (checkpoint path), the other seeds
 # are stopped (KEEP_OTHERS=1 lets them run on). Smoke: U_SMOKE=1 (few iterations, every switch-on forced).
@@ -19,10 +20,15 @@
 # seeds=<the others>", 2026-11-12, the review's item 10): jobs/unified/students.sh resumes one of them, at the same
 # robot count and code, when a student from the pick fails its acceptance.
 set -u
-R=$1 VARIANT=${2:-full} SEEDS=${3:-0 1} ITERS=${4:-30000}
+R=$1
 r=${R,,}
 cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
+# the formal run's parameters (jobs/unified/formal.env, frozen with the commit): the defaults below
+source jobs/unified/formal.env
+VARIANT=${2:-full} SEEDS=${3:-$F_TEACHER_SEEDS} ITERS=${4:-$F_TEACHER_ITERS}
+PARALLEL=${PARALLEL:-$F_TEACHER_PARALLEL} GATE_EVERY=${GATE_EVERY:-$F_GATE_EVERY_S}
+NUM_ENVS=${NUM_ENVS:-$(( F_TEACHER_ENVS_PER_SEED * $(echo $SEEDS | wc -w) ))}
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
 case $VARIANT in full) TASK=Unitree-$R-U-Teacher ;; lean) TASK=Unitree-$R-U-Teacher-Lean ;; *) echo "teacher.sh: VARIANT full or lean" >&2; exit 2 ;; esac
 L=logs/jobs/unified_$r.txt PICK=logs/jobs/unified_${r}_$VARIANT.pick
@@ -30,7 +36,7 @@ mkdir -p logs/jobs
 log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; }
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
-log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null)"
+log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null), formal.env $(md5sum jobs/unified/formal.env | cut -c1-8)"
 declare -A PID RUN BEFORE
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
@@ -79,7 +85,7 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
     if [ -z "$d" ] || [ "$d" = "${BEFORE[$s]:-}" ]; then log "seed $s: its new run dir is not there yet"; return 1; fi
     RUN[$s]=$d
   fi
-  v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} 2> /dev/null | head -n 1)
+  v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT 2> /dev/null | head -n 1)
   log "seed $s: ${v:-no verdict}"
   if [[ "$v" == PASS* ]]; then
     local k=$(echo $v | cut -d' ' -f2)
