@@ -52,7 +52,8 @@ EXPECT_ZH = {"walk": "平地会走（平地等地面的失败率降到上限以�
 WHERE_ZH = {"dist": ("离出生点", "m"), "sec": ("回合第", "s"), "pitch": ("低头", "°"), "z": ("高度差", "m"),
             "speed": ("指令速度", "m/s")}
 # ("waiting_fail": records before 2026-11-12, when the climbing fail rate at the curriculum's rows also gated q)
-GATE_ZH = {"waiting_row": "等爬楼行数", "waiting_fail": "等上楼失败率降下来", "running": "在走", "done": "已完成"}
+GATE_ZH = {"waiting_row": "等爬楼行数", "waiting_fail": "等上楼失败率降下来", "running": "在走", "done": "已完成",
+           "waiting_health": "等楼梯恢复（轻载固定行失败率高于参考）", "back": "在回退（轻载固定行失败率明显高于参考）"}
 STAIRS = ("up", "down", "stairs")
 
 
@@ -432,7 +433,9 @@ def main() -> int:
     elif ev == "q_gate":
       lines.append((it, f"质量阶段：{GATE_ZH.get(e.get('state'), e.get('state'))}（爬楼行 {f(e.get('up'))}，"
                         + (f"上楼失败率 {f(e.get('up_fail'))}" if "up_fail" in e else
-                           f"评估机器人固定行上楼失败率 {f((e.get('eval_fail') or {}).get('up'))}") + "）"))
+                           f"评估机器人固定行上楼失败率 {f((e.get('eval_fail') or {}).get('up'))}")
+                        + (f"，q {f(e.get('q'))}，轻载固定行失败率高出参考 {f(e.get('gap'))}"
+                           if e.get("gap") is not None else "") + "）"))
     elif ev == "clock_slow":
       lines.append((it, f"进度时钟{'减速到 1/4' if e.get('state') else '恢复正常'}（楼梯以外地面的失败率 "
                         f"{f(e.get('fail'))}）"))

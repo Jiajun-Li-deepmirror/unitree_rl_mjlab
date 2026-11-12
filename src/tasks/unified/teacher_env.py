@@ -530,6 +530,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_Q_LR=<x>           the stairs-quality multipliers' step per update (constraints.LR 0.003: 1 -> 3 in ~370
                          iterations, and the costs grew fivefold in 200 iterations with the behaviour unchanged);
     U_Q_SPAN=<it>        the iterations the stairs quality takes for 0 -> 1 (curriculum.Q_SPAN_IT);
+    U_Q_ROW=<row>        the climbing row the stairs quality waits for (curriculum.Q_ROW 3: the old flow put the P
+                         weights on a policy at rows 5-6);
+    U_Q_HEALTH=<k>       the stairs quality by health (curriculum.progress, q_back): it waits while the light
+                         fixed-row fail rate sits above its reference and goes back at k times its pace when the
+                         constraints would relax;
     U_METER_EMA=<steps>  the stairs meters' memory in env steps (constraints.meter and lib_meter: 20000 = 833
                          iterations, so a reading had covered a third of a change of behaviour by the time its
                          multiplier was at the cap)."""
@@ -606,6 +611,10 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
       _curriculum(cfg, robot, items, constrained, other if lean else [], (weights, params), other_shares)
       if os.environ.get("U_Q_SPAN"):   # (_probe_switches; the curriculum's terms exist from here on)
         cfg.curriculum["u_progress"].params["q_span_it"] = int(os.environ["U_Q_SPAN"])
+      if os.environ.get("U_Q_ROW"):
+        cfg.curriculum["u_progress"].params["q_row"] = float(os.environ["U_Q_ROW"])
+      if os.environ.get("U_Q_HEALTH"):
+        cfg.curriculum["u_progress"].params["q_back"] = float(os.environ["U_Q_HEALTH"])
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":

@@ -101,6 +101,12 @@ STEPS_PER_IT = 24   # the runners' num_steps_per_env
 # the stairs quality q (module docstring): its clock's span, the climbing row it needs, and the part of q over which
 # the reward terms go from the M to the P values (the constraints' targets tighten over all of it)
 Q_SPAN_IT, Q_ROW, Q_IN = 1000, 3.0, 0.5   # (the span 2000 before the faster clock above)
+# The stairs quality by health (progress's q_back, 2026-11-12): how far the light evaluation robots' fixed-row fail
+# rate may sit above its slow reference (constraints._families: the same two numbers decide the relaxing) before q
+# waits (the first) and before it goes back (the second, the gap at which the constraints relax); the light episodes
+# a stairs family needs before it is judged.
+Q_GAP = (0.04, 0.08)
+Q_HEALTH_MIN = 200
 UP_NAMES = ("stairs_up_narrow", "stairs_up_wide", "walled_up")   # the stairs columns that climb
 ROWS = ("up", "down", "other")
 SLOPE_NAMES = ("slope_down", "slope_up")   # the sloped tiles (teacher_env._add_slopes): other ground, not measured
@@ -388,6 +394,20 @@ class progress:
       print(f"[unified] difficulty rows: none in the checkpoint, all start at each robot's restored row "
             f"(mean {float(lv.float().mean()):.2f})")
 
+  @staticmethod
+  def stairs_gap(env: ManagerBasedRlEnv) -> float | None:
+    """How far the light evaluation robots' fixed-row fail rate is above its slow reference, the worse of the two
+    stairs families (constraints._families keeps both numbers and relaxes on the same gap); None until a family has
+    Q_HEALTH_MIN light episodes and a reference."""
+    con = getattr(env, "u_constraints", None)
+    gaps = []
+    for f in ("up", "down"):
+      d = (getattr(con, "light", None) or {}).get(f) or {}
+      ref = (getattr(con, "ref", None) or {}).get(f)
+      if d.get("fail") is not None and ref is not None and d.get("n", 0) >= Q_HEALTH_MIN:
+        gaps.append(d["fail"] - ref)
+    return max(gaps) if gaps else None
+
   def _restore_terrain(self, state: dict, env: ManagerBasedRlEnv) -> None:
     """The robots' terrain levels (and columns) as the checkpoint left them (2026-11-12). A fresh environment draws
     them anew, and the progress -- which only rises -- read that draw as an advance: the Go2 teacher's level jumped
@@ -431,7 +451,8 @@ class progress:
                skip_steps: int = 2400, force_rate: float = 0.0, time_start_it: int = TIME_START_IT,
                time_span_it: int = TIME_SPAN_IT, max_fail_rate: float = MAX_FAIL_RATE,
                fixed_p: float | None = None, q_span_it: int = Q_SPAN_IT, q_row: float = Q_ROW,
-               force_q: bool = False) -> dict[str, torch.Tensor]:
+               force_q: bool = False, q_back: float | None = None,
+               q_gap: tuple[float, float] = Q_GAP) -> dict[str, torch.Tensor]:
     terrain = env.scene.terrain
     self._terrain = terrain   # state() saves its levels
     assert terrain is not None
@@ -502,10 +523,26 @@ class progress:
       a = 1.0 - math.exp(-1.0 / ema_steps)
       self.up = up if self.up is None else self.up + a * (up - self.up)
     climbing = self.up is not None and self.up >= q_row
+    # By health (q_back, off when None: by the clock alone). 2026-11-12: by the clock q took the Go2W teachers from
+    # 0.1 to 0.5 -- the P weights fully in -- within 400 iterations of climbing row 4; the light fixed-row climbing
+    # fail rate went 0.18 -> 0.25 -> 0.54 over the last 150 of them and the stage ended with every stairs episode
+    # failing, whatever the multipliers' cap or the cost of a fall. So q follows what the policy copes with: while the
+    # light evaluation robots' fixed-row fail rate (the worse stairs family) is more than q_gap[0] above its slow
+    # reference q waits, more than q_gap[1] above it (where the constraints relax) q goes back at q_back times its
+    # pace -- from 1 too.
+    gap = self.stairs_gap(env) if q_back is not None else None
+    hold = gap is not None and gap > q_gap[0]
+    back = gap is not None and gap > q_gap[1]
+    self.q_gap = gap
     # why the stage's clock runs or waits, for the training records (diagnostics.py)
-    self.q_gate = "done" if self.q >= 1.0 else "running" if climbing else "waiting_row"
-    if self.q_last_step is not None and climbing:
-      self.q = min(1.0, self.q + max(0, step - self.q_last_step) / (STEPS_PER_IT * q_span_it))
+    self.q_gate = ("back" if back and self.q > 0.0 else "done" if self.q >= 1.0 else "waiting_health" if hold
+                   else "running" if climbing else "waiting_row")
+    if self.q_last_step is not None:
+      dq = max(0, step - self.q_last_step) / (STEPS_PER_IT * q_span_it)
+      if back:
+        self.q = max(0.0, self.q - q_back * dq)
+      elif climbing and not hold:
+        self.q = min(1.0, self.q + dq)
     self.q_last_step = step
     if force_q:   # smoke runs only: q follows the forced progress, so every switch-on runs
       self.q = max(self.q, ramp(self.p, 0.3, 0.8))
@@ -519,7 +556,9 @@ class progress:
     env.u_quality = self.q
     out = {"p": torch.tensor(self.p), "level": torch.tensor(mean), "p_time": torch.tensor(p_time),
            "fail_rate": torch.tensor(self.fail or 0.0), "q": torch.tensor(self.q),
-           "q_running": torch.tensor(float(climbing))}
+           "q_running": torch.tensor(float(climbing and not hold and not back))}
+    if gap is not None:
+      out["q_gap"] = torch.tensor(gap)
     if self.up is not None:
       out["up_level"] = torch.tensor(self.up)
     if getattr(self, "fail_eval", None) is not None:

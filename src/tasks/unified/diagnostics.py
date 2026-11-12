@@ -897,7 +897,8 @@ class Recorder:
       out.update(p=t.p, q=t.q, level=t.level, up=t.up, fail=t.fail, fail_eval=getattr(t, "fail_eval", None),
                  fail_seen=t.fail_mode.get("seen"), fail_blind=t.fail_mode.get("blind"),
                  clock_it=None if t.clock is None else t.clock / STEPS_PER_IT,
-                 q_gate=getattr(t, "q_gate", None), clock_slow=getattr(t, "clock_slow", None),
+                 q_gate=getattr(t, "q_gate", None), q_gap=getattr(t, "q_gap", None),
+                 clock_slow=getattr(t, "clock_slow", None),
                  clock_fail=getattr(t, "clock_fail", None))
     fam = getattr(env, "u_family_fail", None)   # the training robots', at the curriculum's rows
     if fam:
@@ -1091,7 +1092,8 @@ class Recorder:
     if cur.get("payload_full"):
       self._mile(it, "payload", (cur.get("payload_limit") or 0.0) / cur["payload_full"], (0.5, 0.999))
     if cur.get("q_gate") is not None:
-      self._flip(it, "q_gate", "q", cur["q_gate"], up=cur.get("up"), eval_fail=cur.get("eval_fail"))
+      self._flip(it, "q_gate", "q", cur["q_gate"], up=cur.get("up"), eval_fail=cur.get("eval_fail"),
+                 q=cur.get("q"), gap=cur.get("q_gap"))
     if cur.get("clock_slow") is not None:
       self._flip(it, "clock_slow", "p", bool(cur["clock_slow"]),
                  fail=cur.get("clock_fail") if cur.get("clock_fail") is not None else cur.get("fail"))
