@@ -529,7 +529,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_PAYLOAD_Q=0        the payload limit does not follow the stairs quality (curriculum.progress_payload);
     U_Q_LR=<x>           the stairs-quality multipliers' step per update (constraints.LR 0.003: 1 -> 3 in ~370
                          iterations, and the costs grew fivefold in 200 iterations with the behaviour unchanged);
-    U_Q_SPAN=<it>        the iterations the stairs quality takes for 0 -> 1 (curriculum.Q_SPAN_IT)."""
+    U_Q_SPAN=<it>        the iterations the stairs quality takes for 0 -> 1 (curriculum.Q_SPAN_IT);
+    U_METER_EMA=<steps>  the stairs meters' memory in env steps (constraints.meter and lib_meter: 20000 = 833
+                         iterations, so a reading had covered a third of a change of behaviour by the time its
+                         multiplier was at the cap)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -544,6 +547,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["by"] == "q":
         c["lr"] = float(v)
+  v = os.environ.get("U_METER_EMA")
+  if v:
+    for name in ("u_meter", "u_lib_meter"):
+      cfg.rewards[name].params["ema_steps"] = float(v)
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:

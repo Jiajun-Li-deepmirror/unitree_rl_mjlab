@@ -11,7 +11,12 @@ starts the robots on difficulty rows spread evenly over all of them (both famili
 the report's "fail% by row" (stairs up / stairs down / other ground, by the row each episode was walked on) then
 shows up to which row the policy gets through; "where the fails end" gives, per family, how far from the spawn point,
 how long into the episode, at which nose-down pitch and base height (over the spawn ground) the failed episodes
-ended, and how fast they were told to go. Run with UNIFIED_TASKS=1 from the repo root."""
+ended, and how fast they were told to go. --meter-split counts the shared stairs metrics (src/metrics.mj.StairsMeter,
+the training's "lib:" constraints and the acceptance's eval_stairs --metrics) over every robot of this run, split by
+the conditions the two readings differ in: the commanded speed, forward / backward, the payload class, pyramid /
+walled flights, up / down and the row's step height -- "as the acceptance" is forward at <= 0.6 m/s, light, on the
+pyramid stairs (2026-11-12: the Go2 teacher's training reading of kicks and slips was 2.4-3.2 times the acceptance's
+on one checkpoint). Run with UNIFIED_TASKS=1 from the repo root."""
 
 from __future__ import annotations
 
@@ -49,6 +54,7 @@ def main() -> int:
   ap.add_argument("--steps", type=int, default=1500)
   ap.add_argument("--sample", action="store_true", help="act with the exploration noise, as the training does")
   ap.add_argument("--spread-rows", action="store_true", help="start on rows spread evenly over all of them")
+  ap.add_argument("--meter-split", action="store_true", help="the stairs metrics split by command, payload, terrain")
   a = ap.parse_args()
 
   from mjlab.envs import ManagerBasedRlEnv
@@ -122,6 +128,60 @@ def main() -> int:
     finally:
       cm.compute = compute
 
+  limit = float(getattr(env, "u_payload_full", 0.0) or 0.0)
+  split = None
+  if a.meter_split:
+    from src.metrics.mj import StairsMeter
+    from src.tasks.velocity.blind_env_cfg import WALLED_TERRAIN_NAMES
+
+    n_rows = int(terrain.max_terrain_level)
+    gen = terrain.cfg.terrain_generator
+    lo_d, hi_d = gen.difficulty_range
+    hs = [s_.step_height_range for k_, s_ in gen.sub_terrains.items()
+          if k_ in MAP3_STAIR_TERRAIN_NAMES and getattr(s_, "step_height_range", None) is not None]
+    # a row's step heights (cm): its tiles draw their difficulty in [r, r + 1) / n_rows of the range
+    row_cm = [(100 * min(x + (y - x) * (lo_d + (hi_d - lo_d) * r / n_rows) for x, y in hs),
+               100 * max(x + (y - x) * (lo_d + (hi_d - lo_d) * (r + 1) / n_rows) for x, y in hs)) if hs else (0.0, 0.0)
+              for r in range(n_rows)]
+    thirds = [range(n_rows)[i * n_rows // 3:(i + 1) * n_rows // 3] for i in range(3)]
+    row_names = [f"rows {t[0]}-{t[-1]} ({row_cm[t[0]][0]:.0f}-{row_cm[t[-1]][1]:.0f} cm)" for t in thirds]
+    col_up = np.array(["up" in c for c in cols])
+    col_walled = np.array([c in WALLED_TERRAIN_NAMES for c in cols])
+
+    def split_groups(env_, ids):
+      c = env_.command_manager.get_command("twist")[ids].cpu().numpy()
+      kg_ = getattr(env_, "payload_kg", None)
+      kg_ = kg_[ids].cpu().numpy().reshape(-1) if kg_ is not None else np.zeros(len(ids))
+      ty = terrain.terrain_types[ids].cpu().numpy()
+      lv_ = terrain.terrain_levels[ids].cpu().numpy()
+      v = np.abs(c[:, 0])
+      fwd = c[:, 0] > 0
+      light = kg_ <= 0.25 * limit if limit else np.ones(len(ids), dtype=bool)
+      heavy = kg_ >= 2 / 3 * limit if limit else np.zeros(len(ids), dtype=bool)
+      up_, walled = col_up[ty], col_walled[ty]
+      g = {"all": np.ones(len(ids), dtype=bool),
+           "speed <= 0.6": v <= 0.6, "speed 0.6-1.0": (v > 0.6) & (v <= 1.0), "speed > 1.0": v > 1.0,
+           "forward": fwd, "backward": ~fwd,
+           "payload light": light, "payload mid": ~light & ~heavy, "payload heavy": heavy,
+           "pyramid": ~walled, "walled": walled, "up": up_, "down": ~up_}
+      for name, t in zip(row_names, thirds):
+        g[name] = (lv_ >= t[0]) & (lv_ <= t[-1])
+      like = fwd & (v <= 0.6) & light & ~walled
+      g["as the acceptance"] = like
+      g["as the acceptance, up"] = like & up_
+      g["as the acceptance, down"] = like & ~up_
+      for name, t in zip(row_names, thirds):
+        g["as the acceptance, " + name] = like & (lv_ >= t[0]) & (lv_ <= t[-1])
+      g["forward fast (> 1.0), light, pyramid"] = fwd & (v > 1.0) & light & ~walled
+      g["backward, light, pyramid"] = ~fwd & light & ~walled
+      return g
+
+    wheeled_ = "wheel_vel" in cfg.actions
+    # straight commands only, as the training's reading (constraints.lib_meter); every robot of this run
+    split = StairsMeter(env, torch.arange(env.num_envs, device="cuda:0"), wheeled=wheeled_, ema_steps=1e12,
+                        min_steps=20.0, straight=True)
+    split.groups = split_groups
+
   def cmd_class(c):
     vx, vy, wz = abs(c[0]), abs(c[1]), abs(c[2])
     if max(vx, vy, wz) < 0.1:
@@ -150,7 +210,6 @@ def main() -> int:
 
   def family(c):
     return "other" if c not in MAP3_STAIR_TERRAIN_NAMES else ("stairs up" if "up" in c else "stairs down")
-  limit = float(getattr(env, "u_payload_full", 0.0) or 0.0)
   obs = venv.get_observations()
   for _ in range(a.steps):
     # the state the step's terminations are judged in: the terrain column, level, payload and command before the step
@@ -169,6 +228,8 @@ def main() -> int:
       rec[k].clear()
     with torch.inference_mode():
       obs, _, dones, _ = venv.step(policy(obs))
+    if split is not None:
+      split.step(env)
     done = dones.cpu().numpy().astype(bool)
     failed = np.zeros(env.num_envs, dtype=bool)
     for ids, bs in rec.get("illegal_contact", []):
@@ -225,6 +286,15 @@ def main() -> int:
     q3 = lambda j: "/".join(f"{v:.2f}" for v in np.percentile(w[:, j], (10, 50, 90)))   # noqa: E731
     print(f"where the fails end on {fam} (p10/p50/p90 of {len(w)}): from the spawn {q3(0)} m, after {q3(1)} s, nose-down "
           f"pitch {q3(2)} deg, base z {q3(3)} m, commanded {q3(4)} m/s")
+  if split is not None:
+    names = ("slide_back", "idle_start", "idle_end") if split.wheeled else ("kicks", "slips", "mid", "edge")
+    unit = "step-ups" if split.wheeled else "steps"
+    print(f"stairs metrics by condition (straight commands only, as the training counts; {unit} = the sample):")
+    print(f"  {'condition':44s} {unit:>9s} " + " ".join(f"{n:>10s}" for n in names))
+    for g, sums in split.group_sums.items():
+      n = sums.get("ups", 0.0) if split.wheeled else (sums.get("ups", 0.0) + sums.get("downs", 0.0)) / split.feet
+      vals = [split.rate(k, g) for k in names]
+      print(f"  {g:44s} {n:9.0f} " + " ".join(f"{'-':>10s}" if v is None else f"{v:10.3f}" for v in vals))
   if cons is not None and cons.values:
     cur = env.curriculum_manager.get_term_cfg("u_constraints").params["items"]
     p = getattr(env, "u_progress", 0.0)
