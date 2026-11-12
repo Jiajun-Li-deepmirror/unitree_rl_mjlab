@@ -4,12 +4,18 @@
 Each constraint is one acceptance item: a measurement in training (the same quantity the acceptance judges, or for
 the stairs counts, its rate per step-up), a target at the acceptance's side of the bar, and the cost terms that serve
 it. A Lagrange-style multiplier scales those terms' weights: it grows while the measurement misses the target and
-shrinks back when it is met, within [min_scale, max_scale] x the term's configured weight. Unlike the earlier
-mdp.adaptive_constraints (still used by the blind chains, unchanged):
+shrinks back when it is met, within [min_scale, max_scale] x the term's configured weight; it moves in log space
+(x exp(lr x shortfall) per update, 2026-11-12). Unlike the earlier mdp.adaptive_constraints (still used by the blind
+chains, unchanged):
 
   - a constraint switches on at a curriculum progress (env.u_progress, curriculum.py) and, once on, tightens from a
-    loose target to its bar over the next 0.3 of progress; before that its terms sit at `start_scale` of their weight
+    loose target to its own (see "a margin" below) over the next 0.3 of progress; before that its terms sit at
+    `start_scale` of their weight
     (above 0: the reward manager skips zero-weight terms, and the stateful ones would stop updating);
+  - the stairs-quality constraints ("by": "q"; 2026-11-12) follow the stairs quality q instead (env.u_quality,
+    curriculum.py: it starts once the robots climb): off while q is 0, their terms at the recipe's M weights (a
+    thousandth of the P weight for a term the M keys do not have, so it still runs and is measured); from then on the
+    terms move to weight x multiplier over q 0 -> Q_IN and the target tightens from loose to its own over q 0 -> 1;
   - the multiplier can also go below 1 (min_scale), so a cost that over-serves its item gives way to the task;
   - several constraints may scale one term: it takes the largest scale;
   - the multipliers and the measurements go into the checkpoint (runner.py) and come back on resume;
@@ -26,6 +32,28 @@ missed targets it met: the Go2 teacher at 6400, mean action / sampled action: cr
 march 0.036 / 0.060 (0.04), straight drift 0.059 / 0.068 (0.06), clock 0.87 / 0.77 (0.85), stairs stop-feet 0.86 /
 0.49 (0.6). Four multipliers went to the 3x cap on readings no cost weight could bring down, and the policy paid for
 it (reward 28 -> -3, noise 0.48 -> 0.69, falls 8% -> 17%). Without the mask (any other runner) they read every robot.
+
+Since the from-zero retrain (2026-11-12, after the peer review; doc/unified_teacher.md):
+
+  - seen and blind apart. The teacher walks in two scan modes (teacher_env.u_scan_mask), and its students each copy
+    one: the depth student the seen mode, the blind student the blind one. Every measurement is taken per mode (the
+    evaluation robots are a fixed half in each, by index) and logged as <name>/value_seen and <name>/value_blind; a
+    constraint has one multiplier, driven by the mode further from the target among the modes it applies to
+    (item "modes"; the tread placement items, mid and edge, apply to the seen mode only -- a robot that cannot see
+    the tread cannot be asked to place its feet on it), and the gate (scripts/unified/teacher_gate.py) asks every
+    one of those modes to pass;
+  - a margin for the students. "target" is the bar the students are accepted at; the multipliers work toward
+    "tight", TEACHER_MARGIN inside it ("max" items 0.8 x the bar, "min" items a fifth of the way from the bar to 1),
+    and the gate judges at the bar. Both are logged (<name>/target: the teacher's target now; <name>/bar);
+  - the task first, per terrain family. Each constraint belongs to a family of ground -- "up" (the climbing stairs
+    columns), "down" (the descents), "stairs" (either: the worse of the two) or "other" -- and relaxes while that
+    family's episodes fail: on above RELAX_ON, off again below RELAX_OFF. One global fail rate let the flat ground's
+    falls relax the stairs items and the other way round. The other ground reads its episodes' fail rate over the
+    training robots (curriculum.progress_stairs_share's env.u_family_fail). The stairs families read the evaluation
+    robots' on their fixed rows instead (env.u_eval_fail, curriculum.eval_rows: the rows the acceptance covers, each
+    alike): at the curriculum's own rows a robot is promoted until it fails, ~0.6 of the stairs episodes whatever
+    the policy can climb (the 11-12 Go2 teacher), which would have kept the stairs items relaxed for the whole run.
+    The stairs items' readings come from those rows too: the measurements are the evaluation robots'.
 """
 
 from __future__ import annotations
@@ -38,7 +66,7 @@ import torch
 
 from src.tasks.velocity.mdp.constraints import METRICS
 
-from .curriculum import MAX_FAIL_RATE, ramp
+from .curriculum import MAX_FAIL_RATE, Q_IN, ramp, slope_envs
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -47,6 +75,24 @@ if TYPE_CHECKING:
 RISER_M = 0.15
 # The evaluation robots' share of the environments (module docstring); U_EVAL_ENVS overrides the count, 0: none.
 EVAL_SHARE = 0.125
+# The scan modes (teacher_env.u_scan_mask) the measurements are split by.
+MODES = ("seen", "blind")
+# The teacher's own targets sit this far inside the students' bars (module docstring).
+TEACHER_MARGIN = 0.8
+# A family's constraints relax while more than RELAX_ON of its episodes fail, until fewer than RELAX_OFF do.
+RELAX_ON, RELAX_OFF = MAX_FAIL_RATE, 0.25
+FAMILIES = ("up", "down", "stairs", "other")
+# The multipliers' step per update, in log space: full shortfall for one iteration is x exp(LR) (1 -> 3 takes ~370
+# iterations at the least; the additive 0.03 took 67 and overshot: the Go2 teacher's creep / march went 1 -> 3 in a
+# dozen updates before the shortfall was clamped).
+LR = 0.003
+
+
+def with_margin(sense: str, bar: float) -> float:
+  """The teacher's target for an item whose students' bar is `bar`: TEACHER_MARGIN inside it."""
+  if sense == "max":
+    return bar * TEACHER_MARGIN
+  return bar + (1.0 - TEACHER_MARGIN) * (1.0 - bar)
 
 
 def eval_count(num_envs: int) -> int:
@@ -62,6 +108,24 @@ def on_eval(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
   return mask if ev is None else mask & ev
 
 
+def off_slopes(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
+  """`mask` without the robots on a sloped tile (curriculum.SLOPE_NAMES; 2026-11-12): the acceptance has no item on
+  slopes, and holding a place or a line there is not what the flat items' bars were set on. The cost terms still act
+  on those robots; the stairs items never count them (a sloped tile is not a stairs column)."""
+  slope = slope_envs(env)
+  return mask if slope is None else mask & ~slope
+
+
+def scan_modes(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor] | None:
+  """The robots in each scan mode this episode ({"seen", "blind"}: masks from teacher_env.u_scan_mask's
+  env.u_scan_on); None for an environment without the scan mask (or before its first reset)."""
+  on = getattr(env, "u_scan_on", None)
+  if on is None:
+    return None
+  seen = on > 0.5
+  return {"seen": seen, "blind": ~seen}
+
+
 class meter:
   """Reward term with zero output (give it a tiny nonzero weight so the manager calls it, last in the reward dict):
   every step it adds the stairs event terms' counts and the metres climbed, over the robots on stairs, into sums that
@@ -70,11 +134,12 @@ class meter:
   `events` maps a rate name to (reward term, unit): the term's raw value is events per second (unit "events") or
   a count of feet / wheels in a state (unit "seconds": its integral is foot- or wheel-seconds); either way raw x dt
   per step is what it adds. Climbing is feet_foothold_height_gain's raw value (metres per second, summed over the
-  feet) x dt / feet / RISER_M step-ups."""
+  feet) x dt / feet / RISER_M step-ups. The same sums are kept per scan mode (rate(name, scan); 2026-11-12)."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.sums: dict[str, float] = {}
     self.climb = 0.0
+    self.modes: dict[str, dict[str, float]] = {}   # scan mode -> {"climb": step-ups, <rate name>: events}
     self.n = 0
     self.min_n = 1000
     self.eval = False   # True: only the evaluation robots count (the teacher's runner sets it with env.u_eval_mask)
@@ -84,14 +149,22 @@ class meter:
     pass
 
   def state(self) -> dict:
-    return {"sums": dict(self.sums), "climb": self.climb, "n": self.n, "eval": self.eval}
+    return {"sums": dict(self.sums), "climb": self.climb, "n": self.n, "eval": self.eval,
+            "modes": {k: dict(v) for k, v in self.modes.items()}}
 
   def load(self, state: dict) -> None:
     """A checkpoint's sums taken over the same robots (the evaluation robots or all of them); others start afresh."""
     if bool(state.get("eval", False)) == self.eval:
       self.sums, self.climb, self.n = dict(state["sums"]), state["climb"], state["n"]
+      self.modes = {k: dict(v) for k, v in (state.get("modes") or {}).items()}
 
-  def rate(self, name: str) -> float | None:
+  def rate(self, name: str, scan: str | None = None) -> float | None:
+    """Events per step-up, over all the robots measured or over those in scan mode `scan`."""
+    if scan is not None:
+      a = self.modes.get(scan)
+      if a is None or self.n < self.min_n or a.get("climb", 0.0) < 1e-6 or name not in a:
+        return None
+      return a[name] / a["climb"]
     if self.n < self.min_n or self.climb < 1e-6 or name not in self.sums:
       return None
     return self.sums[name] / self.climb
@@ -109,14 +182,21 @@ class meter:
                feet: int = 4, ema_steps: float = 20000.0, min_n: int = 1000) -> torch.Tensor:
     self.min_n = min_n
     stairs = on_eval(env, env.command_manager.get_term("twist").is_stair_env)
+    modes = {k: stairs & m for k, m in (scan_modes(env) or {}).items()}
     decay = math.exp(-1.0 / ema_steps)
     climb = self._raw(env, climb_term)
     if climb is not None:
       self.climb = self.climb * decay + float((climb * stairs).sum()) * env.step_dt / feet / RISER_M
+      for k, m in modes.items():
+        a = self.modes.setdefault(k, {})
+        a["climb"] = a.get("climb", 0.0) * decay + float((climb * m).sum()) * env.step_dt / feet / RISER_M
       for name, term in events.items():
         raw = self._raw(env, term)
         if raw is not None:
           self.sums[name] = self.sums.get(name, 0.0) * decay + float((raw * stairs).sum()) * env.step_dt
+          for k, m in modes.items():
+            a = self.modes[k]
+            a[name] = a.get(name, 0.0) * decay + float((raw * m).sum()) * env.step_dt
       self.n += 1
     return torch.zeros(env.num_envs, device=env.device)
 
@@ -159,7 +239,7 @@ def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hol
 # unloaded tests, judged by the constraints; heavy = their own reward group, no constraint (the user, 2026-11-11).
 LIGHT_FRAC = 0.25
 HEAVY_FRAC = 2.0 / 3.0
-DEFAULT_LIMIT_KG = 12.0   # until curriculum.progress_payload has set env.u_payload_full
+DEFAULT_LIMIT_KG = 8.0   # Go2 / Go2W's walking payload; used only until curriculum.progress_payload sets env.u_payload_full
 
 
 def payload_limit(env: ManagerBasedRlEnv) -> float:
@@ -276,7 +356,7 @@ class heavy_log:
         pm = payload_mask(env, lo, hi)
         if pm is None:
           continue
-        mask = on_eval(env, mask & pm)
+        mask = off_slopes(env, on_eval(env, mask & pm))
         if not mask.any():
           continue
         v = value[mask]
@@ -289,17 +369,23 @@ class heavy_log:
     return out
 
 
-def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -> float | None:
+def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", scan: str | None = None, **params) -> float | None:
   """A constraint's measurement: mdp.constraints.METRICS or CUSTOM (stat "mean" or "pNN" over the robots it applies
-  to now), "rate:<name>" from the meter, or "lib:<name>" from the shared metrics (src/metrics, lib_meter)."""
+  to now), "rate:<name>" from the meter, or "lib:<name>" from the shared metrics (src/metrics, lib_meter). `scan`
+  ("seen" / "blind"): over the robots in that scan mode only (None where the environment has no scan modes)."""
   if metric.startswith("lib:"):
     m = getattr(env, "u_lib_meter", None)
-    return None if m is None else m.rate(metric[4:])
+    return None if m is None else m.rate(metric[4:], scan)
   if metric.startswith("rate:"):
     m = getattr(env, "u_meter", None)
-    return None if m is None else m.rate(metric[5:])
+    return None if m is None else m.rate(metric[5:], scan)
   value, mask = (CUSTOM.get(metric) or METRICS[metric])(env, **params)
-  mask = on_eval(env, mask)
+  mask = off_slopes(env, on_eval(env, mask))
+  if scan is not None:
+    modes = scan_modes(env)
+    if modes is None:
+      return None
+    mask = mask & modes[scan]
   if not mask.any():
     return None
   v = value[mask]
@@ -309,17 +395,29 @@ def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -
 class constraints:
   """Curriculum term (after `progress`): the constraints (see the module docstring). `items` is a list of
   {"name", "metric", "params", "stat", "sense" ("min": value >= target, "max": value <= target), "target" (the
-  bar's side), "loose" (the target when it switches on), "activate" (progress), "terms" (reward terms it scales),
-  "lr", "min_scale", "max_scale", "start_scale", "enforce" (False: measured and logged only)}. Measurements are smoothed with a time constant of `ema_steps`
-  calls; every `update_steps` env steps each active multiplier moves by lr x the shortfall relative to the target
-  ((target - value) / |target| for "min", (value - target) / |target| for "max"), clamped to [min_scale, max_scale].
-  Logged as Curriculum/u_constraints/<name>/{value,target,scale}."""
+  students' bar: what the gate judges), "tight" (the teacher's own target, inside the bar; absent: the bar), "loose"
+  (the target when it switches on), "activate" (progress), "terms" (reward terms it scales), "lr", "min_scale",
+  "max_scale", "start_scale", "enforce" (False: measured and logged only; "target" may then be None: no bar yet),
+  "family" (the ground whose fail rate relaxes it: FAMILIES), "modes" (the scan modes it applies to: MODES by
+  default)}; a stairs-quality item also has "by": "q", "start" and "base" ({term: weight}: the M and the P weight;
+  teacher_env.py) and follows env.u_quality instead of the progress (module docstring).
+
+  Each item is measured per scan mode (every mode, also one it does not apply to: logged only) and smoothed with a
+  time constant of `ema_steps` calls. Every `update_steps` env steps each active multiplier is multiplied by
+  exp(lr x shortfall), the shortfall relative to the target ((target - value) / |target| for "min", (value - target)
+  / |target| for "max", within [-1, 1]) and the larger of its modes', and clamped to [min_scale, max_scale].
+  self.value[name] is the reading that drives the multiplier (the mode further from the target).
+
+  Logged as Curriculum/u_constraints/<name>/{value_seen,value_blind,value,target,bar,scale}, relaxing (any family)
+  and relaxing_<family>."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.base: dict[str, float] = {}       # term -> configured weight
     self.scale: dict[str, float] = {}      # constraint -> multiplier (1 = configured weight)
-    self.value: dict[str, float] = {}
-    self.count: dict[str, int] = {}
+    self.value: dict[str, float] = {}      # constraint -> the driving reading
+    self.values: dict[str, float] = {}     # "<constraint>@<mode>" (no scan modes: "<constraint>") -> smoothed reading
+    self.count: dict[str, int] = {}        # the same keys -> measurements so far
+    self.relax: dict[str, bool] = {f: False for f in FAMILIES}
     self.last_update = 0
     self.last_step = None
     env.u_constraints = self
@@ -328,25 +426,80 @@ class constraints:
     pass
 
   def state(self) -> dict:
-    return {"scale": dict(self.scale), "value": dict(self.value), "count": dict(self.count)}
+    return {"scale": dict(self.scale), "value": dict(self.value), "values": dict(self.values),
+            "count": dict(self.count), "relax": dict(self.relax)}
 
   def load(self, state: dict) -> None:
-    self.scale, self.value, self.count = dict(state["scale"]), dict(state["value"]), dict(state["count"])
+    """A checkpoint's multipliers and readings. One from before the scan modes' split (no "values") gives the
+    multipliers; its readings are taken afresh."""
+    self.scale = dict(state["scale"])
+    self.value = dict(state.get("value", {}))
+    self.values = dict(state.get("values", {}))
+    self.count = dict(state["count"]) if "values" in state else {}
+    self.relax.update({f: bool(v) for f, v in (state.get("relax") or {}).items() if f in self.relax})
 
-  def _apply(self, env: ManagerBasedRlEnv, items: list[dict], p: float) -> None:
-    """Each scaled term's weight = configured x the largest scale of the constraints on it (start_scale for one not
-    yet on)."""
+  @staticmethod
+  def on(c: dict, p: float, q: float) -> bool:
+    """Whether constraint c is switched on: a stairs-quality one ("by": "q") once the quality stage has begun, the
+    others from their own progress."""
+    return q > 0.0 if c.get("by") == "q" else p >= c["activate"]
+
+  def _apply(self, env: ManagerBasedRlEnv, items: list[dict], p: float, q: float) -> None:
+    """Each scaled term's weight: configured x the constraint's scale (start_scale for one not yet on). A
+    stairs-quality constraint ("by": "q", curriculum.py) holds its terms at their "start" weights (the recipe's M
+    values) while q is 0 and moves them to configured x scale over q 0 -> Q_IN. Several constraints on one term: the
+    strongest weight."""
     per_term: dict[str, float] = {}
+    k = ramp(q, 0.0, Q_IN)
     for c in items:
-      s = self.scale[c["name"]] if p >= c["activate"] else c.get("start_scale", 1.0)
       for t in c["terms"]:
-        per_term[t] = max(per_term.get(t, 0.0), s)
-    for t, s in per_term.items():
-      env.reward_manager.get_term_cfg(t).weight = self.base[t] * s
+        if c.get("by") == "q":
+          w0 = c["start"][t]
+          w = w0 + (self.base[t] * self.scale[c["name"]] - w0) * k
+        else:
+          w = self.base[t] * (self.scale[c["name"]] if p >= c["activate"] else c.get("start_scale", 1.0))
+        if t not in per_term or abs(w) > abs(per_term[t]):
+          per_term[t] = w
+    for t, w in per_term.items():
+      env.reward_manager.get_term_cfg(t).weight = w
 
-  def target(self, c: dict, p: float) -> float:
-    k = ramp(p, c["activate"], c["activate"] + 0.3)
-    return c["loose"] + (c["target"] - c["loose"]) * k
+  def target(self, c: dict, p: float, q: float = 1.0) -> float | None:
+    """The teacher's target now: from "loose" to "tight" (the margin inside the students' bar "target"). None for
+    an item without a bar (logged only)."""
+    if c["target"] is None:
+      return None
+    k = ramp(q, 0.0, 1.0) if c.get("by") == "q" else ramp(p, c["activate"], c["activate"] + 0.3)
+    return c["loose"] + (c.get("tight", c["target"]) - c["loose"]) * k
+
+  @staticmethod
+  def shortfall(c: dict, value: float, target: float) -> float:
+    """How far `value` is on the wrong side of `target`, relative to it (negative: met)."""
+    norm = max(abs(target), 1e-6)
+    return (target - value) / norm if c["sense"] == "min" else (value - target) / norm
+
+  @staticmethod
+  def keys(c: dict, split: bool, every: bool = False) -> list[str]:
+    """The readings' keys of constraint c: per scan mode when the environment has them (`every`: also the modes the
+    constraint does not apply to)."""
+    if not split:
+      return [c["name"]]
+    return [f"{c['name']}@{m}" for m in (MODES if every else c.get("modes", MODES))]
+
+  def _families(self, env: ManagerBasedRlEnv) -> None:
+    """Which families of ground are failing (module docstring): on above RELAX_ON, off below RELAX_OFF. The stairs
+    families read the evaluation robots' fail rate on their fixed rows, the other ground the training robots'. A
+    stairs family without evaluation episodes (yet, or a run without evaluation robots) reads the training robots'
+    at their own rows, and a family with no episodes at all the global fail rate (curriculum.progress)."""
+    glob = getattr(getattr(env, "u_progress_term", None), "fail", None) or 0.0
+    fam = getattr(env, "u_family_fail", None) or {}
+    fixed = getattr(env, "u_eval_fail", None) or {}
+    up, down = (fixed.get(k, fam.get(k, glob)) for k in ("up", "down"))
+    other = fam.get("other", glob)
+    for f, v in (("up", up), ("down", down), ("stairs", max(up, down)), ("other", other)):
+      if v > RELAX_ON:
+        self.relax[f] = True
+      elif v < RELAX_OFF:
+        self.relax[f] = False
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, items: list[dict], ema_steps: float = 1000.0,
                update_steps: int = 24, skip_steps: int = 2400, warmup: int = 240,
@@ -354,66 +507,126 @@ class constraints:
     del env_ids
     step = env.common_step_counter
     p = getattr(env, "u_progress", 0.0)
+    q = getattr(env, "u_quality", 0.0)
     for c in items:
       self.scale.setdefault(c["name"], 1.0)
+      if c.get("by") == "q" and q <= 0.0:
+        # a stairs-quality constraint starts its stage at 1 (a checkpoint from before the stage carries the
+        # multipliers of constraints that were on from progress 0.5)
+        self.scale[c["name"]] = 1.0
       for t in c["terms"]:
         if t not in self.base:
-          self.base[t] = env.reward_manager.get_term_cfg(t).weight
+          # the configured (P) weight: the item's own record when it has one, else the live term's at the first call
+          self.base[t] = c.get("base", {}).get(t, env.reward_manager.get_term_cfg(t).weight)
     if self.last_step is not None and not 0 <= step - self.last_step <= ema_steps:
       self.count.clear()   # the step counter jumped (a resume restores it): measure afresh
     self.last_step = step
     alpha = 1.0 - math.exp(-1.0 / ema_steps)
+    split = scan_modes(env) is not None
     if step >= skip_steps:
       for c in items:
-        v = measure(env, c["metric"], c.get("stat", "mean"), **c.get("params", {}))
-        if v is None:
-          continue
-        name = c["name"]
-        n = self.count[name] = self.count.get(name, 0) + 1
-        a = max(alpha, 1.0 / n)
-        self.value[name] = v if n == 1 else self.value[name] + a * (v - self.value[name])
-    # The task first (2026-11-12): while more than MAX_FAIL_RATE of the episodes end in a fall or an illegal contact
-    # (curriculum.progress's fail rate), no multiplier grows and those above 1 relax toward it by lr per update. The
+        for mode in (MODES if split else (None,)):
+          v = measure(env, c["metric"], c.get("stat", "mean"), scan=mode, **c.get("params", {}))
+          if v is None:
+            continue
+          key = c["name"] if mode is None else f"{c['name']}@{mode}"
+          n = self.count[key] = self.count.get(key, 0) + 1
+          a = max(alpha, 1.0 / n)
+          self.values[key] = v if n == 1 else self.values[key] + a * (v - self.values[key])
+    # the reading that drives each multiplier: of the modes the constraint applies to, the one further from the target
+    for c in items:
+      tgt = self.target(c, p, q)
+      read = [self.values[k] for k in self.keys(c, split) if self.count.get(k, 0) > 0]
+      if read:   # (an item without a bar: the larger reading)
+        self.value[c["name"]] = max(read, key=(lambda v: v) if tgt is None else (lambda v: self.shortfall(c, v, tgt)))
+    # The task first (2026-11-12): while more than RELAX_ON of a family's episodes end in a fall or an illegal
+    # contact, none of that family's multipliers grows and those above 1 relax toward it (x exp(-lr) per update). The
     # Go2W teacher v2 had six at the 3x cap (drift, creep, march, wheels down) while it could not meet them; its action
-    # std rose 0.75 -> 1.08, its falls 26% -> 65% and its terrain level 2.5 -> 0.6. The progress clock slows the same
-    # way (curriculum.py).
-    fail = getattr(getattr(env, "u_progress_term", None), "fail", None) or 0.0
-    failing = fail > MAX_FAIL_RATE
+    # std rose 0.75 -> 1.08, its falls 26% -> 65% and its terrain level 2.5 -> 0.6. Per family since the from-zero
+    # retrain (module docstring, _families): the other ground on the training robots' fail rate, the stairs families
+    # on the evaluation robots' on their fixed rows.
+    self._families(env)
     if not frozen and step - self.last_update >= update_steps:   # frozen: the students keep the teacher's final scales
       self.last_update = step
       for c in items:
         name = c["name"]
-        if not c.get("enforce", True) or p < c["activate"] or self.count.get(name, 0) < warmup:
+        if not c.get("enforce", True) or not self.on(c, p, q):
           continue
-        if failing:
+        lr = c.get("lr", LR)
+        if self.relax[c.get("family", "other")]:
           if self.scale[name] > 1.0:
-            self.scale[name] = max(1.0, self.scale[name] - c["lr"])
+            self.scale[name] = max(1.0, self.scale[name] * math.exp(-lr))
           continue
-        tgt = self.target(c, p)
-        norm = max(abs(tgt), 1e-6)
-        short = (tgt - self.value[name]) / norm if c["sense"] == "min" else (self.value[name] - tgt) / norm
+        # a mode not measured (a student's task, U_SCAN: one mode only) does not hold the others back
+        read = [self.values[k] for k in self.keys(c, split) if self.count.get(k, 0) >= warmup]
+        if not read:
+          continue
+        tgt = self.target(c, p, q)
         # at most lr per update (2026-11-12): the shortfall relative to a small target (creep 0.009 m) was 5x, and
         # the Go2 teacher's creep / march multipliers went 1 -> 3 in a dozen updates, drift 0.5 -> 2.3 as the flat
         # targets tightened by progress 0.45; its action std 0.66 -> 1.05, falls 10% -> 46%
-        short = max(-1.0, min(1.0, short))
-        self.scale[name] = min(max(self.scale[name] + c["lr"] * short, c.get("min_scale", 0.5)), c["max_scale"])
-    self._apply(env, items, p)
+        short = max(-1.0, min(1.0, max(self.shortfall(c, v, tgt) for v in read)))
+        self.scale[name] = min(max(self.scale[name] * math.exp(lr * short), c.get("min_scale", 0.5)), c["max_scale"])
+    self._apply(env, items, p, q)
     ev = getattr(env, "u_eval_mask", None)
-    out = {"relaxing": torch.tensor(float(failing)), "eval_envs": torch.tensor(0.0 if ev is None else float(ev.sum()))}
+    out = {"relaxing": torch.tensor(float(any(self.relax.values()))),
+           "eval_envs": torch.tensor(0.0 if ev is None else float(ev.sum()))}
+    for f in FAMILIES:
+      out[f"relaxing_{f}"] = torch.tensor(float(self.relax[f]))
     for c in items:
       name = c["name"]
+      for mode in MODES:
+        if f"{name}@{mode}" in self.values:
+          out[f"{name}/value_{mode}"] = torch.tensor(self.values[f"{name}@{mode}"])
       if name in self.value:
         out[f"{name}/value"] = torch.tensor(self.value[name])
-      out[f"{name}/target"] = torch.tensor(self.target(c, p))
-      out[f"{name}/scale"] = torch.tensor(self.scale[name] if p >= c["activate"] else c.get("start_scale", 1.0))
+      if c["target"] is not None:
+        out[f"{name}/target"] = torch.tensor(self.target(c, p, q))
+        out[f"{name}/bar"] = torch.tensor(float(c["target"]))
+      # the scale as applied: a stairs-quality one before its stage reads 0 (its terms at their start weights)
+      off = 0.0 if c.get("by") == "q" else c.get("start_scale", 1.0)
+      out[f"{name}/scale"] = torch.tensor(self.scale[name] if self.on(c, p, q) else off)
     return out
+
+
+class quality_terms:
+  """Curriculum term (after `progress` and the recipe's own ramps): the reward weights and parameters that differ
+  between the recipe's M and P keys (teacher_env.quality_diff), at the M values while the stairs quality q
+  (env.u_quality, curriculum.py) is 0 and at the P values from q = Q_IN on.
+    weights  {term: (m, p)}                 linear in k = ramp(q, 0, Q_IN); terms the constraints scale are not here
+    params   {term: {key: (m, mode)}}       mode "lerp": numbers, linear in k from m to the term's own (P) value;
+                                            "switch": anything else, the P value once q > 0
+  The P values are the live term's own (read at the first call: the manager has resolved its scene entities)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.p_value: dict[tuple[str, str], object] = {}
+    env.u_quality_terms = self
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, weights: dict, params: dict) -> dict[str, torch.Tensor]:
+    del env_ids
+    q = getattr(env, "u_quality", 0.0)
+    k = ramp(q, 0.0, Q_IN)
+    rm = env.reward_manager
+    for t, (a, b) in weights.items():
+      rm.get_term_cfg(t).weight = a + (b - a) * k
+    for t, keys in params.items():
+      tp = rm.get_term_cfg(t).params
+      for key, (a, mode) in keys.items():
+        if (t, key) not in self.p_value:
+          self.p_value[t, key] = tp[key]
+        b = self.p_value[t, key]
+        tp[key] = a + (b - a) * k if mode == "lerp" else (b if q > 0.0 else a)
+    return {"k": torch.tensor(k)}
 
 
 class lib_meter:
   """Reward term with zero output (tiny weight, so the manager calls it every step): the shared stairs metrics
   (src/metrics.mj.StairsMeter, the same counters as tinynav's acceptance) over the first `sample` envs; env.u_lib_meter.
   The "lib:<name>" constraints read its rates (go2-depth 2026-11-12, doc/redesign.md: the constraints use the
-  acceptance's own measures)."""
+  acceptance's own measures), per scan mode too (the meter's groups)."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     from src.metrics.mj import StairsMeter
@@ -423,8 +636,18 @@ class lib_meter:
     self.meter = StairsMeter(env, torch.arange(n, device=env.device), wheeled=bool(p.get("wheeled", False)),
                              ema_steps=float(p.get("ema_steps", 20000.0)), min_steps=float(p.get("min_steps", 200.0)),
                              straight=bool(p.get("straight", True)))
+    self.meter.groups = self._groups
     env.u_lib_meter = self.meter
     env.u_lib_meter_term = self   # runner.py checkpoints its state
+
+  @staticmethod
+  def _groups(env: ManagerBasedRlEnv, ids: torch.Tensor) -> dict:
+    """The meter's robots by scan mode ({} for an environment without the modes)."""
+    on = getattr(env, "u_scan_on", None)
+    if on is None:
+      return {}
+    seen = (on[ids] > 0.5).cpu().numpy()
+    return {"seen": seen, "blind": ~seen}
 
   def reset(self, env_ids=None) -> None:
     pass

@@ -33,6 +33,9 @@ class URobot:
   payload: str         # BLIND_PAYLOAD: limit (kg) and the payload point's range in the base frame (m)
   wall_stop_m: float   # BLIND_WALL_STOP: where the forward command reaches zero before an end wall
   foot_r_m: float | None = None   # BLIND_FOOT_R: foot sphere radius (legged)
+  # the box the payload's mount point is drawn from on the training terrain, ((x lo, hi), (y lo, hi), (z lo, hi)) in
+  # the base frame (m); None: the range in `payload` (the robot table's payload_point, teacher_env._payload_point)
+  payload_point: tuple | None = None
 
   @property
   def key(self) -> str:
@@ -44,7 +47,8 @@ def _from_table(name: str) -> URobot:
   from src import robot_table
 
   r = robot_table.get(name)
-  return URobot(name, r["kind"], r["train_payload"], r["wall_stop"], foot_r_m=r.get("foot_r") if r["kind"] == "legged" else None)
+  return URobot(name, r["kind"], r["train_payload"], r["wall_stop"],
+                foot_r_m=r.get("foot_r") if r["kind"] == "legged" else None, payload_point=r.get("payload_point"))
 
 
 ROBOTS: dict[str, URobot] = {name: _from_table(name) for name in ("Go2", "Go2W")}
@@ -101,13 +105,15 @@ def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
 DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lowent")
 
 
-def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
+def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys: str = "P") -> ManagerBasedRlEnvCfg:
   """The blind environment on map3 at the teacher phase's schedule (early cost ramps, legged walk gate) with the
-  unified recipe's final keys, plus the depth teacher's elevated height scan in the actor (depth_env_cfg)."""
+  unified recipe's final keys, plus the depth teacher's elevated height scan in the actor (depth_env_cfg).
+  keys "M": the same with the recipe's M keys -- the environment its climbing was learned in, before the P phase's
+  stairs quality (teacher_env.quality_diff reads the two's difference)."""
   from src.tasks.velocity.depth_env_cfg import apply_depth_teacher
 
   recipe = unified_recipe(robot)
-  keys = [k for k in recipe["P"] if k not in DROPPED_KEYS]
+  keys = [k for k in recipe[keys] if k not in DROPPED_KEYS]
   env = {
     "BLIND_PILOT": ",".join(keys),
     "BLIND_PAYLOAD": robot.payload,          # no ramp: the progress curriculum scales the payload (curriculum.py)

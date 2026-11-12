@@ -6,7 +6,8 @@ acceptance, fed from an mjlab environment's batched state.
   terrain_grid(env)      terrain.Grid over the whole terrain (its static boxes, posed)
   StairsMeter(env, ids)  per control step: the legged (LeggedStairs) or wheeled (WheeledStairs) counters over env ids
                          (a fixed sample), only while a robot is on a stairs column; counts decayed with a time constant
-                         of ema_steps; rate(name) gives the acceptance quantities
+                         of ema_steps; rate(name) gives the acceptance quantities, rate(name, group) the same over a
+                         group of the robots (meter.groups: the unified teacher's seen / blind scan modes)
 
 Differences from tinynav-sim, by necessity: "climbing" (up) is read from the terrain (the raster 0.5 m ahead along the
 heading is higher than under the base) instead of the scenario; a foot's "first contact" is the nearest one (the
@@ -61,24 +62,17 @@ def terrain_grid(env, res: float = 0.02) -> Grid:
 
 
 def _wheel_geom_ids(env) -> np.ndarray:
-  """The global ids of the feet sensor's primary geoms, in the sensor's order."""
+  """The global ids of the feet sensor's primary geoms, in the sensor's order: the sensor resolves its patterns with
+  Entity.find_geoms, which gives the entity's geom order (FL FR RL RR). Until 2026-11-12 this went by the patterns'
+  own order (FR FL RR RL), so each wheel's contacts were read with the opposite side's wheel centre; only the idle
+  steps (take-off place and apex height: logged, no bar) use the centre."""
   sensor = env.scene[SENSOR]
-  ids = getattr(sensor, "_primary_geom_ids", None)
-  if ids is not None:
-    return np.asarray(ids)
-  model = env.sim.mj_model
-  pat = sensor.cfg.primary.pattern
-  pats = (pat,) if isinstance(pat, str) else tuple(pat)
-  import re
-
-  out = []
-  for p in pats:
-    rx = re.compile(p)
-    for g in range(model.ngeom):
-      name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or ""
-      if rx.fullmatch(name.split("/")[-1]) and g not in out:
-        out.append(g)
-  return np.asarray(out)
+  prim = sensor.cfg.primary
+  ent = env.scene[prim.entity]
+  pats = (prim.pattern,) if isinstance(prim.pattern, str) else tuple(prim.pattern)
+  local, _ = ent.find_geoms(pats)
+  gids = ent.indexing.geom_ids
+  return gids[torch.as_tensor(local, device=gids.device, dtype=torch.long)].cpu().numpy()
 
 
 class StairsMeter:
@@ -110,8 +104,12 @@ class StairsMeter:
     else:
       self.counter = LeggedStairs(self.grid, self.n, self.feet)
     self.last_len = None
-    self.prev = {}
+    self.prev: dict[str, np.ndarray] = {}   # each count per robot at the last step
     self.sums: dict[str, float] = {}
+    # groups(env, ids) -> {group: (n,) bool array}: the counts are kept per group too, each robot's increments going
+    # to the groups it is in at that step (2026-11-12: the unified teacher's scan modes, tasks/unified/constraints.py)
+    self.groups = None
+    self.group_sums: dict[str, dict[str, float]] = {}
     # True when only the env's evaluation robots count (env.u_eval_mask; the teacher's runner sets both): a
     # checkpoint's counts taken over every robot, exploration noise included, are not carried on then
     self.eval = False
@@ -168,25 +166,41 @@ class StairsMeter:
       horiz = (valid & (nz < 0.5)).any(axis=2)
       flat = contact & (~valid | (nz > 0.9)).all(axis=2)
       self.counter.step(contact, horiz, flat, pos[:, :, 0, :2], heading, up, active)
-    self._accumulate(up)
+    self._accumulate(env, up)
 
-  def _totals(self, up) -> dict[str, float]:
+  def _counts(self, up) -> dict[str, np.ndarray]:
+    """Each count per robot, (n,)."""
     if self.wheeled:
       c = self.counter.counts(up)
-      return {"ups": float(c["ups"].sum()), "slips": float(c["slips"].sum()),
-              "idle_start": float(c["idle_rear"].sum()), "idle_end": float(c["idle_front"].sum())}
-    c = self.counter.counts()
-    return {k: float(v.sum()) for k, v in c.items()}
+      return {"ups": c["ups"], "slips": c["slips"], "idle_start": c["idle_rear"], "idle_end": c["idle_front"]}
+    return self.counter.counts()
 
-  def _accumulate(self, up) -> None:
-    tot = self._totals(up)
-    for k, v in tot.items():
-      inc = v - self.prev.get(k, 0.0)
+  def _accumulate(self, env, up) -> None:
+    """This step's new events into the decayed sums. Per robot since 2026-11-12 (the groups need it): a count that
+    drops -- the wheeled idle steps restart with a robot's episode and move between "start" and "end" as it climbs --
+    adds nothing for that robot; taken on the total before, such a drop also hid the other robots' new events of that
+    step. The legged counts and the wheeled step-ups and slide-backs only rise: they read as before."""
+    groups = self.groups(env, self.ids) if self.groups is not None else {}
+    for g in groups:
+      self.group_sums.setdefault(g, {})
+    for k, v in self._counts(up).items():
+      v = np.asarray(v, dtype=np.float64).copy()   # the counters go on counting in their own arrays
+      inc = np.maximum(v - self.prev[k], 0.0) if k in self.prev else v
       self.prev[k] = v
-      self.sums[k] = self.sums.get(k, 0.0) * self.decay + max(inc, 0.0)
+      self.sums[k] = self.sums.get(k, 0.0) * self.decay + float(inc.sum())
+      for g, m in groups.items():
+        gs = self.group_sums[g]
+        gs[k] = gs.get(k, 0.0) * self.decay + float(inc[m].sum())
 
-  def rate(self, name: str) -> float | None:
-    s = self.sums
+  def rate(self, name: str, group: str | None = None) -> float | None:
+    """The acceptance quantity `name` over all the robots measured, or over those of `group` (None before min_steps
+    walked there; None for a group never seen)."""
+    if group is None:
+      s = self.sums
+    elif group in self.group_sums:
+      s = self.group_sums[group]
+    else:
+      return None
     if self.wheeled:
       ups = s.get("ups", 0.0)
       if ups < self.min_steps:
@@ -202,10 +216,12 @@ class StairsMeter:
             "edge": s.get("edge", 0.0) / placed if placed else None}.get(name)
 
   def state(self) -> dict:
-    return {"sums": dict(self.sums), "straight": self.straight, "eval": self.eval}
+    return {"sums": dict(self.sums), "groups": {g: dict(v) for g, v in self.group_sums.items()},
+            "straight": self.straight, "eval": self.eval}
 
   def load(self, state: dict) -> None:
     """The counts of a checkpoint taken with the same counting (straight or not, the evaluation robots or every
     robot); others start afresh."""
     if bool(state.get("straight", False)) == self.straight and bool(state.get("eval", False)) == self.eval:
       self.sums = dict(state.get("sums", {}))
+      self.group_sums = {g: dict(v) for g, v in (state.get("groups") or {}).items()}

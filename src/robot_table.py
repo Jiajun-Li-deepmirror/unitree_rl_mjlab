@@ -27,12 +27,19 @@ import sys
 # "先和unitree ros对齐，没有的参数再和官网对齐"): params model=uros (the unitree_ros-aligned model, src/assets/robots/uros.py)
 # for every robot, and the As2 / As2W payload from Unitree's figures (15 / 16 kg); 2026-11-12 (doc/redesign.md): every
 # payload is Unitree's walking figure (Go2 / Go2W 8 kg, was their 12 kg maximum).
+# payload_point (2026-11-12, the unified pipeline only; the blind chains keep train_payload's range): the box, in the
+# base frame (m), the unified teacher and its students draw the payload's mount point from, ((x lo, hi), (y lo, hi),
+# (z lo, hi)). The user: "负载的重心偏移可以尽可能的大一些，因为我也不知道之后整机上会装在哪里". Go2 / Go2W: past the hips
+# (+-0.19 m) to the nose and the tail, the full body width, from under the back plate to a 0.30 m mast; 8 kg at
+# x 0.25 is the moment (2.0 kg m) of the earlier 12 kg at 0.15. The acceptance's point (accept_payload) is unchanged.
 ROBOTS: dict[str, dict] = {
   "Go2": dict(kind="legged", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
+              payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
               wall_stop=0.85, foot_r=0.022, params={"model": "uros"},
               notes="payload: Unitree's walking figure ~8 kg (max ~12 standing; 2026-11-12 doc/redesign.md: the walking "
                     "payload for training and acceptance); foot sphere 2.2 cm"),
   "Go2W": dict(kind="wheeled", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
+               payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
                wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
                notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
