@@ -55,6 +55,7 @@ from src.metrics import mj as metrics_mj
 from . import constraints as ucons
 from . import curriculum as ucur
 from . import diagnostics
+from . import flat as uflat
 from . import stick_slip
 from .models import PRIV_GROUP
 from .robots import URobot, base_env_cfg, unified_recipe
@@ -198,7 +199,90 @@ def constraint_items(kind: str) -> list[dict]:
       c("idle_start", "lib:idle_start", "max", None, None, "q", [], enforce=False, family="stairs"),
       c("idle_end", "lib:idle_end", "max", None, None, "q", [], enforce=False, family="stairs"),
     ]
+  if uflat.scripts_on():
+    items = _flat_script_items(items, c)
   return items
+
+
+# the items the flat protocols add (their multipliers' cap: the probe switch U_FLAT_NEW_MAX)
+FLAT_NEW = ("head_tail", "head_med", "speed_lin", "speed_yaw", "stance", "stance_stop")
+
+
+def _flat_script_items(items: list[dict], c) -> list[dict]:
+  """The flat items on the acceptance's own protocols (flat.py, 2026-11-12; U_FLAT_SCRIPTS=0: `items` as they are).
+  Each reads the WORST command bin of the scripted evaluation robots' samples, per scan mode, with the acceptance's
+  statistic; bar = the acceptance's, the teacher's own target a margin inside it (constraints.with_margin) under
+  the training randomization. Same bars for legged and wheeled (accept_tables.py: SIDE_DRIFT_BAR is empty).
+
+    item            was (training)                           now                                     acceptance
+    clock           gait_match, |vy| >= 0.5, one mean,       flat:gait, the worst bin's mean, 0.80    gait_clock.py: each command
+                    0.85 / 0.82                                                                       below 1 m/s >= 80%
+    side_drift      u_drift_light p90 of |offset| / path     flat:drift "tail" = max(|p10|, |p90|)   drift_all.py + accept_tables
+    straight_drift  >= 1 m into a 2-5 s command, 0.06 /      of the signed offset / distance after   .py:320-331: both tails
+                    0.075                                    10 s from a standstill, 0.05            against 5% of the distance
+    head_tail       --                                       flat:head "tail", 8 deg                 the same lines: heading
+    head_med        --                                       flat:head "absmed", 3 deg               p10 / p90 <= 8, median <= 3
+    creep           u_stop_creep_light: every stop, one      flat:creep: the mean per pre-stop        eval_standing.py: the worst
+                    mean, 0.01 m                             command, the worst bin, 0.01 m          group's mean <= 1 cm
+    march_hip       u_march_hip_light: the worst hip 4-5 s   flat:march_hip: after the 3 s stand     march_eval.py: mean <= 2 deg
+                    INTO the march, 2 deg                    that follows a 5 s march, 2 deg         after that stand
+    speed_lin       --                                       flat:speed_lin "dev1" = |mean velocity  accept_matrix.py: 80-120% per
+    speed_yaw       --                                       / command - 1| per axis, worst bin, 0.2 commanded axis
+    stance          --                                       flat:stance p90 of the worst leg         long_stand.py / stop_then_move
+    stance_stop     --                                       joint's offset over 3-9 s of rest /     .py: p90 <= 0.15 rad
+                                                             the mean offset 3 s after a stop, 0.15
+
+  The multipliers of the five re-measured items carry over a resume (constraints.CARRY_SCALE); the six new ones
+  start at 1 and are capped at 2 (the tracking and posture terms act on every ground). The readings until now
+  stay in the records, logged only: clock_side, side_drift_p90, straight_drift_p90, creep_pooled, march_hip_in.
+  back_drift, march, spin and the *_total items are unchanged (they read the robots on drawn commands)."""
+  old = {x["name"]: x for x in items}
+  act = 0.15
+  new = {x["name"]: x for x in (
+    c("clock", "flat:gait", "min", 0.80, 0.6, act, ["foot_gait"], {"worst": "min"}, min_scale=1.0),
+    c("side_drift", "flat:drift", "max", 0.05, 0.2, act, ["side_drift"], {"bins": ["side"]}, stat="tail"),
+    c("straight_drift", "flat:drift", "max", 0.05, 0.2, act, ["straight_drift"],
+      {"bins": ["fwd", "fwd_slow", "back"]}, stat="tail"),
+    c("creep", "flat:creep", "max", 0.01, 0.03, act, ["standing_position_hold", "standing_speed"]),
+    c("march_hip", "flat:march_hip", "max", math.radians(2.0), 0.10, act, ["march_hip_default"]),
+  )}
+  added = [
+    c("head_tail", "flat:head", "max", 8.0, 20.0, act, ["straight_drift", "side_drift"], stat="tail", max_scale=2.0),
+    c("head_med", "flat:head", "max", 3.0, 8.0, act, ["straight_drift", "side_drift"], stat="absmed", max_scale=2.0),
+    c("speed_lin", "flat:speed_lin", "max", 0.2, 0.4, act, ["track_linear_velocity", "flat_speed_deficit"],
+      stat="dev1", min_scale=1.0, max_scale=2.0),
+    c("speed_yaw", "flat:speed_yaw", "max", 0.2, 0.4, act, ["track_angular_velocity"], stat="dev1", min_scale=1.0,
+      max_scale=2.0),
+    c("stance", "flat:stance", "max", 0.15, 0.3, act, ["standing_pose_load"], stat="p90", max_scale=2.0),
+    c("stance_stop", "flat:stance_stop", "max", 0.15, 0.3, act, ["standing_pose_load"], {"bins": ["fast", "fwd"]},
+      stat="p90", max_scale=2.0),
+  ]
+  assert tuple(x["name"] for x in added) == FLAT_NEW
+  logged = [{**{k: v for k, v in old[src].items() if k != "tight"}, "name": name, "target": None, "terms": [],
+             "enforce": False}
+            for name, src in (("clock_side", "clock"), ("side_drift_p90", "side_drift"),
+                              ("straight_drift_p90", "straight_drift"), ("creep_pooled", "creep"),
+                              ("march_hip_in", "march_hip"))]
+  out = []
+  for x in items:
+    out.append(new.get(x["name"], x))
+    if x["name"] == "spin":
+      out += added + logged
+  return out
+
+
+def _flat_tracker(cfg: ManagerBasedRlEnvCfg) -> None:
+  """flat.flat_measure as a reward term with zero output (the last one), and its two event wrappers: no pushes on
+  a robot under a script, and a start heading along / across the flat strip for a share of the evaluation robots
+  on the flat column (a 10 s line only fits the 8 m wide column from such a heading)."""
+  cfg.rewards["u_flat"] = RewardTermCfg(func=uflat.flat_measure, weight=1e-9, params={})
+  for name, wrapper in (("push_robot", uflat.flat_no_push), ("reset_base", uflat.flat_reset_yaw)):
+    ev = cfg.events.get(name)
+    if ev is None:
+      continue
+    assert not isinstance(ev.func, type), f"{name}: a class event; the flat wrappers wrap functions"
+    ev.params = {**ev.params, "flat_inner": ev.func}
+    ev.func = wrapper
 
 
 # A term the recipe's M keys do not have starts the quality stage at this share of its P weight: next to nothing in
@@ -584,6 +668,8 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
     new["u_heavy"].params.update({"skip_steps": 0, "ema_steps": 50.0})
     cfg.rewards["u_meter"].params["min_n"] = 50
     cfg.rewards["u_lib_meter"].params.update({"min_steps": 5.0, "ema_steps": 200.0})
+    if "u_flat" in cfg.rewards:
+      cfg.rewards["u_flat"].params.update({"min_n": 2, "min_q": 2})
   cfg.curriculum = new
 
 
@@ -618,7 +704,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          -> k times at the limit (constraints.loaded_fall, set up in _rewards: the heavy evaluation
                          robots failed three times as many fixed-row stairs episodes as the light ones);
     U_PAYLOAD_STICKY=<x> the payload class (light / mid / heavy) stays with the robot and is drawn anew with
-                         probability x at a reset (sticky_payload; unset: the payload anew at every reset)."""
+                         probability x at a reset (sticky_payload; unset: the payload anew at every reset).
+  The flat protocols (flat.py; U_FLAT_SCRIPTS=0 -- no scripts, the flat items as before -- is read where the items
+  and the tracker are set up, not here):
+    U_FLAT_SHARE=<l>[,<h>] the shares of the light / heavy evaluation robots on the flat column under a script
+                         (flat.FLAT_SHARE; 0: none of that class);
+    U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
+                         (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
+    U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -643,6 +736,21 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     assert ev.func is mdp.base_payload_point and 0.0 <= float(v) <= 1.0, f"U_PAYLOAD_STICKY {v}: a probability"
     ev.params = {**ev.params, "inner": ev.func, "redraw": float(v)}
     ev.func = sticky_payload
+  # -- the flat protocols (flat.py)
+  if "u_flat" in cfg.rewards:
+    v = os.environ.get("U_FLAT_SHARE")
+    if v:
+      share = [float(x) for x in v.split(",")]
+      assert 1 <= len(share) <= 2 and all(0.0 <= x <= 1.0 for x in share), f"U_FLAT_SHARE {v}: one or two shares"
+      cfg.rewards["u_flat"].params["share"] = (share[0], share[1] if len(share) > 1 else uflat.FLAT_SHARE[1])
+    v = os.environ.get("U_FLAT_AXIS")
+    if v and cfg.events["reset_base"].func is uflat.flat_reset_yaw:
+      cfg.events["reset_base"].params["flat_share"] = float(v)
+  v = os.environ.get("U_FLAT_NEW_MAX")
+  if v:
+    for c in items:
+      if c["name"] in FLAT_NEW:
+        c["max_scale"] = max(c["min_scale"], float(v))
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -694,6 +802,8 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
         if c["by"] == "q":
           c["start"] = {t: start[t] for t in c["terms"]}
           c["base"] = {t: cfg.rewards[t].weight for t in c["terms"]}
+      if uflat.scripts_on():
+        _flat_tracker(cfg)
       _probe_switches(cfg, items)
       if os.environ.get("U_TERMINATED_Q"):   # (_probe_switches)
         assert "is_terminated" not in weights, "is_terminated: already an M -> P difference of the recipe"

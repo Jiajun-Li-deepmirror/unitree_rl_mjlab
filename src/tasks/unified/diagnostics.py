@@ -118,6 +118,7 @@ ALERTS = {
   "cap": "a constraint's multiplier sits at its upper limit",
   "unmeasured": "an enforced constraint that is on has no new readings",
   "torque_sat": "more than 20% of a joint group's torques are at the limit",
+  "flat_fault": "the flat protocols' tracker stopped on a fault: the flat: constraints are no longer measured",
 }
 
 
@@ -853,6 +854,7 @@ class Recorder:
             "grad": {k[5:]: (max(v) if k.endswith("_max") else sum(v) / len(v)) for k, v in self.acc.items()
                      if k.startswith("grad_")},
             **{k: s[k] for k in ("policy", "rollout", "episode", "cur", "cons", "relax", "weights", "gate", "phys")},
+            **({"flat": s["flat"]} if s.get("flat") else {}),
             "alerts": self.last["status"]["alerts"],
             "expect": {e["name"]: self.reached.get(e["name"]) for e in self.expect}}
     self.last["snapshot"] = snap
@@ -886,7 +888,8 @@ class Recorder:
          "rollout": self._block("rollout", self._rollout), "episode": self._block("episode", self._episode),
          "relax": dict(getattr(getattr(env, "u_constraints", None), "relax", {}) or {}),
          "weights": self._block("weights", self._weights), "gate": self._block("gate", self._gate, cur, cons),
-         "phys": self._block("phys", self._phys), "mem": self._block("mem", self._mem), "fps": fps}
+         "phys": self._block("phys", self._phys), "mem": self._block("mem", self._mem), "fps": fps,
+         "flat": self._block("flat", self._flat)}
     return s
 
   def _cur(self) -> dict:
@@ -1038,6 +1041,12 @@ class Recorder:
     rew, ln = list(getattr(lg, "rewbuffer", ())), list(getattr(lg, "lenbuffer", ()))
     return {"reward": sum(rew) / len(rew) if rew else None, "len": sum(ln) / len(ln) if ln else None}
 
+  def _flat(self) -> dict:
+    """The flat protocols' readings per command bin and mode, the scripts finished and given up (flat.flat_measure.
+    table; {} in a run without the tracker: U_FLAT_SCRIPTS=0, a student, play)."""
+    t = getattr(self.env, "u_flat", None)
+    return {} if t is None else t.table()
+
   def _phys(self) -> dict:
     if self.phys is None:
       self.phys = physics(self.env)
@@ -1140,7 +1149,7 @@ class Recorder:
   def _alerts(self, it: int, s: dict, args: dict) -> None:
     """Every group of rules on its own: a fault in one leaves the others running."""
     for part in (self._al_numbers, self._al_task, self._al_optim, self._al_curriculum, self._al_constraints,
-                 self._al_physics, self._al_schedule):
+                 self._al_physics, self._al_schedule, self._al_flat):
       self._safe("alerts_" + part.__name__[4:], part, it, s, args)
 
   def _al_numbers(self, it: int, s: dict, args: dict) -> None:
@@ -1282,6 +1291,11 @@ class Recorder:
           A(it, f"unmeasured:{name}@{m}", old is not None and n <= old, f"{name} ({m}): no new reading in 300 it "
             f"({n} so far)", hold=1, n=n)
 
+  def _al_flat(self, it: int, s: dict, args: dict) -> None:
+    fault = (s.get("flat") or {}).get("fault")
+    self._alert(it, "flat_fault", bool(fault), lambda: "flat_measure stopped: " + str(fault).strip().splitlines()[-1],
+                hold=1)
+
   def _al_schedule(self, it: int, s: dict, args: dict) -> None:
     """The reference schedule (expectations): each milestone's first reaching is an event, one not reached by its
     iteration an alert until it is."""
@@ -1337,6 +1351,18 @@ class Recorder:
       for c, x in d.items():
         if x["fail"] is not None:
           out[f"Diag/eval_class/{k}_{c}"] = x["fail"]
+    # the flat protocols: each reading's statistic per command bin and mode (the constraints take the worst bin of
+    # the light modes), the samples behind the main ones, the scripts given up by reason, the robots under one
+    flat = s.get("flat") or {}
+    for shown, bins in (flat.get("bins") or {}).items():
+      for b, d in bins.items():
+        out[f"Diag/flat/{shown}/{b}"] = d["v"]
+        if shown in flat.get("n_tags", ()):
+          out[f"Diag/flat_n/{shown}/{b}"] = d["total"]
+    for k, v in (flat.get("drops") or {}).items():
+      out[f"Diag/flat_drop/{k}"] = v
+    if flat:
+      out["Diag/flat/scripted"] = flat.get("scripted")
     out["Diag/alerts"] = float(sum(1 for a in self.alerts.values() if a["active"]))
     for k, v in out.items():
       if v is not None and math.isfinite(float(v)):
