@@ -25,7 +25,7 @@ def main(argv: list[str]) -> int:
   if len(argv) < 3 or argv[0] in ("-h", "--help"):
     print(__doc__)
     return 0 if argv and argv[0] in ("-h", "--help") else 2
-  robot, src, out = argv[0], argv[1], Path(argv[2])
+  robot, src_path, out = argv[0], argv[1], Path(argv[2])
   os.environ["UNIFIED_TASKS"] = "1"
   sys.path.insert(0, os.getcwd())
   import torch
@@ -36,10 +36,10 @@ def main(argv: list[str]) -> int:
   import src.tasks  # noqa: F401
 
   task = f"Unitree-{robot}-U-Student-Blind-RL"
-  loaded = torch.load(src, map_location="cpu", weights_only=False)
+  loaded = torch.load(src_path, map_location="cpu", weights_only=False)
   sd = loaded.get("actor_state_dict")
   if sd is None:
-    print(f"baseline_ckpt: {src} has no actor_state_dict (not a PPO checkpoint)", file=sys.stderr)
+    print(f"baseline_ckpt: {src_path} has no actor_state_dict (not a PPO checkpoint)", file=sys.stderr)
     return 2
   k = int(argv[3]) if len(argv) > 3 else int(loaded.get("iter", 0))
   cfg = load_env_cfg(task)
@@ -52,18 +52,21 @@ def main(argv: list[str]) -> int:
   try:
     missing, unexpected = actor.load_state_dict({n: v.to("cuda:0") for n, v in sd.items()}, strict=False)
   except RuntimeError as e:   # a size mismatch: not the same contract
-    print(f"baseline_ckpt: {src} does not fit {task}'s actor: {e}", file=sys.stderr)
+    print(f"baseline_ckpt: {src_path} does not fit {task}'s actor: {e}", file=sys.stderr)
     return 2
   bad = list(unexpected) + [n for n in missing if not n.startswith("priv_head.")]
   if bad:
-    print(f"baseline_ckpt: {src} does not fit {task}'s actor: {bad}", file=sys.stderr)
+    print(f"baseline_ckpt: {src_path} does not fit {task}'s actor: {bad}", file=sys.stderr)
     return 2
   names = env.observation_manager.active_terms["actor"]
   out.mkdir(parents=True, exist_ok=True)
-  runner.current_learning_iteration = k
-  runner.save(str(out / f"model_{k}.pt"), infos={"baseline_source": src})
-  (out / "source.txt").write_text(f"{src}\nactor input terms: {', '.join(names)}\n")
-  print(f"wrote {out / f'model_{k}.pt'}: {src}'s actor in {task} (input {actor.obs_dim}: {', '.join(names)})")
+  # the runner's save() without its model upload and ONNX export (no log dir here): the checkpoint dict as it writes it
+  saved = runner.alg.save()
+  saved["iter"] = k
+  saved["infos"] = {"baseline_source": src_path, "env_state": {"common_step_counter": 0}}
+  torch.save(saved, str(out / f"model_{k}.pt"))
+  (out / "source.txt").write_text(f"{src_path}\nactor input terms: {', '.join(names)}\n")
+  print(f"wrote {out / f'model_{k}.pt'}: {src_path}'s actor in {task} (input {actor.obs_dim}: {', '.join(names)})")
   return 0
 
 
