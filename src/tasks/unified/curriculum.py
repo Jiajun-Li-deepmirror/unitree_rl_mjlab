@@ -10,6 +10,12 @@
     contact (the blind recipe's staged clock, mdp.staged_clock). The terrain levels alone stalled the first Go2 teacher
     at p 0.19 (mean level ~1 at 3000-4000 it: with 8% stairs and many stand / march / spin commands few robots walk the
     3 m a promotion needs; the blind T sits there too), and the stairs share only rises from p 0.3.
+Since 2026-11-12 each robot keeps two difficulty rows, one for the stairs columns and one for the other ground
+(env.u_rows, progress_stairs_share): every reset draws the robot's column anew, and with one shared row the flat
+ground's promotions set the stairs' difficulty -- the Go2W teacher sat at row ~3.2 (~10 cm rises) and failed 100% of
+its stairs-up episodes (the chin, base3_collision, into the riser), the Go2 50%, while their stairs failures could not
+bring the stairs down to what they could climb. The performance part of p reads the mean of both rows.
+
 Everything else reads env.u_progress:
 
   stairs share     TEACHER_SHARE until p 0.3, then up to the robot's final share by p 0.8 (mdp.stairs_share's
@@ -57,6 +63,7 @@ class progress:
     self.fail = None         # smoothed share of resets that ended in a fall / illegal contact
     env.u_progress = 0.0
     env.u_progress_term = self   # the runner saves and restores it
+    self._env = env
 
   def reset(self, env_ids=None) -> None:
     pass
@@ -67,6 +74,9 @@ class progress:
     if terrain is not None and getattr(terrain, "terrain_levels", None) is not None:
       out["terrain_levels"] = terrain.terrain_levels.cpu().tolist()
       out["terrain_types"] = terrain.terrain_types.cpu().tolist()
+    rows = getattr(self._env, "u_rows", None)
+    if rows is not None:
+      out["rows"] = {k: v.cpu().tolist() for k, v in rows.items()}
     return out
 
   def load(self, state: dict, env: ManagerBasedRlEnv) -> None:
@@ -77,6 +87,18 @@ class progress:
     self.last_step = env.common_step_counter
     env.u_progress = self.p
     self._restore_terrain(state, env)
+    rows = state.get("rows")
+    n = env.scene.terrain.terrain_levels.shape[0] if getattr(env.scene, "terrain", None) is not None else 0
+    if rows and all(len(v) == n for v in rows.values()):
+      dev, dt = env.scene.terrain.terrain_levels.device, env.scene.terrain.terrain_levels.dtype
+      env.u_rows = {k: torch.tensor(v, device=dev, dtype=dt) for k, v in rows.items()}
+      print(f"[unified] difficulty rows restored: stairs {float(env.u_rows['stairs'].float().mean()):.2f}, "
+            f"other {float(env.u_rows['other'].float().mean()):.2f}")
+    elif n:   # a checkpoint from before the two rows: both start at the robot's restored row
+      lv = env.scene.terrain.terrain_levels
+      env.u_rows = {"stairs": lv.clone(), "other": lv.clone()}
+      print(f"[unified] difficulty rows: none in the checkpoint, both start at each robot's restored row "
+            f"(mean {float(lv.float().mean()):.2f})")
 
   def _restore_terrain(self, state: dict, env: ManagerBasedRlEnv) -> None:
     """The robots' terrain levels (and columns) as the checkpoint left them (2026-11-12). A fresh environment draws
@@ -122,7 +144,11 @@ class progress:
     terrain = env.scene.terrain
     self._terrain = terrain   # state() saves its levels
     assert terrain is not None
-    mean = float(terrain.terrain_levels.float().mean())
+    rows = getattr(env, "u_rows", None)
+    if rows is not None:   # the stairs' and the other ground's rows alike (module docstring)
+      mean = 0.5 * (float(rows["stairs"].float().mean()) + float(rows["other"].float().mean()))
+    else:
+      mean = float(terrain.terrain_levels.float().mean())
     step = env.common_step_counter
     # the gated clock: the resets now, how many ended in a fall or illegal contact (not a time-out)
     if env_ids is not None and len(env_ids) > 0:
@@ -164,8 +190,10 @@ def progress_stairs_share(
   p_start: float = 0.3,
   p_end: float = 0.8,
 ) -> dict[str, torch.Tensor]:
-  """mdp.stairs_share's draw (each resetting robot to a stairs column with probability s, its difficulty row kept),
-  with s = start -> end as env.u_progress goes p_start -> p_end."""
+  """mdp.stairs_share's draw (each resetting robot to a stairs column with probability s), with s = start -> end as
+  env.u_progress goes p_start -> p_end. Each robot has a stairs row and an other-ground row (env.u_rows, module
+  docstring): the row the terrain curriculum just set for the finished episode goes back to the family it was walked
+  on, and the robot starts its next episode on the row of the family drawn."""
   from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
 
   terrain = env.scene.terrain
@@ -173,7 +201,14 @@ def progress_stairs_share(
   mask = sub_terrain_column_mask(env, stair_terrain_names)
   assert mask is not None and mask.any() and (~mask).any(), "need stair and other columns"
   s = start + (end - start) * ramp(getattr(env, "u_progress", 0.0), p_start, p_end)
+  rows = getattr(env, "u_rows", None)
+  if rows is None:   # a fresh run, or a checkpoint from before the two rows: both from the robots' rows now
+    rows = env.u_rows = {"stairs": terrain.terrain_levels.clone(), "other": terrain.terrain_levels.clone()}
   if len(env_ids) > 0:
+    was = mask[terrain.terrain_types[env_ids]]
+    lv = terrain.terrain_levels[env_ids]
+    rows["stairs"][env_ids] = torch.where(was, lv, rows["stairs"][env_ids])
+    rows["other"][env_ids] = torch.where(was, rows["other"][env_ids], lv)
     stair_cols = mask.nonzero().flatten()
     other_cols = (~mask).nonzero().flatten()
     n = len(env_ids)
@@ -181,9 +216,11 @@ def progress_stairs_share(
     pick_s = stair_cols[torch.randint(len(stair_cols), (n,), device=env.device)]
     pick_o = other_cols[torch.randint(len(other_cols), (n,), device=env.device)]
     terrain.terrain_types[env_ids] = torch.where(on_stairs, pick_s, pick_o)
+    terrain.terrain_levels[env_ids] = torch.where(on_stairs, rows["stairs"][env_ids], rows["other"][env_ids])
     terrain.env_origins[env_ids] = terrain.terrain_origins[terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]]
   share = mask[terrain.terrain_types].float().mean()
-  return {"target": torch.tensor(s), "share": share}
+  return {"target": torch.tensor(s), "share": share, "stairs_level": rows["stairs"].float().mean(),
+          "other_level": rows["other"].float().mean()}
 
 
 def progress_commands(

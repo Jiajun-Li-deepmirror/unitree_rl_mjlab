@@ -12,7 +12,7 @@ and the robot parameters the blind environment reads (BLIND_PARAMS). Read by
 Plain Python, no imports from the project: the boxes' shell scripts run it with any python3.
 
   python3 src/robot_table.py Go2W --fe-sh          export lines (BLIND_PAYLOAD keeps ${PAYLOAD_RAMP:+,ramp=...} for eval)
-  python3 src/robot_table.py Go2W --accept-payload 12,0.15,0,0.20
+  python3 src/robot_table.py Go2W --accept-payload 8,0.15,0,0.20
   python3 src/robot_table.py Go2W --params         BLIND_PARAMS (k=v,...)
   python3 src/robot_table.py --list                every robot, one line each
 """
