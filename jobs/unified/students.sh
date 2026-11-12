@@ -16,6 +16,8 @@
 # No seed left to try (one seed trained, no or an empty <pick>.others, every kept seed tried, or the next one did not
 # pass its gate): "STOP: needs a human" in the log and exit 3 -- not an error. Off by default with TEACHER= (that
 # checkpoint is not the pick's, so the pick's .others are not its).
+# Before each teacher's students: its stops on flat (jobs/unified/stop_check.sh; STOP_CHECK=0 skips it): a group over
+# 1% falls -> "STOP: needs a human", exit 3; 0-1% -> a warning in the log.
 # Exit 0 every kind has a pick, 3 a kind failed and nothing is left to try (a human decides), 4 a tool fault.
 # SMOKE=1 (jobs/unified/smoke_students.sh): runs named *_smoke, the acceptance in its smoke mode, no fallback.
 set -u
@@ -77,6 +79,18 @@ while true; do
   [ -f "$T" ] || { log "no teacher checkpoint $T"; exit 2; }
   T=$(cd $(dirname $T) && pwd)/$(basename $T)
   log "teacher $T (seed $TSEED, code $(cat REPO_COMMIT 2>/dev/null)); kinds $KINDS; stage 1 $S1 it, stage 2 $S2 it, $ENVS robots each"
+  # the teacher's stops on flat before its students (jobs/unified/stop_check.sh; go2-depth's decision 11-12): a
+  # recipe check -- a group over 1% falls stops here for the recipe to be fixed; smoke: 32 robots per group, not judged
+  if [ "${STOP_CHECK:-1}" = 1 ]; then
+    sc=$(STOP_ENVS=$([ $SMOKE = 1 ] && echo 32 || echo ${STOP_ENVS:-768}) bash jobs/unified/stop_check.sh $R $T); src=$?
+    log "teacher stop check: $sc"
+    if [ $src = 4 ] || { [ $src != 0 ] && [ $src != 1 ]; }; then
+      log "TOOL FAULT: the teacher stop check (exit $src; not a fail)"; exit 4
+    elif [ $src = 1 ] && [ $SMOKE != 1 ]; then
+      log "STOP: needs a human -- the teacher $T falls on flat after a step release (jobs/unified/stop_check.sh, a recipe check; logs/checks/u_${r}_tstop.txt): its recipe is to be fixed and the teacher resumed; no student trained on it"
+      exit 3
+    fi
+  fi
   declare -A PIDS=() RC=()
   for kind in $KINDS; do one $kind & PIDS[$kind]=$!; done
   for kind in $KINDS; do
