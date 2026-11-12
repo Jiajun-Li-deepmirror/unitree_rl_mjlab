@@ -570,6 +570,48 @@ class heavy_group:
     return out
 
 
+class flat_only:
+  """Reward term (weight 1, after the terms it reads and the heavy groups): a flat item's multiplier presses on flat
+  ground only (go2-depth 2026-11-13; the probe switch U_FLAT_ONLY=1, teacher_env._rewards).
+
+  A multiplier scales its terms' weights for every robot, wherever it walks, and the flat items' terms run on the
+  stairs too. The Go2 teacher's flat line item sat at its 3x cap (5.6% read against 5%), and on the climbing flights
+  straight_drift then cost 1.51 a second -- as much as the slide, edge, leg-tilt and kick costs together (1.56) --
+  with the climb netting -0.09 a second against +1.24 walking up to the stairs (up_stall_probe.py on uprobe_s29's
+  model_5598). The flat items are measured on flat ground: that is where their pressure belongs.
+
+  For a robot over uneven ground (mdp.uneven_terrain_mask on `sensor_name`: the height span under the base, the mask
+  of straight_drift's own stairs part) this term adds raw x (calm - current) for each term a flat item presses on.
+  `calm` (constraints.calm) is the term's weight with every flat item's multiplier held at 1 or below: a multiplier
+  that relaxed below 1 stays relaxed everywhere, and a stairs-quality item's weight on the same term stands. The
+  heavy robots (>= `min_frac` of the payload limit) are left out on `heavy_terms`: their own group (heavy_group)
+  holds those terms at the configured weight already."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    pass
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, heavy_terms: list[str],
+               min_frac: float = HEAVY_FRAC) -> torch.Tensor:
+    from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+    out = torch.zeros(env.num_envs, device=env.device)
+    calm = getattr(getattr(env, "u_constraints", None), "calm", {})
+    if not calm:
+      return out
+    uneven = uneven_terrain_mask(env, sensor_name)
+    heavy = payload_mask(env, lo=min_frac)
+    for t, w_calm in calm.items():
+      r = _raw(env, t)
+      if r is None:
+        continue
+      raw, w = r
+      on = uneven & ~heavy if heavy is not None and t in heavy_terms else uneven
+      out += on.float() * raw * (w_calm - w)
+    return out
+
+
 def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_terminated") -> torch.Tensor:
   """Reward term (weight 1, after `term`): an episode ended by a fall or an illegal contact costs a loaded robot more,
   from 1x at LIGHT_FRAC of the payload limit to `scale` times at the limit, on top of whatever `term` weighs now (the
@@ -707,6 +749,7 @@ class constraints:
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.base: dict[str, float] = {}       # term -> configured weight
     self.scale: dict[str, float] = {}      # constraint -> multiplier (1 = configured weight)
+    self.calm: dict[str, float] = {}       # term -> its weight with no flat item pressing (_apply), where it differs
     self.value: dict[str, float] = {}      # constraint -> the driving reading
     self.values: dict[str, float] = {}     # "<constraint>@<mode>" (no scan modes: "<constraint>") -> smoothed reading
     self.count: dict[str, int] = {}        # the same keys -> measurements so far
@@ -799,18 +842,23 @@ class constraints:
     values) while q is 0 and moves them to configured x scale over q 0 -> Q_IN. Several constraints on one term: the
     strongest weight."""
     per_term: dict[str, float] = {}
+    calm: dict[str, float] = {}   # the same with every flat item's multiplier at 1 or below (flat_only)
     k = ramp(q, 0.0, Q_IN)
     for c in items:
       for t in c["terms"]:
         if c.get("by") == "q":
           w0 = c["start"][t]
-          w = w0 + (self.base[t] * self.scale[c["name"]] - w0) * k
+          w = w_calm = w0 + (self.base[t] * self.scale[c["name"]] - w0) * k
         else:
-          w = self.base[t] * (self.scale[c["name"]] if p >= c["activate"] else c.get("start_scale", 1.0))
+          s = self.scale[c["name"]] if p >= c["activate"] else c.get("start_scale", 1.0)
+          w, w_calm = self.base[t] * s, self.base[t] * min(s, 1.0)
         if t not in per_term or abs(w) > abs(per_term[t]):
           per_term[t] = w
+        if t not in calm or abs(w_calm) > abs(calm[t]):
+          calm[t] = w_calm
     for t, w in per_term.items():
       env.reward_manager.get_term_cfg(t).weight = w
+    self.calm = {t: w for t, w in calm.items() if w != per_term[t]}
 
   def target(self, c: dict, p: float, q: float = 1.0) -> float | None:
     """The teacher's target now: from "loose" to "tight" (the margin inside the students' bar "target"). None for

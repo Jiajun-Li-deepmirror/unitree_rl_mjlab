@@ -587,6 +587,11 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     terms = [t for t in terms if t in rewards]
     if terms:
       rewards[f"u_heavy_{item}"] = RewardTermCfg(func=ucons.heavy_group, weight=1.0, params={"terms": terms})
+  if os.environ.get("U_FLAT_ONLY") == "1":   # a probe's switch (_probe_switches), after the heavy groups
+    heavy_terms = sorted({t for _, _, _, ts in ucons.HEAVY_ITEMS.values() for t in ts if t in rewards})
+    sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
+    rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params={
+      "sensor_name": sensor or "terrain_scan", "heavy_terms": heavy_terms})
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
                                              params={"scale": float(os.environ["U_LOADED_FALL"])})
@@ -705,6 +710,9 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          robots failed three times as many fixed-row stairs episodes as the light ones);
     U_PAYLOAD_STICKY=<x> the payload class (light / mid / heavy) stays with the robot and is drawn anew with
                          probability x at a reset (sticky_payload; unset: the payload anew at every reset).
+    U_FLAT_ONLY=1        a flat item's multiplier presses on flat ground only: over uneven ground its terms stay at
+                         the configured weight or below (constraints.flat_only, set up in _rewards: the flat line
+                         item at its 3x cap cost the climbing Go2 1.5 a second, as much as its quality costs).
   The flat protocols (flat.py; U_FLAT_SCRIPTS=0 -- no scripts, the flat items as before -- is read where the items
   and the tracker are set up, not here):
     U_FLAT_SHARE=<l>[,<h>] the shares of the light / heavy evaluation robots on the flat column under a script
