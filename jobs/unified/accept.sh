@@ -98,8 +98,13 @@ tier2() {   # TAG -> prints PASS / FAIL: ...
     while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
     ( export U_PAYLOAD=$1; shift; run "$@" ) &
   }
-  for cond in unloaded loaded; do
-    if [ $cond = unloaded ]; then pay=0,0,0,0 X=""; else pay=$PAY X=_pay; fi
+  # the conditions: unloaded, the walking payload, and the typical payload where the robot has one (2026-11-12,
+  # doc/redesign.md 2.2: kg,x,y,z,dx,dy,dz -- each robot's mount point drawn in the box; jobs/accept_payload.sh exits
+  # 2 for a robot without one)
+  local conds="unloaded loaded" typ
+  typ=$(bash jobs/accept_payload.sh $R typical 2> /dev/null) && conds="$conds typical"
+  for cond in $conds; do
+    case $cond in unloaded) pay=0,0,0,0 X="" ;; loaded) pay=$PAY X=_pay ;; typical) pay=$typ X=_typ ;; esac
     U_PAYLOAD=$pay $PY scripts/unified/dr_report.py $TF > ${P}_dr$X.txt 2>&1
     pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 18 --metrics
     pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs 768
@@ -111,7 +116,10 @@ tier2() {   # TAG -> prints PASS / FAIL: ...
     if [ $cond = unloaded ]; then
       pool $pay ${P}_am.txt $W $S/accept_matrix.py --task $TF --envs-per-cmd 96 $CK $LIN $YAW
       pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd 48
-      [[ $R == *W ]] && pool $pay ${P}_gait.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd 96
+    fi
+    # wheels down: unloaded and typical (doc/redesign.md 2.2)
+    if [[ $R == *W ]] && [ $cond != loaded ]; then
+      pool $pay ${P}_gait$X.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd 96
     fi
   done
   wait
@@ -127,19 +135,56 @@ tier2() {   # TAG -> prints PASS / FAIL: ...
   echo "$v"
 }
 
-deliver() {   # TAG: the pick's package (the tinynav gate's export and the checkpoint) and the two acceptance videos
+deliver() {   # TAG: the pick's package and videos (jobs/unified/deliver.sh) -- the blind student at once; the depth
+  # student only after the camera-failure test of the pair (doc/redesign.md 2.2.1, pair_step)
   local tag=$1 CK=${CKOF[$1]} Q=logs/accept/u_${r}_${KIND}_${name}_$1
   local PKG=logs/pkg/${r}_u_${KIND}_${name}_$tag
-  if [ $SMOKE = 1 ]; then log "(smoke: no delivery; would package $PKG)"; return; fi
-  mkdir -p $PKG
-  cp logs/probe/$(basename $Q)/* $PKG/ 2> /dev/null
-  cp $CK $PKG/
-  if [ -s $PKG/policy.onnx ]; then
-    log "UNIFIED DELIVERY $PKG (policy.onnx $(md5sum < $PKG/policy.onnx | cut -c1-8))"
+  if [ $KIND = depth ]; then
+    echo "$R depth $CK $Q $PKG" > $DPICK.pending
+    log "depth delivery waits for the camera-failure pair test ($DPICK.pending)"
+  elif [ $SMOKE = 1 ]; then
+    log "(smoke: no delivery; would package $PKG)"
   else
-    $PY scripts/unified/export_student.py $R $KIND $CK $PKG >> $L 2>&1 && log "UNIFIED DELIVERY $PKG (exported here)"
+    LOG=$L bash jobs/unified/deliver.sh $R $KIND $CK $Q $PKG
   fi
-  LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos
+  pair_step
+}
+
+# The camera-failure test of the pair (2026-11-12; doc/redesign.md 2.2.1): the depth and the blind student of this
+# robot, each accepted on its own. The two kinds' acceptances run side by side, so whichever is accepted second runs
+# it (under a lock; the depth student's line moves from .pending to .pairing): PASS -> the depth student is delivered;
+# FAIL -> it is not (its pick moves to <pick>.pairfail; the blind student is not affected); a tool fault leaves it
+# pending. A depth student without an accepted blind one waits (pending) for a human or a later blind acceptance.
+# Exit status of this script: 1 when this run's own depth student failed the pair test (it ran it itself).
+DPICK=logs/jobs/unified_${r}_depth$([ $SMOKE = 1 ] && echo _smoke).pick
+BPICK=logs/jobs/unified_${r}_blind$([ $SMOKE = 1 ] && echo _smoke).pick
+PAIR_RC=0
+pair_step() {
+  local rc
+  exec 9> logs/jobs/unified_${r}_pair$([ $SMOKE = 1 ] && echo _smoke).lock
+  flock 9
+  if [ -f $DPICK.pending ] && [ -s $BPICK ] && [ -s $DPICK ]; then
+    mv -f $DPICK.pending $DPICK.pairing
+    read -r _ _ DCK DQ DPKG < $DPICK.pairing
+    local BCK=$(cut -d' ' -f1 $BPICK)
+    PAIR_SMOKE=$SMOKE bash jobs/unified/pair_accept.sh $R $DCK $BCK; rc=$?
+    # smoke: untrained students fall, the verdict is not judged -- only that the test ran and gave one
+    [ $SMOKE = 1 ] && [ $rc = 1 ] && { log "(smoke: the pair test's FAIL not judged)"; rc=0; }
+    case $rc in
+      0) log "camera-failure pair test PASS (depth $DCK, blind $BCK)"
+         if [ $SMOKE = 1 ]; then log "(smoke: no delivery; would package $DPKG)"
+         else LOG=$L bash jobs/unified/deliver.sh $R depth $DCK $DQ $DPKG; fi
+         rm -f $DPICK.pairing ;;
+      1) mv -f $DPICK $DPICK.pairfail; mv -f $DPICK.pairing $DPICK.pairing.failed
+         log "DEPTH NOT DELIVERED: the camera-failure pair test failed ($(cat logs/jobs/unified_${r}_pair.verdict 2> /dev/null | cut -c1-200)); the blind student is not affected"
+         [ $KIND = depth ] && PAIR_RC=1 ;;
+      *) mv -f $DPICK.pairing $DPICK.pending
+         log "camera-failure pair test: tool fault (exit $rc); the depth delivery stays pending" ;;
+    esac
+  elif [ -f $DPICK.pending ]; then
+    log "camera-failure pair test waits: no accepted blind student yet ($BPICK)"
+  fi
+  flock -u 9
 }
 
 # ---- tier 2 per candidate in order; tier 3 alongside ----
@@ -201,8 +246,9 @@ if [ $rc = 0 ]; then
   CK=${CKOF[$PICKED]}
   if [ "$TN" = skip ]; then echo "$CK tier2-only" > $PICK; else echo "$CK" > $PICK; fi
   log "PICK $CK"
+  rm -f $PICK.pairfail   # (a pair failure of an earlier pick is not this one's)
   deliver $PICKED
-  exit 0
+  exit $PAIR_RC
 fi
 log "no candidate of $RUN passed"
 exit 1

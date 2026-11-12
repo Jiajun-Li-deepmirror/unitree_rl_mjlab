@@ -13,7 +13,10 @@ falls; plus
   stairs counts        src/metrics (tinynav's counters) while crossing: legged kicks <= 0.245 and slips <= 0.0245 per
                        step, mid >= 80%, edge <= 10%; wheeled slide-back <= 5% of step-ups
 Loaded (PREFIX_<kind>_pay.txt, the walking payload): stairs 0 falls; the zero-command stance; drift / creep /
-alternating spins / march drift reported beside the unloaded ones (scripts/blind/acceptance/payload_gap.py), not judged.
+alternating spins / march drift reported beside the unloaded ones (scripts/blind/acceptance/payload_gap.py), not judged
+-- but a fall in those four tests fails it (2026-11-12, doc/redesign.md 2.5 item 10).
+Typical payload (PREFIX_<kind>_typ.txt, doc/redesign.md 2.2, 2026-11-12; robots without one: not run): the loaded
+condition's tests (wheeled: also the wheels down), every item at the unloaded bar, no fall in any of them (typical()).
 """
 
 from __future__ import annotations
@@ -87,6 +90,85 @@ def stairs_falls(path: str) -> int | None:
   return sum(int(a) + int(b) for a, b in rows)
 
 
+def comparison_falls(p: dict) -> dict[str, int | None]:
+  """Falls in the tests whose readings are only compared under the walking payload (2026-11-12, doc/redesign.md 2.5
+  item 10: they count toward the loaded condition's 0 falls); also the typical payload's falls in the same tests."""
+  d, sa, g, rv = at.drift_vals(p), at.spinalt_vals(p), at.stand_vals(p), at.reset_vals(p)
+  return {"跑偏": sum(v["fell"] for v in d.values()) if d else None,
+          "交替原地转": sum(v["fell"] for v in sa.values()) if sa else None,
+          "停车": sum(v["fell"] for v in g.values()) if g else None,
+          "原地踏步": rv["fell"] if rv else None}
+
+
+def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
+  """The typical payload (doc/redesign.md 2.2, 2026-11-12): the loaded condition's tests (wheeled: also the wheels
+  down) with the typical payload, every item at the unloaded bar, and no fall in any of them. Not run: the 44 flat
+  commands, the gait clock and the map3 flights -- so the stairs reach and speed (both map3's) are not judged here;
+  the stairs items are eval_stairs' own: stop ok, all feet down when stopped, the counts, no fall."""
+  p = {k: f"{prefix}_{k}_typ.txt" for k in at.KINDS}
+  cells = at.goal_cells(r, 1, "", p, [])
+  bad, detail = [], []
+  goals = {"g_drift": "跑偏", "g_spinalt": "交替原地转", "g_stop": "停车", "g_march": "原地踏步"}
+  if wheeled:
+    goals["g_wheels"] = "四轮着地"
+  for k, n in goals.items():
+    if cells.get(k) != "通过":
+      bad.append(f"常用负载 {n}：{cells.get(k, '未测')}")
+  # zero-command stance
+  sp, sl = stand_posture(p["loadstand"])
+  mp, mf = stopmove(p["stopmove"])
+  detail.append(f"零指令站姿（常用负载）：静站 p90 {sp} rad，3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
+  if sp is None or mp is None:
+    bad.append("零指令站姿（常用负载）：未测")
+  else:
+    if sp > POSTURE_BAR or mp > POSTURE_BAR:
+      bad.append("零指令站姿（常用负载）：偏离站姿")
+    if (sl or 0) > 0 or (mf or 0) > 0:
+      bad.append("零指令站姿（常用负载）：摔倒")
+  # stairs: eval_stairs' stop and stop-feet, the counts, no fall
+  st = at.stop_row(p)
+  if st is None:
+    bad.append("常用负载 楼梯：未测")
+  else:
+    if float(st.split("|")[2].strip().rstrip("%")) < 95.0:
+      bad.append("常用负载 楼梯：停不稳")
+    feet = [(m.group(1), m.group(2), float(m.group(3))) for m in re.finditer(
+      r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", txt(p["stairs"]), re.M)]
+    if any(v < at.stop_feet_bar(r, b, d) for b, d, v in feet):
+      bad.append("常用负载 楼梯：停住缺脚")
+    if stairs_falls(p["stairs"]):
+      bad.append("常用负载 楼梯：摔倒")
+  sm = stairs_metrics(p["stairs"])
+  if wheeled:
+    sb = sm.get("slide_back")
+    detail.append(f"常用负载 楼梯计数：上台阶 {sm.get('ups')}，滑回 {sb}")
+    if sb is None:
+      bad.append("常用负载 楼梯计数：未测")
+    elif sb > WHEELED_SLIDE_BAR:
+      bad.append(f"常用负载 楼梯计数：滑回 {sb:.3f}")
+  else:
+    detail.append("常用负载 楼梯计数：" + "，".join(f"{k} {sm.get(k)}" for k in ("steps", "kicks", "slips", "mid", "edge")))
+    if "kicks" not in sm:
+      bad.append("常用负载 楼梯计数：未测")
+    else:
+      tags = [f"{k} {sm[k]:.3f}" for k in ("kicks", "slips", "edge") if sm[k] > LEGGED_BARS[k]]
+      if sm["mid"] < LEGGED_BARS["mid"]:
+        tags.append(f"mid {sm['mid']:.3f}")
+      if tags:
+        bad.append("常用负载 楼梯计数：" + "、".join(tags))
+  # no fall in any test run (goal_cells' own fall item reads the 44 flat commands, not run here: per test instead)
+  cf = comparison_falls(p)
+  if any(v for v in cf.values() if v):
+    bad.append("常用负载：摔倒（" + "、".join(k for k, v in cf.items() if v) + "）")
+  if wheeled:
+    n = at.nolift_vals(p)
+    if n and n["fell"]:
+      bad.append("常用负载：摔倒（四轮着地）")
+  detail.append("常用负载各项：" + "，".join(f"{n} {cells.get(k, '未测')}" for k, n in goals.items())
+                + "；摔倒 " + "，".join(f"{k} {v}" for k, v in cf.items()))
+  return bad, detail
+
+
 def main(argv: list[str]) -> int:
   r, prefix = argv[0], argv[1]
   wheeled = r in at.WHEELED
@@ -139,6 +221,20 @@ def main(argv: list[str]) -> int:
     bad.append("负载楼梯：未测")
   elif lf > 0:
     bad.append("负载楼梯：摔倒")
+  # loaded: the falls in the four comparison-only tests count too (doc/redesign.md 2.5 item 10); their readings do not
+  lfalls = comparison_falls({k: f"{prefix}_{k}_pay.txt" for k in at.KINDS})
+  detail.append("负载（只出读数的四项）摔倒：" + "，".join(f"{k} {v}" for k, v in lfalls.items()))
+  if any(v is None for v in lfalls.values()):
+    bad.append("负载对比项：未测")
+  elif any(v > 0 for v in lfalls.values()):
+    bad.append("负载对比项：摔倒（" + "、".join(k for k, v in lfalls.items() if v) + "）")
+  # the typical payload (doc/redesign.md 2.2; robots without one: not run)
+  if any(os.path.exists(f"{prefix}_{k}_typ.txt") for k in ("stand", "drift3", "stairs")):
+    tb, td = typical(r, prefix, wheeled)
+    bad += tb
+    detail += td
+  else:
+    detail.append("常用负载：本机型没有这一档，未测")
   print("PASS" if not bad else "FAIL: " + "；".join(bad))
   for line in detail:
     print("  " + line)

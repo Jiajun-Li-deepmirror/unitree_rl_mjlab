@@ -70,6 +70,9 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
 KINDS="${KINDS:-blind depth}"
 TRIED=" $TSEED " WHY=""
 declare -A FINAL=()
+# a previous run's student picks are not this run's (accept.sh pairs the depth and the blind pick it finds)
+SFX=$([ $SMOKE = 1 ] && echo _smoke)
+for kind in $KINDS; do rm -f logs/jobs/unified_${r}_$kind$SFX.pick logs/jobs/unified_${r}_$kind$SFX.pick.*; done
 while true; do
   [ -f "$T" ] || { log "no teacher checkpoint $T"; exit 2; }
   T=$(cd $(dirname $T) && pwd)/$(basename $T)
@@ -102,6 +105,12 @@ while true; do
   if [ ! -s $PICK ] || ! grep -q "seed $next" $PICK; then WHY="teacher seed $next did not pass its gate"; break; fi
   T=$(cut -d' ' -f1 $PICK) TSEED=$next KINDS=$failed
 done
+# the camera-failure pair test (doc/redesign.md 2.2.1, run by accept.sh): a depth student that failed it when the
+# blind student's acceptance ran it is not delivered; one still waiting for an accepted blind student is not either
+if [ "${FINAL[depth]:-x}" = 0 ]; then
+  if [ -f logs/jobs/unified_${r}_depth$SFX.pick.pairfail ]; then FINAL[depth]=1; WHY="${WHY:+$WHY; }depth: the camera-failure pair test failed"
+  elif [ -f logs/jobs/unified_${r}_depth$SFX.pick.pending ]; then FINAL[depth]=1; WHY="${WHY:+$WHY; }depth: accepted, but no accepted blind student to pair it with"; fi
+fi
 # the outcome over every round: a kind whose last acceptance failed with nothing left to try is for a human
 nopick="" fault=""
 for kind in "${!FINAL[@]}"; do

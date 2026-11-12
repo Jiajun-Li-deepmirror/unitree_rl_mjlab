@@ -74,9 +74,18 @@ S1_ITERATIONS = 4000
 S2_ITERATIONS = 3000
 
 
+# The checks' foot friction where the blind builder's check terrain differs from the training's (2026-11-12, the user:
+# "统一成 0.4–1.0"): the wheeled robots train at 0.4-1.0 (blind_env_cfg.py sets it on any terrain with stairs: a
+# high-friction wheel climbs a riser face, a simulator exploit), and their stairs check had it too, but the flat check
+# kept the default 0.3-1.6 -- outside the training's range. Both checks now draw from the training's range.
+CHECK_FRICTION = {"wheeled": (0.4, 1.0)}
+
+
 def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3"):
   assert kind in STUDENT_GROUPS, kind
   cfg = unified_teacher_env_cfg(robot, play=play, student=kind, terrain=terrain)
+  if terrain != "map3" and robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
+    cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
   if kind == "depth":
     kw = {} if play else {"real_camera": True, "occlusion": True, "edge_blur": True}
     cfg = apply_depth_student(cfg, play=play, camera_pos=NAVCORE_CAMERA_POS[robot.key],
