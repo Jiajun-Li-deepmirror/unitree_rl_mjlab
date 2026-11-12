@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""teacher_gate.py RUN_DIR [--hold N] [--pre] [--json] -- has the unified teacher of RUN_DIR passed (go2-depth 2026-11-11)?
+"""teacher_gate.py RUN_DIR [--hold N] [--pre [--flat-tier2]] [--json] -- has the unified teacher of RUN_DIR passed (go2-depth 2026-11-11)?
 
 The teacher is judged on its constraints in training (src/tasks/unified/constraints.py: every acceptance item as a
 measurement per scan mode, a target and a multiplier, logged as Curriculum/u_constraints/<name>/{value_seen,
@@ -30,6 +30,14 @@ readings are the acceptance's own protocols, src/tasks/unified/flat.py), else "N
 (jobs/unified/teacher.sh) then judges the stairs on model_K with the pooled evaluation and writes the pick; the
 newest K, so that a later call moves on after an evaluation that failed. --json marks the unjudged items
 ("judged": false).
+
+--pre --flat-tier2 (2026-11-13): the flat items are the caller's too (jobs/unified/flat_gate.sh: tier 2's own flat
+tests on model_K, after its stairs test). The training's flat readings turned out about half of tier 2's -- the Go2
+teacher read a line drift of 8-11 % and a heading tail of 8 deg where tier 2 measured 15-19 % and 17-23 deg on the
+same checkpoint (the training's bins hold 15-40 lines each per 500 iterations and pool left with right) -- and its
+flat multipliers sat at their caps, so a PRE-PASS on them could wait for ever while the test that judges was never
+run. With the option no constraint is judged here: "PRE-PASS K" (nothing after K) for the newest checkpoint K whose
+window has the curriculum through (p = 1 and q = 1 throughout); every reading is still in --json, "judged": false.
 """
 
 from __future__ import annotations
@@ -68,8 +76,12 @@ def main() -> int:
   ap.add_argument("--every", type=int, default=100, help="the checkpoint interval (judged only there)")
   ap.add_argument("--pre", action="store_true", help="the flat items and the curriculum only: PRE-PASS K, the "
                   "newest such checkpoint (the stairs items are the caller's, on the pooled evaluation)")
+  ap.add_argument("--flat-tier2", action="store_true", help="with --pre: the flat items are the caller's too "
+                  "(tier 2's flat tests, jobs/unified/flat_gate.sh) -- PRE-PASS K on the curriculum alone")
   ap.add_argument("--json", action="store_true")
   a = ap.parse_args()
+  if a.flat_tier2 and not a.pre:
+    ap.error("--flat-tier2 goes with --pre")
   files = sorted(glob.glob(os.path.join(a.run, "events.out.tfevents*")))
   if not files:
     print("NOT YET 0 no events")
@@ -80,7 +92,7 @@ def main() -> int:
   q = series(acc, "Curriculum/u_progress/q")   # empty for a run from before the stairs quality stage
   items = items_for(a.run)
   vals, bars, sense = {}, {}, {}   # "<name>_<mode>" (or "<name>") -> the readings; the bar they are judged at
-  unjudged = set()                 # the keys --pre reads without judging: the stairs-quality items
+  unjudged = set()                 # the keys --pre reads without judging: the stairs-quality items (all: --flat-tier2)
   absent = []
   for c in items:
     n = c["name"]
@@ -98,7 +110,7 @@ def main() -> int:
       continue
     for key, v in per.items():
       vals[key], bars[key], sense[key] = v, ({i: fixed for i in v} if fixed is not None else bar), c["sense"]
-      if a.pre and c.get("by") == "q":
+      if a.pre and (a.flat_tier2 or c.get("by") == "q"):
         unjudged.add(key)
   if absent:
     print(f"teacher_gate: nothing of these in the run's log, not judged: {' '.join(absent)}", file=sys.stderr)
@@ -144,7 +156,7 @@ def main() -> int:
     last_miss = (k, miss)
   if pre is not None:
     k, report = pre
-    print(f"PRE-PASS {k} {' '.join(sorted(n for n, r in report.items() if r.get('judged', True)))}")
+    print(" ".join([f"PRE-PASS {k}"] + sorted(n for n, r in report.items() if r.get("judged", True))))
     if a.json:
       print(json.dumps(report))
     return 0
