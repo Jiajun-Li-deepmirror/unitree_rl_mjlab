@@ -167,6 +167,9 @@ def constraint_items(kind: str) -> list[dict]:
     # (constraints._stairs_heading); the acceptance judges the wheeled robots' heading off the flight in tinynav
     # (mean <= 3 deg = 0.052 rad); the two readings are not calibrated against each other
     c("heading", "u_stairs_heading", "max", 0.052, 0.3, "q", [], enforce=False, family="stairs"),
+    # logged only (2026-11-13): the same on even ground under a straight command, p90 (constraints._flat_heading;
+    # the acceptance's lines: heading p10 / p90 within 8 deg = 0.14 rad 10 s in, from each line's own start)
+    c("heading_flat", "u_flat_heading", "max", 0.14, 0.3, 0.15, [], stat="p90", enforce=False),
   ]
   if legged:
     # the shared metrics (src/metrics, tinynav's counters; 2026-11-12, doc/redesign.md): per step walked, the tinynav
@@ -685,6 +688,18 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     assert 0.0 <= floor < 1.0 and "stair_speed_deficit" in rewards, f"U_STAIR_SPEED_LOADED {floor}: 0 <= x < 1"
     rewards["u_stair_speed_loaded"] = RewardTermCfg(func=ucons.stair_speed_loaded, weight=1.0,
                                                     params={"floor": floor})
+  # the heading switches (probes, _probe_switches): nothing for a robot without the heading observation
+  shown = "heading_error" in cfg.observations["critic"].terms
+  lines = [t for t, r in rewards.items() if r.func is mdp.straight_drift]
+  if os.environ.get("U_HEADING_OBS") == "1" and shown and lines:   # after the line costs it reads
+    rewards["u_heading_ref"] = RewardTermCfg(func=ucons.heading_ref, weight=1e-9, params={"terms": lines})
+  if os.environ.get("U_HEADING_LAG") and shown:
+    w = float(os.environ["U_HEADING_LAG"])
+    assert 0.0 < w <= 20.0, f"U_HEADING_LAG {w}: the cost's weight, 0-20"
+    assert os.environ.get("U_HEADING_OBS") == "1", "U_HEADING_LAG goes with U_HEADING_OBS=1"
+    sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
+    rewards["u_heading_lag"] = RewardTermCfg(func=ucons.heading_lag, weight=-w,
+                                             params={"sensor_name": sensor or "terrain_scan"})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
@@ -823,6 +838,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          _add_riser_keepout and constraint_items);
     U_M_WEIGHT=<term>:<f>,...  the weight of <term> before the stairs quality (q = 0) times <f>; the P weight from
                          q = Q_IN on as before (m_weights, read in unified_teacher_env_cfg).
+  The heading on even ground (2026-11-13: tier 2 on the Go2 candidate, s34 model_6097 -- 12-17 deg off 10 s into a
+  line to the right, line drift 15-19% against 5%, the compound commands' yaw at 46-86%; read in _rewards):
+    U_HEADING_OBS=1      the line costs (straight_drift, side_drift) hold the heading the actor is shown -- the
+                         heading observation's target, kept across the commands -- instead of the heading at each
+                         command's start (constraints.heading_ref), on even ground and on the stairs;
+    U_HEADING_LAG=<w>    the cost u_heading_lag at the weight -<w>: under a command to move, on even ground,
+                         the base heading's distance from the heading the commands have turned to, over the
+                         observation's whole range (constraints.heading_lag; with U_HEADING_OBS).
   The flat protocols (flat.py; U_FLAT_SCRIPTS=0 -- no scripts, the flat items as before -- is read where the items
   and the tracker are set up, not here):
     U_FLAT_SHARE=<l>[,<h>] the shares of the light / heavy evaluation robots on the flat column under a script

@@ -523,6 +523,35 @@ def _stairs_heading(env: ManagerBasedRlEnv, obs_term: str = "heading_error",
   return off, mask
 
 
+def _flat_heading(env: ManagerBasedRlEnv, obs_term: str = "heading_error", drift_term: str = "straight_drift",
+                  min_speed: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
+  """_stairs_heading on even ground: |the heading observation's target - the base heading| (rad) over the robots
+  under a command without a yaw part and with a planar speed of at least `min_speed`, off the drift cost's
+  uneven-ground mask (off the stairs columns where it has none). Logged only (2026-11-13): tier 2 read the Go2
+  teacher's heading 10 s into a line to the right at -12.6 / -17.3 deg (median, seen / blind; to the left -0.6 /
+  -1.2) while the training's flat bins pool left with right; this is the error the policy itself is shown, on every
+  straight command, not the lines' own (flat.py measures those from each line's start)."""
+  from mjlab.utils.lab_api.math import wrap_to_pi
+
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  heading = env.scene["robot"].data.heading_w
+  try:
+    observed = env.observation_manager.get_term_cfg("critic", obs_term).func
+  except ValueError:
+    return torch.zeros_like(heading), torch.zeros_like(heading, dtype=torch.bool)
+  off = torch.abs(wrap_to_pi(observed.target - heading))
+  command = env.command_manager.get_command("twist")
+  mask = (command[:, 2] == 0.0) & (torch.norm(command[:, :2], dim=1) >= min_speed) & (observed.settle == 0)
+  rm = env.reward_manager
+  sensor = rm.get_term_cfg(drift_term).params.get("uneven_sensor_name") if drift_term in rm._term_names else None
+  if sensor is not None:
+    mask = mask & ~uneven_terrain_mask(env, sensor)
+  else:
+    mask = mask & ~env.command_manager.get_term("twist").is_stair_env
+  return off, mask
+
+
 def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hold",
                       max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
   """mdp.constraints' stand_hold (distance from the locked hold anchor) over the robots carrying at most max_payload kg:
@@ -584,6 +613,7 @@ def upto_common(metric):
 
 
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stairs_heading": _stairs_heading,
+          "u_flat_heading": _flat_heading,
           "u_stair_speed_h": _stair_speed_h,
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
@@ -735,6 +765,92 @@ def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "
   raw, w = r
   frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
   return raw * w * (floor - 1.0) * frac.clamp(0.0, 1.0)
+
+
+class heading_ref:
+  """Reward term (weight ~0: it returns zeros; after the terms it reads): the straight-line costs `terms`
+  (mdp.straight_drift) hold the heading the policy is shown (go2-depth 2026-11-13; the probe switch U_HEADING_OBS=1,
+  teacher_env._rewards).
+
+  The actor's one heading reading is mdp.heading_error: a target set at the reset that integrates the commanded yaw
+  rate, kept across the commands. The line costs take the heading at the start of each straight command instead: a
+  new command forgives what was drifted before it, and after a turn the robot did not follow in full the observation
+  says "turn on" where the cost says "hold". The actor cannot tell which heading its command started at, so on even
+  ground it could only keep its yaw rate near zero, and a small steady bias adds up: tier 2 on the Go2 teacher
+  (s34 model_6097) read -12.6 / -17.3 deg (median, seen / blind) 10 s into a line to the right, -0.6 / -1.2 deg to
+  the left, with the heading error in its observation all the way; line drift 14.8 / 18.7% against 5%. On the stairs
+  the Go2W recipe's cost already follows the observation (`uneven_heading_obs`) and its heading reads 1.1-1.3 deg.
+
+  Each step this term sets the costs' reference heading to the observation's target and, on the step a line starts,
+  the line's direction to the command's direction at that target -- for every robot, so the costs' own stairs part
+  follows the observation too. A line that starts at a reset is as before (the target is the heading there); the
+  weights, multipliers, groups and readings on those costs are untouched. Nothing while the observation settles
+  after a reset (its target is the base heading then, as the line's own start)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    pass
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def __call__(self, env: ManagerBasedRlEnv, terms: list[str], obs_term: str = "heading_error",
+               command_name: str = "twist") -> torch.Tensor:
+    out = torch.zeros(env.num_envs, device=env.device)
+    try:
+      observed = env.observation_manager.get_term_cfg("critic", obs_term).func
+    except ValueError:
+      return out
+    ready = observed.settle == 0
+    command = env.command_manager.get_command(command_name)
+    v = command[:, :2] / torch.norm(command[:, :2], dim=1).clamp(min=1e-6).unsqueeze(1)
+    c, s = torch.cos(observed.target), torch.sin(observed.target)
+    direction = torch.stack([c * v[:, 0] - s * v[:, 1], s * v[:, 0] + c * v[:, 1]], dim=1)
+    rm = env.reward_manager
+    for t in terms:
+      if t not in rm._term_names:
+        continue
+      term = rm.get_term_cfg(t).func
+      term.ref_heading = torch.where(ready, observed.target, term.ref_heading)
+      started = ready & term.active & (term.since == 0)   # (the cost ran before this term: since = 0 on a start)
+      term.ref_dir = torch.where(started.unsqueeze(1), direction, term.ref_dir)
+    return out
+
+
+def heading_lag(env: ManagerBasedRlEnv, obs_term: str = "heading_error", command_name: str = "twist",
+                sensor_name: str | None = "terrain_scan", wz_threshold: float = 1e-6,
+                min_speed: float = 0.1) -> torch.Tensor:
+  """Reward term (a cost; the probe switch U_HEADING_LAG=<w>, teacher_env._rewards): under a command to move, on
+  even ground, how far the base heading is from the heading the commands have turned to -- the heading
+  observation's target plus this step's commanded turn (the observation integrates it after the rewards) -- over
+  the observation's max_error, at most 1: the error the actor is shown, over its whole range.
+
+  Under a turn: the yaw tracking reward reads the rate, and its kernel is flat near zero; the lag is the rate error
+  summed. Tier 2 on the Go2 teacher (s34 model_6097): the yaw of the compound commands at 46-86% of the command,
+  24 / 23 of the 44 flat speed commands failing (bar 80%). Under a straight command: the line costs' heading part
+  is at its ceiling from heading_scale on (0.17 rad = 9.7 deg) and the observation reaches 0.5 rad, so after a turn
+  that was not followed in full they say nothing until the robot is within 9.7 deg; this cost falls all the way.
+  With U_HEADING_OBS (without it the line costs hold another heading). Zero on the stairs (the line costs' stairs
+  part is there, and a robot is not asked to turn on a flight), under a zero command (the holds keep the robot
+  where it stopped) and while the observation settles after a reset."""
+  from mjlab.utils.lab_api.math import wrap_to_pi
+
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  out = torch.zeros(env.num_envs, device=env.device)
+  try:
+    cfg = env.observation_manager.get_term_cfg("critic", obs_term)
+  except ValueError:
+    return out
+  observed = cfg.func
+  command = env.command_manager.get_command(command_name)
+  heading = env.scene["robot"].data.heading_w
+  off = torch.abs(wrap_to_pi(observed.target + command[:, 2] * env.step_dt - heading))
+  cost = (off / float(cfg.params.get("max_error", 0.5))).clamp(max=1.0)
+  moving = (command[:, 2].abs() > wz_threshold) | (torch.norm(command[:, :2], dim=1) >= min_speed)
+  on = moving & (observed.settle == 0)
+  if sensor_name is not None:
+    on = on & ~uneven_terrain_mask(env, sensor_name)
+  return torch.where(on, cost, out)
 
 
 class riser_keepout:
