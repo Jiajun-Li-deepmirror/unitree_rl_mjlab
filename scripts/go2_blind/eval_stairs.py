@@ -172,6 +172,7 @@ def main() -> None:
   set_cmd((args.vx, 0.0, args.wz))
   stopped_at = torch.full((num_envs,), -1, dtype=torch.long, device=dev)
   alive = torch.ones(num_envs, dtype=torch.bool, device=dev)
+  fall_after = torch.full((num_envs,), -2, dtype=torch.long, device=dev)   # -2: did not fall
   pos_hist, contact_hist = [], []
   hold = int(4.0 / dt)
   for t in range(int(10.0 / dt) + hold):
@@ -183,7 +184,11 @@ def main() -> None:
       obs, _, _, _ = venv.step(policy(obs))
     term = env.termination_manager.terminated
     in_hold = (stopped_at >= 0) & (t - stopped_at < hold)
-    alive &= ~(term & ((stopped_at < 0) | in_hold))
+    fell_now = term & ((stopped_at < 0) | in_hold) & alive
+    # when (2026-11-13, go2-depth): the steps since the stop command at the fall (-1: before it, on the approach)
+    fall_after = torch.where(fell_now, torch.where(stopped_at >= 0, t - stopped_at, torch.full_like(stopped_at, -1)),
+                             fall_after)
+    alive &= ~fell_now
     pos_hist.append(robot.data.root_link_pos_w[:, :2].clone())
     contact_hist.append((feet_sensor.data.found > 0).flatten(1).all(1).clone())
     if ((stopped_at >= 0) & (t - stopped_at >= hold) | ~alive).all():
@@ -228,6 +233,12 @@ def main() -> None:
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
   # exact counts (2026-11-12, doc/redesign.md 2.2's "0 falls": the table's whole percents read 1-2 robots of 72 as 0%)
   print(f"falls: traverse {int(trav_fell.sum())} of {num_envs}, stop {int((~alive_np).sum())} of {num_envs}")
+  # the stop run's falls by when (a reading; "falls:" above is what the judges read): on the approach (walking, before
+  # the stop command at 2.2 m), within 2 s of the command, later in the 4 s hold
+  fa = fall_after.cpu().numpy()
+  two = int(round(2.0 / dt))
+  print(f"stop-run falls by when: approach {int((fa == -1).sum())}, 0-2 s after the stop {int(((fa >= 0) & (fa < two)).sum())}, "
+        f"2-4 s after {int((fa >= two).sum())}")
   # the traverse's robots that neither fell nor got past the last step in time (2026-11-13, go2-depth: As2 stopped at
   # the first riser -- not a fall, so the falls miss it): a reading, its own line (accept_tables parses the band rows)
   stalled = ~trav_ok & ~trav_fell
