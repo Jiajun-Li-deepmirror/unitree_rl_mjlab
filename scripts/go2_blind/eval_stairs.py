@@ -134,6 +134,12 @@ def main() -> None:
   # when the base passes the 2 m central platform's edge (1.0 m) and the last step (3.6 m)
   t_enter = torch.full((num_envs,), -1.0, device=dev)
   t_reach = torch.full((num_envs,), -1.0, device=dev)
+  # heading off the spawn yaw on the flight (2026-11-13, go2-depth; the user: "heading需要验收"): as tinynav's
+  # accept_stairs.py -- |yaw - spawn yaw| in degrees, averaged over the steps the base is within 0.5 m of the steps
+  # (Chebyshev distance 0.5-4.1 m: the platform edge at 1.0 m, the last step at 3.6 m), until the robot gets past
+  yaw0 = robot.data.heading_w.clone()
+  hd_sum = torch.zeros(num_envs, device=dev)
+  hd_n = torch.zeros(num_envs, device=dev)
   for k in range(int(round(3.6 / max(abs(args.vx), 0.1) * 2.0 / dt))):
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
@@ -146,6 +152,10 @@ def main() -> None:
     alive &= ~(term & active)
     max_dist = torch.where(alive, torch.maximum(max_dist, cheb_dist()), max_dist)
     d_now = cheb_dist()
+    on_fl = alive & ~success & (d_now >= 0.5) & (d_now <= 4.1)
+    dyaw = torch.atan2(torch.sin(robot.data.heading_w - yaw0), torch.cos(robot.data.heading_w - yaw0)).abs() * 57.29578
+    hd_sum += torch.where(on_fl, dyaw, torch.zeros_like(dyaw))
+    hd_n += on_fl.float()
     t_enter = torch.where(alive & (t_enter < 0) & (d_now >= 1.0), torch.full_like(t_enter, (k + 1) * dt), t_enter)
     t_reach = torch.where(alive & ~success & (d_now >= 3.6), torch.full_like(t_reach, (k + 1) * dt), t_reach)
     success |= alive & (d_now >= 3.6)
@@ -155,6 +165,7 @@ def main() -> None:
   flight_speed = np.where(trav_ok & (te >= 0) & (tr > te), (3.6 - 1.0) / np.maximum(tr - te, 1e-6), np.nan)
   leg_frac = (leg_hits / steps_alive.clamp(min=1)).cpu().numpy()
   max_dist = max_dist.cpu().numpy()
+  hd_s, hd_c = hd_sum.cpu().numpy(), hd_n.cpu().numpy()
 
   # ---- Stop mid-flight ----
   obs = pin_and_reset()
@@ -217,6 +228,15 @@ def main() -> None:
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
   # exact counts (2026-11-12, doc/redesign.md 2.2's "0 falls": the table's whole percents read 1-2 robots of 72 as 0%)
   print(f"falls: traverse {int(trav_fell.sum())} of {num_envs}, stop {int((~alive_np).sum())} of {num_envs}")
+  # heading on the flight (tinynav's quantity, pooled over the robot-steps as its mean): all, then per band and direction
+  hd_all = hd_s.sum() / max(hd_c.sum(), 1.0)
+  hd_parts = []
+  for lvl in range(NUM_ROWS):
+    for d in ("up", "down"):
+      m = (env_level == lvl) & (env_dir == d)
+      hd_parts.append(f"{band(lvl)} {d} {hd_s[m].sum() / max(hd_c[m].sum(), 1.0):.1f}")
+  print(f"heading on the flight: {hd_all:.2f} deg mean |yaw - spawn yaw| within 0.5 m of the steps "
+        f"({hd_c.sum():.0f} robot-steps); " + ", ".join(hd_parts))
   if meter is not None:
     s = meter.sums
     if meter.wheeled:
