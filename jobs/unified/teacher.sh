@@ -13,6 +13,13 @@
 # the students' bars, the stairs counts no worse than the delivered model); a seed's stairs again only
 # F_STAIRS_GATE_GAP (500) iterations on; every judged candidate in <pick>.judged; none passed by the cap -> "STOP: needs
 # a human" with the best judged (exit 3). STAIRS_GATE=0: the gate below on every item.
+# FLAT_GATE (F_FLAT_GATE, 1; 2026-11-13, go2-depth's decision: the flat part by tier 2 too, the training's flat readings
+# ran about half of tier 2's): after the stairs pass, tier-2's own flat tests on the same checkpoint
+# (jobs/unified/flat_gate.sh: both scan modes, the students' flat bars, no flat fall, ~30 min) -- PASS: the pick; FAIL:
+# judged like a stairs fail (the next PRE-PASS at least F_STAIRS_GATE_GAP later, the line in <pick>.judged); a tool
+# fault: only the flat tests of that checkpoint again at the next gate. teacher_gate.py --pre then leaves the training's
+# flat items unjudged (--flat-tier2), once teacher_gate.py has that option (checked at the start; without it the flat
+# items stay in --pre as well).
 # Every GATE_EVERY s (default 900) scripts/unified/teacher_gate.py judges each running seed on its constraints in
 # training; the first to pass is the pick: logs/jobs/unified_<r>_<variant>.pick (checkpoint path), the other seeds
 # are stopped (KEEP_OTHERS=1 lets them run on). Smoke: U_SMOKE=1 (few iterations, every switch-on forced).
@@ -43,8 +50,17 @@ log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; 
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
 log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null), formal.env $(md5sum jobs/unified/formal.env | cut -c1-8)"
-declare -A PID RUN BEFORE LASTK
-STAIRS_GATE=${STAIRS_GATE:-$F_STAIRS_GATE}
+declare -A PID RUN BEFORE LASTK FLATK
+STAIRS_GATE=${STAIRS_GATE:-$F_STAIRS_GATE} FLAT_GATE=${FLAT_GATE:-${F_FLAT_GATE:-0}}
+PREARGS="--pre"
+if [ "$STAIRS_GATE" = 1 ] && [ "$FLAT_GATE" = 1 ]; then
+  if $PY scripts/unified/teacher_gate.py --help 2> /dev/null | grep -q -- "--flat-tier2"; then
+    PREARGS="--pre --flat-tier2"
+    log "gate: PRE-PASS on the curriculum (teacher_gate.py --pre --flat-tier2), then tier-2's stairs, then tier-2's flat tests"
+  else
+    log "gate: PRE-PASS on the curriculum and the training's flat items (teacher_gate.py has no --flat-tier2), then tier-2's stairs, then tier-2's flat tests"
+  fi
+fi
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
   local res="" before from=0
@@ -93,28 +109,50 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
     RUN[$s]=$d
   fi
   if [ "$STAIRS_GATE" = 1 ]; then
-    # the curriculum and the flat items by the training's readings (--pre), the stairs by tier-2's own test
-    # (jobs/unified/stairs_gate.sh) on that checkpoint, at most once per F_STAIRS_GATE_GAP iterations per seed
-    v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT --pre 2> /dev/null | head -n 1)
-    log "seed $s: ${v:-no verdict}"
-    [[ "$v" == PRE-PASS* ]] || return 1
-    local k=$(echo $v | cut -d' ' -f2) last=${LASTK[$s]:--1000000} sv rc
-    [ -f ${RUN[$s]}/model_$k.pt ] || { log "seed $s: PRE-PASS at $k, but model_$k.pt is not saved yet (next gate)"; return 1; }
-    if [ $k -lt $(( last + F_STAIRS_GATE_GAP )) ]; then
-      log "seed $s: PRE-PASS at $k; the tier-2 stairs judged model_$last last (again from $(( last + F_STAIRS_GATE_GAP )))"
-      return 1
+    # the curriculum (and, without --flat-tier2, the training's flat items) by --pre; the stairs by tier-2's own test
+    # (jobs/unified/stairs_gate.sh) on that checkpoint, at most once per F_STAIRS_GATE_GAP iterations per seed; then
+    # (FLAT_GATE) tier-2's own flat tests on it (jobs/unified/flat_gate.sh)
+    local k last=${LASTK[$s]:--1000000} sv rc
+    if [ -n "${FLATK[$s]:-}" ]; then
+      # its stairs passed, its flat tests were a tool fault: only those again
+      k=${FLATK[$s]}
+      log "seed $s: model_$k passed the tier-2 stairs; its tier-2 flat tests again (a tool fault before)"
+    else
+      v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT $PREARGS 2> /dev/null | head -n 1)
+      log "seed $s: ${v:-no verdict}"
+      [[ "$v" == PRE-PASS* ]] || return 1
+      k=$(echo $v | cut -d' ' -f2)
+      [ -f ${RUN[$s]}/model_$k.pt ] || { log "seed $s: PRE-PASS at $k, but model_$k.pt is not saved yet (next gate)"; return 1; }
+      if [ $k -lt $(( last + F_STAIRS_GATE_GAP )) ]; then
+        log "seed $s: PRE-PASS at $k; tier 2 judged model_$last last (again from $(( last + F_STAIRS_GATE_GAP )))"
+        return 1
+      fi
+      sv=$(bash jobs/unified/stairs_gate.sh $R ${RUN[$s]}/model_$k.pt); rc=$?
+      log "seed $s: model_$k tier-2 stairs: $(echo "$sv" | head -n 1 | cut -c1-400)"
+      case $rc in
+        0) ;;
+        1) LASTK[$s]=$k
+           echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
+           return 1 ;;
+        *) log "seed $s: TOOL FAULT in the tier-2 stairs gate (exit $rc; judged again at the next gate)"; return 1 ;;
+      esac
     fi
-    sv=$(bash jobs/unified/stairs_gate.sh $R ${RUN[$s]}/model_$k.pt); rc=$?
-    log "seed $s: model_$k tier-2 stairs: $(echo "$sv" | head -n 1 | cut -c1-400)"
-    case $rc in
-      0) echo "${RUN[$s]}/model_$k.pt seed $s" > $PICK
-         log "TEACHER PICK ${RUN[$s]}/model_$k.pt (seed $s; curriculum + flat by the training's readings, the stairs by tier 2)"
-         return 0 ;;
-      1) LASTK[$s]=$k
-         echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
-         return 1 ;;
-      *) log "seed $s: TOOL FAULT in the tier-2 stairs gate (exit $rc; judged again at the next gate)"; return 1 ;;
-    esac
+    if [ "$FLAT_GATE" = 1 ]; then
+      sv=$(bash jobs/unified/flat_gate.sh $R ${RUN[$s]}/model_$k.pt); rc=$?
+      log "seed $s: model_$k tier-2 flat: $(echo "$sv" | head -n 1 | cut -c1-400)"
+      case $rc in
+        0) FLATK[$s]="" ;;
+        1) FLATK[$s]=""; LASTK[$s]=$k
+           echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: stairs PASS; flat $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
+           return 1 ;;
+        *) FLATK[$s]=$k
+           log "seed $s: TOOL FAULT in the tier-2 flat gate (exit $rc; model_$k's flat tests again at the next gate)"
+           return 1 ;;
+      esac
+    fi
+    echo "${RUN[$s]}/model_$k.pt seed $s" > $PICK
+    log "TEACHER PICK ${RUN[$s]}/model_$k.pt (seed $s; the curriculum by the training's readings, the stairs$([ "$FLAT_GATE" = 1 ] && echo ' and the flat tests') by tier 2)"
+    return 0
   fi
   v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT 2> /dev/null | head -n 1)
   log "seed $s: ${v:-no verdict}"
@@ -185,7 +223,7 @@ fi
 if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.judged ]; then
   # no automatic pick of the best below the bars (go2-depth 11-13: a student from a teacher worse than delivered would
   # fail its acceptance anyway): a human decides, with the best judged candidate and its shortfalls
-  log "STOP: needs a human -- no seed passed the tier-2 stairs gate by the cap; the best judged: $(sort -g $PICK.judged | head -n 1 | cut -c1-400) (all in $PICK.judged)"
+  log "STOP: needs a human -- no seed passed the tier-2 gate (stairs$([ "$FLAT_GATE" = 1 ] && echo ' + flat')) by the cap; the best judged: $(sort -g $PICK.judged | head -n 1 | cut -c1-400) (all in $PICK.judged)"
   exit 3
 fi
 log "no seed passed"; exit 1
