@@ -162,6 +162,10 @@ def constraint_items(kind: str) -> list[dict]:
     c("survive_down", "evalfail:down", "max", SURVIVE_BAR, 0.5, "q", [], family="down"),
     # logged only: the roll bar is not calibrated (the user, 11-11: calibrate first)
     c("roll", "u_stairs_roll", "max", 0.105, 0.3, "q", [], stat="p90", enforce=False, family="stairs"),
+    # logged only (2026-11-13): the heading off the commanded one while walking straight on over the steps
+    # (constraints._stairs_heading); the acceptance judges the wheeled robots' heading off the flight in tinynav
+    # (mean <= 3 deg = 0.052 rad); the two readings are not calibrated against each other
+    c("heading", "u_stairs_heading", "max", 0.052, 0.3, "q", [], enforce=False, family="stairs"),
   ]
   if legged:
     # the shared metrics (src/metrics, tinynav's counters; 2026-11-12, doc/redesign.md): per step walked, the tinynav

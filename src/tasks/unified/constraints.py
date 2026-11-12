@@ -418,6 +418,37 @@ def _stairs_roll(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
   return roll, env.command_manager.get_term("twist").is_stair_env & moving
 
 
+def _stairs_heading(env: ManagerBasedRlEnv, obs_term: str = "heading_error",
+                    drift_term: str = "straight_drift") -> tuple[torch.Tensor, torch.Tensor]:
+  """How far the base has turned off the heading its command holds (rad): |the heading observation's target - the
+  base heading|, over the robots on a stairs column that walk straight on (forward or backward, no sideways or yaw
+  part) with steps under them (the drift cost's uneven-ground mask, where it has one). The acceptance's "heading off
+  the flight" (tinynav, the wheeled robots, mean <= 3 deg = 0.052 rad; accept_stairs.py) is against the flight's axis
+  from a spawn within 3 deg of it; here the reference is the commanded heading -- the observation's target: the
+  heading at the reset plus the commanded turns, kept within its max_error of the base heading, so a reading
+  saturates there (0.5 rad). Logged only (2026-11-13): the training records had no heading reading at all, the
+  delivered Go2W reads 3.1 deg in tinynav, and how this reading relates to tinynav's is not calibrated. No reading in
+  an environment without the observation."""
+  from mjlab.utils.lab_api.math import wrap_to_pi
+
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  heading = env.scene["robot"].data.heading_w
+  try:
+    observed = env.observation_manager.get_term_cfg("critic", obs_term).func
+  except ValueError:
+    return torch.zeros_like(heading), torch.zeros_like(heading, dtype=torch.bool)
+  off = torch.abs(wrap_to_pi(observed.target - heading))
+  command = env.command_manager.get_command("twist")
+  straight = (command[:, 0].abs() > 0.0) & (command[:, 1] == 0.0) & (command[:, 2] == 0.0)
+  mask = env.command_manager.get_term("twist").is_stair_env & straight
+  rm = env.reward_manager
+  sensor = rm.get_term_cfg(drift_term).params.get("uneven_sensor_name") if drift_term in rm._term_names else None
+  if sensor is not None:
+    mask = mask & uneven_terrain_mask(env, sensor)
+  return off, mask
+
+
 def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hold",
                       max_frac: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
   """mdp.constraints' stand_hold (distance from the locked hold anchor) over the robots carrying at most max_payload kg:
@@ -465,7 +496,8 @@ def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
   return f
 
 
-CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stand_hold_light": _stand_hold_light,
+CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stairs_heading": _stairs_heading,
+          "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
           "u_march_drift": _march_drift, "u_march_drift_light": _march_drift_light,
           "u_march_hip": _march_hip, "u_march_hip_light": _march_hip_light,
