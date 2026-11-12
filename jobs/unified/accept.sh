@@ -37,7 +37,8 @@ r=${R,,} K=${KIND^}
 cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
-SMOKE=${ACCEPT_SMOKE:-0} BASE=${BASELINE:-0} MODE=${CANDIDATES:-avg} JOBS=${ACCEPT_JOBS:-2}
+source jobs/unified/formal.env   # the formal run's parameters, frozen with the commit
+SMOKE=${ACCEPT_SMOKE:-0} BASE=${BASELINE:-0} MODE=${CANDIDATES:-$F_ACCEPT_CANDIDATES} JOBS=${ACCEPT_JOBS:-$F_ACCEPT_JOBS}
 SFX=$([ $SMOKE = 1 ] && echo _smoke)
 L=logs/jobs/unified_${r}_accept.txt PICK=logs/jobs/unified_${r}_$KIND$SFX.pick
 mkdir -p logs/checks logs/accept logs/jobs
@@ -121,7 +122,7 @@ last=$(iters | tail -n 1)
 CANDS=()
 declare -A CKOF
 if [ $MODE = avg ]; then
-  N=${AVG_N:-8} SP=${AVG_SPACING:-1000}
+  N=${AVG_N:-$F_ACCEPT_AVG_N} SP=${AVG_SPACING:-1000}
   if [ $# -gt 0 ]; then ENDS="$*"; else ENDS=$(for c in $(seq 0 $(( ${AVG_CANDS:-1} - 1 ))); do echo $(( last - c * SP )); done); fi
   for e in $ENDS; do
     ks=$(iters | awk -v e=$e '$1 <= e' | tail -n $N)

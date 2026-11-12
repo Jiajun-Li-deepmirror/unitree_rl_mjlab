@@ -119,6 +119,15 @@ def stairs_metrics(path: str) -> dict[str, float]:
   return out
 
 
+HEADING_WARN_DEG = 3.0   # tinynav's stairs heading bar (judged there, tier 3); tier 2 only warns
+
+
+def stairs_heading(path: str) -> tuple[float | None, float | None]:
+  """eval_stairs' "heading on the flight" line (2026-11-13): (all, 15-18 cm up) in degrees, or Nones."""
+  m = re.search(r"heading on the flight: ([\d.]+) deg.*?15-18cm up ([\d.]+)", txt(path))
+  return (None, None) if m is None else (float(m.group(1)), float(m.group(2)))
+
+
 def stairs_falls(path: str) -> int | None:
   """Any fall in eval_stairs (traverse or stop): the exact count of its "falls:" line, else (a file from before it)
   the table's whole percents of each row summed -- which read one or two robots of a row as 0%."""
@@ -289,6 +298,13 @@ def judge(argv: list[str]) -> int:
   detail.append(line)
   if why:
     bad.append(why)
+  # the heading on the flight: a reading here, judged in tinynav (the user: "heading需要验收"; go2-depth 11-13: tier 2
+  # warns only -- a judged tier-2 bar would be a new acceptance rule)
+  ha, hu = stairs_heading(p["stairs"])
+  if ha is not None:
+    warn = ha > HEADING_WARN_DEG or hu > HEADING_WARN_DEG
+    detail.append(f"楼梯航向（只出读数，tinynav 判 {HEADING_WARN_DEG:.0f}°）：合计 {ha:.1f}°，15–18 cm 上楼 {hu:.1f}°"
+                  + ("  WARN：超过 3°，tinynav 可能不过" if warn else ""))
   # unloaded stairs: 0 falls, counted exactly (traverse and stop; accept_tables' fall item reads the traverse's whole
   # percent only -- doc/redesign.md 2.2 "空载测试全部 0 摔", go2-depth's review 11-12 item 15)
   uf = stairs_falls(p["stairs"])
