@@ -530,6 +530,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_Q_LR=<x>           the stairs-quality multipliers' step per update (constraints.LR 0.003: 1 -> 3 in ~370
                          iterations, and the costs grew fivefold in 200 iterations with the behaviour unchanged);
     U_Q_SPAN=<it>        the iterations the stairs quality takes for 0 -> 1 (curriculum.Q_SPAN_IT);
+    U_TERMINATED_Q=<x>   the same cost, but along the stairs quality: 1x at q 0 -> <x> times at q Q_IN, with the P
+                         weights (constraints.quality_terms) -- before the quality stage a fall costs what it did,
+                         so the robots still try the rows they fail on;
+    U_STAIRS_P=<a>,<b>   the progress over which the stairs share of the training robots goes from its start to its
+                         end (curriculum.progress_stairs_share: 0.3,0.8 -- the from-zero Go2 teacher's climbing row
+                         fell 2.0 -> 0.55 over iterations 400-2500 at the start share and rose only with the share);
     U_Q_ROW=<row>        the climbing row the stairs quality waits for (curriculum.Q_ROW 3: the old flow put the P
                          weights on a policy at rows 5-6);
     U_Q_HEALTH=<k>       the stairs quality by health (curriculum.progress, q_back): it waits while the light
@@ -608,7 +614,15 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
           c["start"] = {t: start[t] for t in c["terms"]}
           c["base"] = {t: cfg.rewards[t].weight for t in c["terms"]}
       _probe_switches(cfg, items)
+      if os.environ.get("U_TERMINATED_Q"):   # (_probe_switches)
+        assert "is_terminated" not in weights, "is_terminated: already an M -> P difference of the recipe"
+        w = cfg.rewards["is_terminated"].weight
+        weights["is_terminated"] = (w, w * float(os.environ["U_TERMINATED_Q"]))
       _curriculum(cfg, robot, items, constrained, other if lean else [], (weights, params), other_shares)
+      if os.environ.get("U_STAIRS_P"):
+        a, b = (float(v) for v in os.environ["U_STAIRS_P"].split(","))
+        assert 0.0 <= a < b <= 1.0, f"U_STAIRS_P: 0 <= a < b <= 1, got {a}, {b}"
+        cfg.curriculum["u_stairs_share"].params.update(p_start=a, p_end=b)
       if os.environ.get("U_Q_SPAN"):   # (_probe_switches; the curriculum's terms exist from here on)
         cfg.curriculum["u_progress"].params["q_span_it"] = int(os.environ["U_Q_SPAN"])
       if os.environ.get("U_Q_ROW"):
