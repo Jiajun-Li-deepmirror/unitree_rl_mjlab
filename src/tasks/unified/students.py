@@ -59,6 +59,7 @@ from src.tasks.velocity.rl.student_ppo import (
   StudentPpoAlgorithmCfg,
 )
 
+from . import diagnostics
 from .models import PRIV_GROUP, PRIV_LATENT
 from .robots import URobot
 from .teacher_env import unified_teacher_env_cfg
@@ -342,6 +343,7 @@ class UStudentDistillationRunner(DepthDistillationRunner):
     teacher_checkpoint = train_cfg.get("teacher_checkpoint", "")
     super().__init__(env, train_cfg, log_dir, device)
     restore_teacher_curriculum(self.env, teacher_checkpoint, device)
+    diagnostics.attach(self, kind="student")   # the training records (<run>/records/, diagnostics.py)
 
   def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
     if _is_blind(self.env):
@@ -355,6 +357,7 @@ class UStudentPpoRunner(DepthStudentPpoRunner):
     teacher_checkpoint = train_cfg.get("teacher_checkpoint", "")
     super().__init__(env, train_cfg, log_dir, device)
     restore_teacher_curriculum(self.env, teacher_checkpoint, device)
+    diagnostics.attach(self, kind="student")   # the training records (<run>/records/, diagnostics.py)
 
   def export_policy_to_onnx(self, path: str, filename: str = "policy.onnx", verbose: bool = False) -> None:
     if _is_blind(self.env):
