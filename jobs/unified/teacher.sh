@@ -13,10 +13,15 @@
 # RESUME_RUN (a run dir) + RESUME_K: every seed resumes from that run's model_K (the runner restores the curriculum's
 # progress, multipliers and meter; 2026-11-11, after the progress clock was added); for one seed. RESUME_LATEST=1: each seed
 # resumes from its own newest run (*_u<variant>_s<seed>) at its latest checkpoint (2026-11-12).
+# ITERS_TOTAL=1: ITERS is the total (a resumed seed trains ITERS - K more), so a seed resumed later ends where it would
+# have; default off (ITERS more iterations, as before).
+# The seeds a pass stops keep their runs and checkpoints; <pick>.others records them ("envs=<robots per seed>
+# seeds=<the others>", 2026-11-12, the review's item 10): jobs/unified/students.sh resumes one of them, at the same
+# robot count and code, when a student from the pick fails its acceptance.
 set -u
 R=$1 VARIANT=${2:-full} SEEDS=${3:-0 1} ITERS=${4:-30000}
 r=${R,,}
-cd /root/gpufree-data/go2-depth/depth_fe || exit 2
+cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
 case $VARIANT in full) TASK=Unitree-$R-U-Teacher ;; lean) TASK=Unitree-$R-U-Teacher-Lean ;; *) echo "teacher.sh: VARIANT full or lean" >&2; exit 2 ;; esac
@@ -26,11 +31,16 @@ log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; 
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
 log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null)"
-declare -A PID RUN
+declare -A PID RUN BEFORE
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
-  local res="" before
-  [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$"
+  local res="" before from=0
+  # the run dirs of this name already there (a resume's source, old runs): the new run is the one that appears after;
+  # gate() never judges this one (2026-11-12, go2-depth's review: a fallback to the newest dir judged an old run)
+  before=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
+  BEFORE[$s]=$before
+  [ -n "${RESUME_RUN:-}" ] && res="--agent.resume=True --agent.load-run=^$(basename $RESUME_RUN)\$ --agent.load-checkpoint=^model_${RESUME_K}\.pt\$" \
+    && from=$RESUME_K
   if [ "${RESUME_LATEST:-0}" = 1 ]; then
     # the newest run of this seed that has a checkpoint (a run stopped before its first save has none)
     local rr="" rk="" d
@@ -43,15 +53,18 @@ start() {   # SEED
       [ -n "$rk" ] && { rr=$d; break; }
     done
     [ -n "$rk" ] && res="--agent.resume=True --agent.load-run=^$(basename $rr)\$ --agent.load-checkpoint=^model_${rk}\.pt\$" \
-      && log "seed $s resumes from $(basename $rr) model_$rk"
+      && from=$rk && log "seed $s resumes from $(basename $rr) model_$rk"
   fi
-  # the run dirs of this name already there (a resume's source among them): the new run is the one that appears after
-  before=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
+  local more=$ITERS
+  if [ "${ITERS_TOTAL:-0}" = 1 ]; then
+    more=$(( ITERS - from ))
+    [ $more -gt 0 ] || { log "seed $s: already at the cap ($from >= $ITERS), not started"; PID[$s]=""; RUN[$s]=""; return; }
+  fi
   $PY scripts/train.py $TASK --env.scene.num-envs=$ENVS --agent.run-name=$name --agent.seed=$s \
-    --agent.max-iterations=$ITERS $res > logs/jobs/unified_${r}_$name.log 2>&1 &
+    --agent.max-iterations=$more $res > logs/jobs/unified_${r}_$name.log 2>&1 &
   PID[$s]=$!
   RUN[$s]=""
-  for _ in $(seq 80); do
+  for _ in $(seq ${RUN_WAIT_TRIES:-80}); do
     d=$(ls -d logs/rsl_rl/${r}_u_teacher/*_$name 2> /dev/null | sort | tail -n 1)
     [ -n "$d" ] && [ "$d" != "$before" ] && { RUN[$s]=$d; break; }
     sleep 15
@@ -59,21 +72,39 @@ start() {   # SEED
   log "seed $s started (pid ${PID[$s]}, run ${RUN[$s]:-none yet})"
 }
 gate() {    # SEED -> 0 when it passed (writes the pick)
-  local s=$1 v
-  [ -n "${RUN[$s]:-}" ] || RUN[$s]=$(ls -d logs/rsl_rl/${r}_u_teacher/*_u${VARIANT}_s$s 2> /dev/null | sort | tail -n 1)   # the newest
-  [ -n "${RUN[$s]:-}" ] || return 1
+  local s=$1 v d
+  if [ -z "${RUN[$s]:-}" ]; then
+    # the run dir did not show while start() waited: look again, but only for one newer than the runs before this start
+    d=$(ls -d logs/rsl_rl/${r}_u_teacher/*_u${VARIANT}_s$s 2> /dev/null | sort | tail -n 1)
+    if [ -z "$d" ] || [ "$d" = "${BEFORE[$s]:-}" ]; then log "seed $s: its new run dir is not there yet"; return 1; fi
+    RUN[$s]=$d
+  fi
   v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} 2> /dev/null | head -n 1)
   log "seed $s: ${v:-no verdict}"
   if [[ "$v" == PASS* ]]; then
     local k=$(echo $v | cut -d' ' -f2)
+    # the events can be ahead of the save: the pick only once its checkpoint is on disk (else the next gate)
+    [ -f ${RUN[$s]}/model_$k.pt ] || { log "seed $s: passes at $k, but model_$k.pt is not saved yet (next gate)"; return 1; }
     echo "${RUN[$s]}/model_$k.pt seed $s" > $PICK
     log "TEACHER PICK ${RUN[$s]}/model_$k.pt (seed $s)"
     return 0
   fi
   return 1
 }
-stop() { kill -INT $1 2> /dev/null; for _ in $(seq 60); do kill -0 $1 2> /dev/null || return; sleep 2; done; kill $1 2> /dev/null; }
-rm -f $PICK
+stop() {   # PID...: all at once. SIGTERM (a background job of a non-interactive shell ignores SIGINT, and Python then
+  # installs no KeyboardInterrupt handler; the unified runner's training records end on SIGTERM as "stopped" with a
+  # last entry, diagnostics.py), then SIGKILL for whatever still runs after STOP_WAIT_S (60). The checkpoints are on
+  # disk already; nothing is saved on the way out.
+  local p alive="$*"
+  kill -TERM "$@" 2> /dev/null
+  for _ in $(seq $(( ${STOP_WAIT_S:-60} / 2 ))); do
+    alive=""; for p in "$@"; do kill -0 $p 2> /dev/null && alive="$alive $p"; done
+    [ -n "$alive" ] || return 0
+    sleep 2
+  done
+  [ -z "$alive" ] || kill -KILL $alive 2> /dev/null
+}
+rm -f $PICK $PICK.others   # (a previous run's kept seeds are not this run's)
 passed=""
 if [ "${PARALLEL:-0}" = 1 ]; then
   for s in $SEEDS; do start $s; done
@@ -84,8 +115,16 @@ if [ "${PARALLEL:-0}" = 1 ]; then
     for s in $SEEDS; do gate $s && { passed=$s; break; }; done
     [ $alive = 0 ] && break
   done
-  if [ -n "$passed" ] && [ "${KEEP_OTHERS:-0}" != 1 ]; then
-    for s in $SEEDS; do [ $s = $passed ] || { stop ${PID[$s]}; log "seed $s stopped (seed $passed passed)"; }; done
+  if [ -n "$passed" ]; then
+    # the pick's seed stops too, as in the sequential branch (go2-depth's review 11-12: it trained on to its cap, and
+    # this script's exit, the .others and anything waiting for it with it); its checkpoints stay
+    if [ "${KEEP_OTHERS:-0}" != 1 ]; then
+      stop $(for s in $SEEDS; do echo ${PID[$s]}; done)
+      log "seeds $SEEDS stopped (seed $passed passed; every seed's checkpoints stay)"
+    else
+      stop ${PID[$passed]}; log "seed $passed stopped at its pick (its checkpoints stay)"
+      log "KEEP_OTHERS=1: the other seeds run on to their caps; <pick>.others is written when they end"
+    fi
   fi
   wait
 else
@@ -100,5 +139,10 @@ else
     gate $s && { passed=$s; break; }
   done
 fi
-if [ -n "$passed" ]; then log "PASS (seed $passed: $(cat $PICK))"; exit 0; fi
+if [ -n "$passed" ]; then
+  others=$(for s in $SEEDS; do [ $s = $passed ] || echo -n "$s "; done)
+  echo "envs=$ENVS seeds=${others% }" > $PICK.others
+  log "PASS (seed $passed: $(cat $PICK)); kept for a fallback: seeds ${others:-none} ($PICK.others)"
+  exit 0
+fi
 log "no seed passed"; exit 1

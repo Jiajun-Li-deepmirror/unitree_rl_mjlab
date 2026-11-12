@@ -128,6 +128,7 @@ class StudentPPO(PPO):
       else:
         value_loss = (batch.returns - values).pow(2).mean()
 
+      extra = self.extra_loss(batch)
       if warmup:
         loss = self.value_loss_coef * value_loss
       else:
@@ -137,6 +138,8 @@ class StudentPPO(PPO):
           - self.entropy_coef * entropy.mean()
           + self.bc_coef * bc_loss
         )
+        if extra is not None:
+          loss = loss + extra
       self.optimizer.zero_grad()
       loss.backward()
       nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
@@ -154,6 +157,12 @@ class StudentPPO(PPO):
     out["bc_coef"] = self.bc_coef
     out["critic_warmup"] = float(warmup)
     return out
+
+  def extra_loss(self, batch) -> torch.Tensor | None:
+    """A subclass's extra term for the actor, after the actor's forward pass on the mini-batch (None: none; added
+    outside the critic warm-up). src/tasks/unified/students.py's UStudentPPO: the privileged-latent estimate."""
+    del batch
+    return None
 
   def save(self) -> dict:
     saved = super().save()
@@ -261,7 +270,7 @@ class DepthStudentPpoRunner(MjlabOnPolicyRunner):
     if student_checkpoint:
       loaded = torch.load(student_checkpoint, map_location=device, weights_only=False)
       missing, unexpected = self.alg.actor.load_state_dict(loaded["student_state_dict"], strict=False)
-      if unexpected or any(not k.startswith(("distribution.", "aux_head.")) for k in missing):
+      if unexpected or any(not k.startswith(("distribution.", "aux_head.", "priv_head.")) for k in missing):
         raise RuntimeError(f"Student checkpoint mismatch: {missing=} {unexpected=}")
       print(f"[INFO] Loaded student from {student_checkpoint} (new: {sorted({k.split('.')[0] for k in missing})})")
     # where the command sits in the student's proprio history, for bc_jump_weight

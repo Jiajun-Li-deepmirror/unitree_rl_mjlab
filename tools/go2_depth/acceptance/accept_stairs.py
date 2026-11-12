@@ -52,6 +52,9 @@ from uni_metrics.terrain import JUMP, Grid as _Grid  # noqa: E402
 DT = 0.02
 robot, onnx = sys.argv[1], Path(sys.argv[2])
 runs = int(sys.argv[3]) if len(sys.argv) > 3 else 4
+# the first run's seed (2026-11-12): a later batch of the same scenarios with fresh seeds (tn_gate_unified.sh's
+# second loaded stage) instead of repeating seeds 0 .. runs-1
+SEED0 = int(os.environ.get("SEED0", "0") or 0)
 WHEELED = get_robot(robot).wheeled
 ONLY = os.environ.get("ONLY")  # comma list of scenario names
 
@@ -191,7 +194,7 @@ for sc in SCEN:
   if win is None:   # map3 R2b: around the down spawn
     win = (pos[0] - 3.0, pos[0] + 3.0, pos[1] - 6.0, pos[1] + 6.0, pos[2] - 3.5, pos[2] + 0.3, 0.01)
   grid = grids.setdefault((scene, win), Grid(model, win))
-  ms = [run(sc, s, grid) for s in range(runs)]
+  ms = [run(sc, s, grid) for s in range(SEED0, SEED0 + runs)]
   agg = {k: sum(mm[k] for mm in ms) for k in ("kicks", "mid", "edge", "placed", "slips", "ups", "downs", "idle_front", "idle_rear", "w2", "wn", "clean", "edged")}   # legged ups: foot step-ups (/ 4 = the robot's)
   falls = sum(mm["fell"] for mm in ms)
   roll = max(mm["roll"] for mm in ms)

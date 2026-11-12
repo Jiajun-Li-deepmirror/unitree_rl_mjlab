@@ -15,22 +15,38 @@ The teacher reads its actor group (proprio + scan + scan flag; renamed "teacher"
 
 Stages (rsl_rl): 1 = DAgger distillation (the student acts, the teacher labels: rl/distillation.py's runner);
 2 = PPO + behavior cloning toward the teacher's mean action, the teacher's critic as the start (rl/student_ppo.py's).
+
+The privileged latent (2026-11-12, the review's item 8; doc/redesign.md 3.5 "the students estimate it from their
+history"): both students carry a head (priv_head, not exported) that estimates the teacher's compact privileged vector
+(models.UPrivLatentModel.priv_latent: CoM, payload, friction, true velocity, foot states -> 8 numbers) from the
+student's own features (the blind MLP's last hidden layer, the depth student's GRU state). With priv_coef 0 (the
+default) the head is a probe: it trains on the detached features with its own optimizer, so the student is exactly as
+before and the log says how much of the vector its features hold; with priv_coef > 0 the estimation error is part of
+the student's loss (RMA-style). Logged as Loss/priv_mse and Loss/priv_fvu (the error over the target's variance:
+1 = nothing estimated, 0 = all of it). Set with --agent.algorithm.priv-coef.
 """
 
 from __future__ import annotations
 
 import os
 from copy import deepcopy
+from dataclasses import dataclass
 
 import torch
 from mjlab.managers.observation_manager import ObservationGroupCfg
 from mjlab.rl import RslRlModelCfg
+from rsl_rl.models import MLPModel
+from rsl_rl.modules import MLP
+from rsl_rl.utils import unpad_trajectories
 
 from src.tasks.velocity.depth_env_cfg import NAVCORE_CAMERA_POS, NAVCORE_CAMERA_QUAT, TEACHER_SCAN_NAME, apply_depth_student
 from src.tasks.velocity.mdp.depth import NAVCORE_DEPTH_CAMERA
 from src.tasks.velocity.rl.distillation import (
+  TERRAIN_TARGET_GROUP,
+  DepthDistillation,
   DepthDistillationRunner,
   DepthDistillationRunnerCfg,
+  DepthStudentModel,
   DistillationAlgorithmCfg,
 )
 from rsl_rl.algorithms import PPO
@@ -43,7 +59,7 @@ from src.tasks.velocity.rl.student_ppo import (
   StudentPpoAlgorithmCfg,
 )
 
-from .models import PRIV_GROUP
+from .models import PRIV_GROUP, PRIV_LATENT
 from .robots import URobot
 from .teacher_env import unified_teacher_env_cfg
 
@@ -78,6 +94,177 @@ def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str =
   return cfg
 
 
+# ---- the privileged-latent estimate (module docstring) ----
+PRIV_HEAD_HIDDEN = (64,)
+PRIV_PROBE_LR = 1e-3
+BLIND_STUDENT_MODEL = "src.tasks.unified.students:UBlindStudentModel"
+DEPTH_STUDENT_MODEL = "src.tasks.unified.students:UDepthStudentModel"
+
+
+def _priv_head(obs, in_dim: int) -> nn.Module | None:
+  """The estimate's head, when the observations carry the teacher's privileged group (the students' environments
+  do; any other environment builds the plain model)."""
+  return MLP(in_dim, PRIV_LATENT, PRIV_HEAD_HIDDEN, "elu") if PRIV_GROUP in obs.keys() else None
+
+
+class UBlindStudentModel(MLPModel):
+  """The blind student: rsl_rl's MLPModel (the deployed blind actor; its export, _OnnxMLPModel, copies the normalizer
+  and the MLP only, so the deploy contract is unchanged) that keeps its last hidden layer's output for priv_head."""
+
+  def __init__(self, obs, obs_groups, obs_set, output_dim, hidden_dims=(512, 256, 128), activation: str = "elu",
+               obs_normalization: bool = False, distribution_cfg: dict | None = None) -> None:
+    super().__init__(obs, obs_groups, obs_set, output_dim, hidden_dims=hidden_dims, activation=activation,
+                     obs_normalization=obs_normalization, distribution_cfg=distribution_cfg)
+    self.priv_head = _priv_head(obs, int(list(hidden_dims)[-1]))
+    self.priv_features: torch.Tensor | None = None
+
+  def forward(self, obs, masks=None, hidden_state=None, stochastic_output: bool = False) -> torch.Tensor:
+    # MLPModel.forward, with the MLP run layer by layer to keep the last hidden layer's output
+    obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
+    x = self.get_latent(obs, masks, hidden_state)
+    layers = list(self.mlp)
+    for layer in layers[:-1]:
+      x = layer(x)
+    self.priv_features = x
+    out = layers[-1](x)
+    if self.distribution is not None:
+      if stochastic_output:
+        self.distribution.update(out)
+        return self.distribution.sample()
+      return self.distribution.deterministic_output(out)
+    return out
+
+
+class UDepthStudentModel(DepthStudentModel):
+  """The depth student (rl/distillation.py's DepthStudentModel, its export unchanged) with priv_head on its GRU state."""
+
+  def __init__(self, obs, obs_groups, obs_set, output_dim, **kwargs) -> None:
+    super().__init__(obs, obs_groups, obs_set, output_dim, **kwargs)
+    self.priv_head = _priv_head(obs, self.rnn_hidden_dim)
+
+  @property
+  def priv_features(self) -> torch.Tensor | None:
+    return self.last_latent
+
+
+class PrivEstimate:
+  """The students' privileged-latent loss (module docstring). loss() after the student's forward pass on a batch:
+  returns coef x MSE to add to the student's loss (coef > 0), or None after a probe step on the detached features
+  (coef 0); pop_log() the means since the last call."""
+
+  def __init__(self, coef: float = 0.0) -> None:
+    self.coef = float(coef)
+    self.opt: torch.optim.Optimizer | None = None
+    self.sums = {"priv_mse": 0.0, "priv_fvu": 0.0}
+    self.n = 0
+
+  def loss(self, student, teacher, obs, masks=None) -> torch.Tensor | None:
+    head = getattr(student, "priv_head", None)
+    feat = getattr(student, "priv_features", None)
+    if head is None or feat is None or not hasattr(teacher, "priv_encoder") or PRIV_GROUP not in obs.keys():
+      return None
+    with torch.no_grad():
+      p = obs[PRIV_GROUP]
+      if masks is not None:   # a recurrent mini-batch: padded trajectories, as the GRU's unpadded output
+        p = unpad_trajectories(p, masks)
+      target = teacher.priv_encoder(teacher.priv_normalizer(p))
+    if self.coef > 0.0:
+      mse = nn.functional.mse_loss(head(feat), target)
+      out = self.coef * mse
+    else:
+      if self.opt is None:
+        self.opt = torch.optim.Adam(head.parameters(), lr=PRIV_PROBE_LR)
+      mse = nn.functional.mse_loss(head(feat.detach()), target)
+      self.opt.zero_grad(set_to_none=True)
+      mse.backward()
+      self.opt.step()
+      # the student's own optimizer holds these parameters too: leave it no gradient to step them with
+      self.opt.zero_grad(set_to_none=True)
+      out = None
+    var = target.reshape(-1, target.shape[-1]).var(dim=0).mean().clamp_min(1e-8)
+    self.sums["priv_mse"] += float(mse.detach())
+    self.sums["priv_fvu"] += float(mse.detach() / var)
+    self.n += 1
+    return out
+
+  def pop_log(self) -> dict[str, float]:
+    if not self.n:
+      return {}
+    out = {k: v / self.n for k, v in self.sums.items()}
+    self.sums = dict.fromkeys(self.sums, 0.0)
+    self.n = 0
+    return out
+
+
+class UDistillation(DepthDistillation):
+  """Stage 1 (rl/distillation.py's DepthDistillation: rsl_rl's DAgger update plus the depth student's optional
+  terrain reconstruction) plus the privileged-latent estimate (PrivEstimate)."""
+
+  def __init__(self, *args, priv_coef: float = 0.0, **kwargs) -> None:
+    super().__init__(*args, **kwargs)
+    self.priv = PrivEstimate(priv_coef)
+
+  def update(self) -> dict[str, float]:
+    terrain = bool(self.aux_loss_coef) and getattr(self.student, "aux_head", None) is not None
+    self.num_updates += 1
+    behavior_sum = terrain_sum = 0.0
+    loss = 0
+    cnt = 0
+    for _ in range(self.num_learning_epochs):
+      self.student.reset(hidden_state=self.last_hidden_states[0])
+      self.teacher.reset(hidden_state=self.last_hidden_states[1])
+      self.student.detach_hidden_state()
+      for batch in self.storage.generator():
+        actions = self.student(batch.observations)
+        behavior_loss = self.loss_fn(actions, batch.privileged_actions)
+        loss = loss + behavior_loss
+        behavior_sum += behavior_loss.item()
+        if terrain:
+          aux = nn.functional.mse_loss(self.student.aux_head(self.student.last_latent),
+                                       batch.observations[TERRAIN_TARGET_GROUP])
+          loss = loss + self.aux_loss_coef * aux
+          terrain_sum += aux.item()
+        extra = self.priv.loss(self.student, self.teacher, batch.observations)
+        if extra is not None:
+          loss = loss + extra
+        cnt += 1
+        if cnt % self.gradient_length == 0:
+          self.optimizer.zero_grad()
+          loss.backward()
+          if self.is_multi_gpu:
+            self.reduce_parameters()
+          if self.max_grad_norm:
+            nn.utils.clip_grad_norm_(self.student.parameters(), self.max_grad_norm)
+          self.optimizer.step()
+          self.student.detach_hidden_state()
+          loss = 0
+        self.student.reset(batch.dones.view(-1))
+        self.teacher.reset(batch.dones.view(-1))
+        self.student.detach_hidden_state(batch.dones.view(-1))
+    self.storage.clear()
+    self.last_hidden_states = (self.student.get_hidden_state(), self.teacher.get_hidden_state())
+    self.student.detach_hidden_state()
+    out = {"behavior": behavior_sum / max(cnt, 1)}
+    if terrain:
+      out["terrain_aux"] = terrain_sum / max(cnt, 1)
+    out.update(self.priv.pop_log())
+    return out
+
+
+@dataclass
+class UDistillationAlgorithmCfg(DistillationAlgorithmCfg):
+  priv_coef: float = 0.0
+  """Weight of the privileged-latent estimate in the student's loss (0: a probe only; module docstring)."""
+  class_name: str = "src.tasks.unified.students:UDistillation"
+
+
+@dataclass
+class UStudentPpoAlgorithmCfg(StudentPpoAlgorithmCfg):
+  priv_coef: float = 0.0
+  """As UDistillationAlgorithmCfg.priv_coef, in stage 2."""
+  class_name: str = "src.tasks.unified.students:UStudentPPO"
+
+
 def _teacher_model_cfg() -> RslRlModelCfg:
   return RslRlModelCfg(hidden_dims=(512, 256, 128), obs_normalization=True, class_name=TEACHER_MODEL,
                        distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"})
@@ -89,10 +276,10 @@ def _student_model_cfg(kind: str, distribution: bool) -> RslRlModelCfg:
     # a Gaussian head in stage 1 too: rsl_rl's runner logs the policy's output_std every iteration (distillation
     # itself uses the mean)
     dist = {"class_name": "GaussianDistribution", "init_std": 0.4, "std_type": "scalar"}
-    return RslRlModelCfg(hidden_dims=(512, 256, 128), obs_normalization=True, class_name="MLPModel",
+    return RslRlModelCfg(hidden_dims=(512, 256, 128), obs_normalization=True, class_name=BLIND_STUDENT_MODEL,
                          distribution_cfg=dist)
-  return RslRlModelCfg(hidden_dims=(512, 256, 128), obs_normalization=True,
-                       class_name="src.tasks.velocity.rl.distillation:DepthStudentModel", distribution_cfg=dist)
+  return RslRlModelCfg(hidden_dims=(512, 256, 128), obs_normalization=True, class_name=DEPTH_STUDENT_MODEL,
+                       distribution_cfg=dist)
 
 
 def distill_runner_cfg(robot: URobot, kind: str) -> DepthDistillationRunnerCfg:
@@ -101,7 +288,7 @@ def distill_runner_cfg(robot: URobot, kind: str) -> DepthDistillationRunnerCfg:
     max_iterations=S1_ITERATIONS, save_interval=100,
     obs_groups={"student": STUDENT_GROUPS[kind], "teacher": TEACHER_GROUPS[kind]},
     student=_student_model_cfg(kind, distribution=False), teacher=_teacher_model_cfg(),
-    algorithm=DistillationAlgorithmCfg(),
+    algorithm=UDistillationAlgorithmCfg(),
   )
 
 
@@ -111,7 +298,7 @@ def ppo_runner_cfg(robot: URobot, kind: str, clip_actions: float | None = None) 
     max_iterations=S2_ITERATIONS, save_interval=100, clip_actions=clip_actions,
     obs_groups={"actor": STUDENT_GROUPS[kind], "critic": ("critic",), TEACHER_SET: TEACHER_GROUPS[kind]},
     actor=_student_model_cfg(kind, distribution=True), teacher=_teacher_model_cfg(),
-    algorithm=StudentPpoAlgorithmCfg(bc_coef=1.0, bc_coef_final=0.3, class_name="src.tasks.unified.students:UStudentPPO"),
+    algorithm=UStudentPpoAlgorithmCfg(bc_coef=1.0, bc_coef_final=0.3),
   )
 
 
@@ -183,8 +370,9 @@ class UStudentPPO(StudentPPO):
 
   def __init__(self, actor, critic, storage, bc_coef: float = 1.0, bc_coef_final: float | None = None,
                critic_warmup: int = 0, bc_jump_weight: float = 1.0, bc_jump_v: float = 0.5, bc_jump_wz: float = 1.0,
-               **kwargs) -> None:
+               priv_coef: float = 0.0, **kwargs) -> None:
     PPO.__init__(self, actor, critic, storage, **kwargs)
+    self.priv = PrivEstimate(priv_coef)
     self.teacher = None
     self.bc_coef = bc_coef
     self.bc_coef_final = bc_coef_final
@@ -194,9 +382,15 @@ class UStudentPPO(StudentPPO):
     self.bc_jump_weight, self.bc_jump_v, self.bc_jump_wz = bc_jump_weight, bc_jump_v, bc_jump_wz
     self.jump_layout = None
 
+  def extra_loss(self, batch) -> torch.Tensor | None:
+    """StudentPPO's hook (the recurrent update): the privileged-latent estimate on the mini-batch."""
+    return self.priv.loss(self.actor, self.teacher, batch.observations, masks=batch.masks)
+
   def update(self) -> dict[str, float]:
     if self.actor.is_recurrent:
-      return super().update()
+      out = super().update()
+      out.update(self.priv.pop_log())
+      return out
     assert self.teacher is not None, "the runner sets the teacher"
     warmup = self.num_updates < self.critic_warmup
     self.num_updates += 1
@@ -216,6 +410,7 @@ class UStudentPPO(StudentPPO):
       with torch.no_grad():
         teacher_mean = self.teacher(batch.observations)
       bc_loss = (self.actor.output_mean - teacher_mean).pow(2).mean()
+      extra = self.priv.loss(self.actor, self.teacher, batch.observations)
       if self.desired_kl is not None and self.schedule == "adaptive" and not warmup:
         with torch.inference_mode():
           kl = torch.mean(self.actor.get_kl_divergence(batch.old_distribution_params, params))
@@ -237,6 +432,8 @@ class UStudentPPO(StudentPPO):
         loss = self.value_loss_coef * value_loss
       else:
         loss = surrogate + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean() + self.bc_coef * bc_loss
+        if extra is not None:
+          loss = loss + extra
       self.optimizer.zero_grad()
       loss.backward()
       nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
@@ -251,4 +448,5 @@ class UStudentPPO(StudentPPO):
     out = {k: v / n for k, v in sums.items()}
     out["bc_coef"] = self.bc_coef
     out["critic_warmup"] = float(warmup)
+    out.update(self.priv.pop_log())
     return out

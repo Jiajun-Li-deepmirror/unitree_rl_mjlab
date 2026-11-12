@@ -322,7 +322,8 @@ class DepthDistillationRunner(DistillationRunner):
       missing, unexpected = self.alg.student.load_state_dict(
         loaded["student_state_dict"], strict=False
       )
-      if unexpected or any(not k.startswith("aux_head.") for k in missing):
+      # aux_head / priv_head: heads only some students have (not exported; src/tasks/unified/students.py)
+      if unexpected or any(not k.startswith(("aux_head.", "priv_head.")) for k in missing):
         raise RuntimeError(f"Student checkpoint mismatch: {missing=} {unexpected=}")
       # Same parameters: keep the optimizer state too (not from a PPO fine-tune's, rl/student_ppo.py).
       if not missing and "actor_state_dict" not in loaded:

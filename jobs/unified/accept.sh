@@ -1,22 +1,43 @@
 #!/bin/bash
 # accept.sh R KIND RUN [K ...] (go2-depth 2026-11-12, doc/redesign.md 2): the acceptance of robot R's KIND (blind |
-# depth) student, stage-2 run RUN (logs/rsl_rl/<r>_u_student_<kind>_rl/<run>). Candidates: the checkpoints K given, else
-# the last one and then every 500 iterations back to 1000; the first that passes is the pick.
+# depth) student, stage-2 run RUN (logs/rsl_rl/<r>_u_student_<kind>_rl/<run>).
+# Candidates (CANDIDATES):
+#   avg    (default since 2026-11-12, the user: "尽量减少验收的耗时以及尽量减少运气通过的问题"; doc/accept_stats_proposal.md)
+#          AVG_CANDS (default 1) candidates fixed in advance, each the average of the AVG_N (default 8) newest
+#          checkpoints at or before an end iteration (scripts/unified/avg_ckpt.py -> RUN/avg<N>_<end>.pt): the ends
+#          are the K given, else the last checkpoint and then AVG_SPACING (default 1000) iterations apart. One
+#          candidate tested once: a pass is not the luckiest of several tries, and the average evens out the
+#          save-to-save swings of single checkpoints (doc/blind_phased_training.md 8.1). A fail is the run's result
+#          (jobs/unified/students.sh then falls back to another teacher seed), not a reason to try older checkpoints.
+#   first  (the rule before) the checkpoints K given, else the last one and then every 500 iterations back to 1000;
+#          the first, in that order, that passes both tiers is the pick
 # Tier 2 (mjlab), one run per test at 3x the old per-seed robots (the "3 seeds pooled"), on the check tasks
 # Unitree-<R>-U-Student-<Kind>-Flat / -Stairs (jobs/unified/u_eval.py), unloaded (U_PAYLOAD 0 kg) and loaded (the
-# walking payload, jobs/accept_payload.sh): files logs/checks/u_<r>_<kind>_<run>_<K>_<test>[_pay].txt, judged by
-# scripts/unified/accept_judge.py. Tier 3 (tinynav, the aligned robot models) follows a tier-2 pass: TN_GATE
-# (default: the request file logs/accept/u_<r>_<kind>_<run>_<K>.ureq for tn_gate_unified.sh; "skip" until the
-# aligned tinynav-sim models are in). Log logs/jobs/unified_<r>_accept.txt; the pick logs/jobs/unified_<r>_<kind>.pick.
+# walking payload, jobs/accept_payload.sh): files logs/checks/u_<r>_<kind>_<run>_<tag>_<test>[_pay].txt, judged by
+# scripts/unified/accept_judge.py. The tests run ACCEPT_JOBS (default 2) at a time on the GPU (both payload
+# conditions in one pool; the map3 flights, three shards each already, after them), out-of-memory retried as before.
+# Tier 3 (tinynav, the aligned robot models) follows a tier-2 pass: TN_GATE (default:
+# the request file logs/accept/u_<r>_<kind>_<run>_<tag>.ureq for tn_gate_unified.sh; "skip": tier 2 only). Tier 3
+# runs beside the next candidates' tier 2 (2026-11-12, the review's item 11: the gate's 12 h no longer idle the GPU);
+# the pick is still the first candidate in order that passes both, so a later candidate waits for the earlier ones'
+# verdicts, and testing stops once an earlier candidate is known to pass.
+# BASELINE=1: tier 2 only, no pick, no delivery -- for a reading of another policy under the same tests (the review's
+# item 12, jobs/unified/baseline.sh). ACCEPT_SMOKE=1: two small tests per candidate, tier 2 taken as passed (not judged),
+# the pick in logs/jobs/unified_<r>_<kind>_smoke.pick, no delivery (jobs/unified/smoke_students.sh).
+# Log logs/jobs/unified_<r>_accept.txt; the pick logs/jobs/unified_<r>_<kind>.pick. Exit 0 picked (or BASELINE / a
+# smoke done), 1 no candidate passed, 2 setup error.
 set -u
 R=$1 KIND=$2 RUN=$3; shift 3
 r=${R,,} K=${KIND^}
-cd /root/gpufree-data/go2-depth/depth_fe || exit 2
+cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
+SMOKE=${ACCEPT_SMOKE:-0} BASE=${BASELINE:-0} MODE=${CANDIDATES:-avg} JOBS=${ACCEPT_JOBS:-2}
 L=logs/jobs/unified_${r}_accept.txt PICK=logs/jobs/unified_${r}_$KIND.pick
-mkdir -p logs/checks logs/accept
-log() { echo "$(date '+%m-%d %H:%M:%S') $R $KIND: $*" >> $L; }
+[ $SMOKE = 1 ] && PICK=logs/jobs/unified_${r}_${KIND}_smoke.pick
+mkdir -p logs/checks logs/accept logs/jobs
+TAG=""; [ $SMOKE = 1 ] && TAG="SMOKE "; [ $BASE = 1 ] && TAG="BASELINE "
+log() { echo "$(date '+%m-%d %H:%M:%S') $R $KIND: $TAG$*" >> $L; }
 W="$PY jobs/unified/u_eval.py" S=scripts/blind/eval
 TF=Unitree-$R-U-Student-$K-Flat TE=Unitree-$R-U-Student-$K-Stairs
 PAY=$(bash jobs/accept_payload.sh $R) || exit 2
@@ -24,12 +45,32 @@ LIN="--lin-accel 2.0" YAW="--yaw-accel 3.0"
 CLOCK=""; [[ $R == *W ]] && CLOCK="--clock-task Unitree-$R-U-Teacher"
 RUN=${RUN%/}
 name=$(basename $RUN)
-if [ $# -gt 0 ]; then KS="$*"
+iters() { ls $RUN/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n; }
+last=$(iters | tail -n 1)
+[ -n "$last" ] || { log "no checkpoints in $RUN"; exit 2; }
+
+# ---- the candidates: tags (first: the iteration K, file model_K.pt; avg: a<N>_<end>, file avg<N>_<end>.pt) ----
+CANDS=()
+declare -A CKOF
+if [ $MODE = avg ]; then
+  N=${AVG_N:-8} SP=${AVG_SPACING:-1000}
+  if [ $# -gt 0 ]; then ENDS="$*"; else ENDS=$(for c in $(seq 0 $(( ${AVG_CANDS:-1} - 1 ))); do echo $(( last - c * SP )); done); fi
+  for e in $ENDS; do
+    ks=$(iters | awk -v e=$e '$1 <= e' | tail -n $N)
+    if [ $(echo $ks | wc -w) -lt $N ]; then log "avg candidate at $e: only $(echo $ks | wc -w) checkpoints at or before it (need $N), skipped"; continue; fi
+    e=$(echo $ks | awk '{print $NF}')
+    out=$RUN/avg${N}_$e.pt
+    $PY scripts/unified/avg_ckpt.py $out $(for k in $ks; do echo $RUN/model_$k.pt; done) >> $L 2>&1 \
+      || { log "avg candidate at $e: averaging failed (tool fault)"; continue; }
+    CANDS+=(a${N}_$e); CKOF[a${N}_$e]=$out
+  done
+  log "candidates (avg: $N checkpoints each, fixed in advance): ${CANDS[*]:-none}"
 else
-  last=$(ls $RUN/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
-  [ -n "$last" ] || { log "no checkpoints in $RUN"; exit 2; }
-  KS="$last $(seq $(( (last / 500) * 500 )) -500 1000 | grep -vx $last | tr '\n' ' ')"
+  if [ $# -gt 0 ]; then KS="$*"; else KS="$last $(seq $(( (last / 500) * 500 )) -500 1000 | grep -vx $last | tr '\n' ' ')"; fi
+  for k in $KS; do [ -f $RUN/model_$k.pt ] && { CANDS+=($k); CKOF[$k]=$RUN/model_$k.pt; }; done
 fi
+[ ${#CANDS[@]} -gt 0 ] || { log "no candidate checkpoints in $RUN"; exit 1; }
+
 run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait 5 min and retry, up to 6 times; any
   # other failure: retried once. A tool fault is not a result: logged, and the judge reports the test as not measured.
   local out=$1 i; shift
@@ -41,68 +82,127 @@ run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait
   "$@" > $out 2>&1 && return 0
   log "TOOL FAULT: $(basename $out): $(grep -E 'Error' $out | tail -n 1 | cut -c1-160)"
 }
-for k in $KS; do
-  CK=$RUN/model_$k.pt
-  [ -f $CK ] || continue
-  P=logs/checks/u_${r}_${KIND}_${name}_$k
-  t0=$(date +%s)
-  log "candidate $CK: tier 2 (mjlab, pooled) started"
+
+tier2() {   # TAG -> prints PASS / FAIL: ...
+  local tag=$1 CK=${CKOF[$1]} P=logs/checks/u_${r}_${KIND}_${name}_$1 cond X
+  if [ $SMOKE = 1 ]; then
+    export U_PAYLOAD=0,0,0,0
+    run ${P}_stand.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 8 $LIN $YAW
+    run ${P}_stairs.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 1 --metrics
+    unset U_PAYLOAD
+    echo "PASS"
+    return
+  fi
+  # JOBS tests at a time (both payload conditions in one pool), each in its own process with its own U_PAYLOAD
+  pool() {   # PAYLOAD OUT CMD...
+    while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
+    ( export U_PAYLOAD=$1; shift; run "$@" ) &
+  }
   for cond in unloaded loaded; do
-    if [ $cond = unloaded ]; then export U_PAYLOAD=0,0,0,0 X=""; else export U_PAYLOAD=$PAY X=_pay; fi
-    $PY scripts/unified/dr_report.py $TF > ${P}_dr$X.txt 2>&1
-    run ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 18 --metrics
-    run ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs 768
-    run ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs 384
-    run ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs 768 $YAW $LIN
-    run ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
-    run ${P}_stand$X.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 768 $LIN $YAW
-    run ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96
+    if [ $cond = unloaded ]; then pay=0,0,0,0 X=""; else pay=$PAY X=_pay; fi
+    U_PAYLOAD=$pay $PY scripts/unified/dr_report.py $TF > ${P}_dr$X.txt 2>&1
+    pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 18 --metrics
+    pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs 768
+    pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs 384
+    pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs 768 $YAW $LIN
+    pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
+    pool $pay ${P}_stand$X.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 768 $LIN $YAW
+    pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96
     if [ $cond = unloaded ]; then
-      run ${P}_am.txt $W $S/accept_matrix.py --task $TF --envs-per-cmd 96 $CK $LIN $YAW
-      run ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd 48
-      [[ $R == *W ]] && run ${P}_gait.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd 96
-      run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
-        --down-vx 0.5 --num-envs 192 --time-scale 1.6 --seed 0
-      run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs 192 \
-        --time-scale 1.6 --seed 0
+      pool $pay ${P}_am.txt $W $S/accept_matrix.py --task $TF --envs-per-cmd 96 $CK $LIN $YAW
+      pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd 48
+      [[ $R == *W ]] && pool $pay ${P}_gait.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd 96
     fi
   done
-  unset U_PAYLOAD X
+  wait
+  # the map3 flights (unloaded): three shards each already, so one at a time after the pool
+  ( export U_PAYLOAD=0,0,0,0
+    run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
+      --down-vx 0.5 --num-envs 192 --time-scale 1.6 --seed 0
+    run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs 192 \
+      --time-scale 1.6 --seed 0 )
   $PY scripts/unified/accept_judge.py $R $P > ${P}_verdict.txt 2>&1
-  v=$(head -n 1 ${P}_verdict.txt)
+  local v=$(head -n 1 ${P}_verdict.txt)
   [[ "$v" == PASS || "$v" == FAIL* ]] || v="FAIL: judge error: $v"
-  log "$CK tier 2 ($(( ($(date +%s) - t0) / 60 )) min): $v"
-  [[ "$v" == PASS ]] || continue
-  # tier 3: tinynav on the aligned models
-  if [ "${TN_GATE:-request}" = skip ]; then
-    log "$CK tier 3 skipped (TN_GATE=skip: the aligned tinynav-sim models are not in yet) -> candidate pick"
-    echo "$CK tier2-only" > $PICK
-    exit 0
+  echo "$v"
+}
+
+deliver() {   # TAG: the pick's package (the tinynav gate's export and the checkpoint) and the two acceptance videos
+  local tag=$1 CK=${CKOF[$1]} Q=logs/accept/u_${r}_${KIND}_${name}_$1
+  local PKG=logs/pkg/${r}_u_${KIND}_${name}_$tag
+  if [ $SMOKE = 1 ]; then log "(smoke: no delivery; would package $PKG)"; return; fi
+  mkdir -p $PKG
+  cp logs/probe/$(basename $Q)/* $PKG/ 2> /dev/null
+  cp $CK $PKG/
+  if [ -s $PKG/policy.onnx ]; then
+    log "UNIFIED DELIVERY $PKG (policy.onnx $(md5sum < $PKG/policy.onnx | cut -c1-8))"
+  else
+    $PY scripts/unified/export_student.py $R $KIND $CK $PKG >> $L 2>&1 && log "UNIFIED DELIVERY $PKG (exported here)"
   fi
-  Q=logs/accept/u_${r}_${KIND}_${name}_$k
-  rm -f $Q.verdict
-  echo "$R $CK U${KIND^^}" > $Q.ureq   # .ureq: tools/go2_depth/acceptance/tn_gate_unified.sh (the older .req watcher ignores it)
-  w=0
-  until [ -f $Q.verdict ] || [ $w -ge 43200 ]; do sleep 60; w=$((w + 60)); done
-  tv=$(cat $Q.verdict 2> /dev/null || echo "no verdict in 12 h (tool fault)")
-  log "$CK tier 3 (tinynav): $tv"
-  if [[ "$tv" == PASS* ]]; then
-    echo "$CK" > $PICK
-    log "PICK $CK"
-    # the delivery: the tinynav gate's export (logs/probe/<name>, export_student.py) and the checkpoint, then the two
-    # acceptance videos (flat and map3, unloaded above / loaded below; jobs/accept_videos.sh)
-    PKG=logs/pkg/${r}_u_${KIND}_${name}_$k
-    mkdir -p $PKG
-    cp logs/probe/$(basename $Q)/* $PKG/ 2> /dev/null
-    cp $CK $PKG/
-    if [ -s $PKG/policy.onnx ]; then
-      log "UNIFIED DELIVERY $PKG (policy.onnx $(md5sum < $PKG/policy.onnx | cut -c1-8))"
-    else
-      $PY scripts/unified/export_student.py $R $KIND $CK $PKG >> $L 2>&1 && log "UNIFIED DELIVERY $PKG (exported here)"
+  LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos
+}
+
+# ---- tier 2 per candidate in order; tier 3 alongside ----
+declare -A T2 T3 ASKED
+ORDER=()
+TN=${TN_GATE:-request}
+[ $SMOKE = 1 ] && TN=${TN_GATE:-skip}
+WAIT_S=${TN_WAIT_S:-43200}
+poll() {   # the tier-3 verdicts that have come back (or timed out)
+  local tag f
+  for tag in "${ORDER[@]}"; do
+    [ "${T2[$tag]}" = PASS ] && [ -z "${T3[$tag]:-}" ] || continue
+    f=logs/accept/u_${r}_${KIND}_${name}_$tag.verdict
+    if [ -f $f ]; then T3[$tag]=$(cat $f); log "${CKOF[$tag]} tier 3 (tinynav): ${T3[$tag]}"
+    elif [ $(( $(date +%s) - ${ASKED[$tag]} )) -ge $WAIT_S ]; then
+      T3[$tag]="no verdict in $(( WAIT_S / 3600 )) h (tool fault)"; log "${CKOF[$tag]} tier 3 (tinynav): ${T3[$tag]}"
     fi
-    LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos
-    exit 0
+  done
+}
+PICKED=""
+decide() {   # 0: PICKED is the pick; 1: an earlier candidate's tier 3 is still out; 2: none of the tested ones passes
+  local tag
+  for tag in "${ORDER[@]}"; do
+    [ "${T2[$tag]}" = PASS ] || continue
+    [ -n "${T3[$tag]:-}" ] || return 1
+    [[ "${T3[$tag]}" == PASS* ]] && { PICKED=$tag; return 0; }
+  done
+  return 2
+}
+for tag in "${CANDS[@]}"; do
+  if [ $BASE != 1 ]; then poll; decide && break; fi
+  t0=$(date +%s)
+  log "candidate ${CKOF[$tag]}: tier 2 (mjlab, pooled) started"
+  v=$(tier2 $tag)
+  log "${CKOF[$tag]} tier 2 ($(( ($(date +%s) - t0) / 60 )) min): $v$([ $SMOKE = 1 ] && echo ' (smoke: not judged)')"
+  ORDER+=($tag)
+  [[ "$v" == PASS ]] && T2[$tag]=PASS || T2[$tag]=FAIL
+  [ $BASE = 1 ] && continue
+  [ ${T2[$tag]} = PASS ] || continue
+  if [ "$TN" = skip ]; then
+    T3[$tag]="PASS (tier 3 skipped: TN_GATE=skip)"
+    log "${CKOF[$tag]} tier 3 skipped (TN_GATE=skip)"
+  else
+    Q=logs/accept/u_${r}_${KIND}_${name}_$tag
+    rm -f $Q.verdict
+    echo "$R ${CKOF[$tag]} U${KIND^^}" > $Q.ureq   # .ureq: tools/go2_depth/acceptance/tn_gate_unified.sh
+    ASKED[$tag]=$(date +%s)
+    log "${CKOF[$tag]} tier 3 requested ($Q.ureq); the next candidates' tier 2 runs meanwhile"
   fi
 done
+if [ $BASE = 1 ]; then log "done: ${#ORDER[@]} candidates read, no pick (baseline)"; exit 0; fi
+while true; do
+  poll
+  decide; rc=$?
+  [ $rc = 1 ] || break
+  sleep ${POLL_S:-60}
+done
+if [ $rc = 0 ]; then
+  CK=${CKOF[$PICKED]}
+  if [ "$TN" = skip ]; then echo "$CK tier2-only" > $PICK; else echo "$CK" > $PICK; fi
+  log "PICK $CK"
+  deliver $PICKED
+  exit 0
+fi
 log "no candidate of $RUN passed"
 exit 1
