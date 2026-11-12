@@ -119,6 +119,19 @@ def stairs_metrics(path: str) -> dict[str, float]:
   return out
 
 
+def stairs_reach(path: str) -> str | None:
+  """Per band and direction the traverse's reached / stalled / fell shares (eval_stairs' table and its "stalled" line;
+  2026-11-13, go2-depth: under load only the falls are judged -- the user: "尽可能和空载一样，物理上做不到也无所谓，
+  但一定不能摔" -- so a refusal to climb must at least be visible beside them). None without the table."""
+  t = txt(path)
+  rows = re.findall(r"^\s*(\d+-\d+cm)\s+(up|down) \|\s+(\d+)%\s+(\d+)%", t, re.M)
+  if not rows:
+    return None
+  st = dict(((b, d), v) for b, d, v in re.findall(r"(\d+-\d+cm) (up|down) (\d+)%", (re.search(r"^stalled on the traverse.*$", t, re.M) or re.match("", "")).group(0)))
+  return "，".join(f"{b} {'上' if d == 'up' else '下'} 到达 {ok}% 停住 {st.get((b, d), '-')}{'%' if (b, d) in st else ''} 摔 {fl}%"
+                  for b, d, ok, fl in rows)
+
+
 HEADING_WARN_DEG = 3.0   # tinynav's stairs heading bar (judged there, tier 3); tier 2 only warns
 
 
@@ -317,6 +330,9 @@ def judge(argv: list[str]) -> int:
   lf = stairs_falls(f"{prefix}_stairs_pay.txt")
   detail.append(f"负载楼梯：摔倒 {lf}" + ("（精确计数）" if stairs_fall_counts(f"{prefix}_stairs_pay.txt") is not None
                                           else "（各档百分比之和）"))
+  lr = stairs_reach(f"{prefix}_stairs_pay.txt")
+  if lr:
+    detail.append(f"负载楼梯 各档（只出读数；停住不判）：{lr}")
   if lf is None:
     bad.append("负载楼梯：未测")
   elif lf > 0:

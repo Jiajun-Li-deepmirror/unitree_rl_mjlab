@@ -153,6 +153,9 @@ def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
                     + " ".join(f"{d} x{v:.2f}" for d, v in sp.items()) + "; "
                     + ", ".join(f"{k} {v:.3f}" for k, v in sm.items() if k in ("kicks", "slips", "mid", "slide_back"))
                     + " (reported)")
+      lr = aj.stairs_reach(path) if hasattr(aj, "stairs_reach") else None   # (an older accept_judge: none)
+      if lr:
+        detail.append(f"loaded per band (reported; a stall is not judged): {lr}")
       if pf > pay_falls:
         bad.append(f"满载摔倒 {pf}")
         gap += 1.0 + 0.1 * (pf - pay_falls)
