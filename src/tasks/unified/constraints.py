@@ -531,6 +531,24 @@ class heavy_group:
     return out
 
 
+def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_terminated") -> torch.Tensor:
+  """Reward term (weight 1, after `term`): an episode ended by a fall or an illegal contact costs a loaded robot more,
+  from 1x at LIGHT_FRAC of the payload limit to `scale` times at the limit, on top of whatever `term` weighs now (the
+  stairs quality's schedule included). 2026-11-12, the user: with payload the robot must never fall, its abilities
+  may lag the unloaded ones. The Go2 teacher's heavy evaluation robots failed 0.38-0.42 of their fixed-row stairs
+  episodes against the light ones' 0.12, the gap growing with the payload limit; with the acceptance's 8 kg the
+  teachers fell on 14-44% of the stairs runs. The teacher sees the payload, so the cost can depend on it: the same
+  step is worth trying unloaded and not worth it with 8 kg."""
+  out = torch.zeros(env.num_envs, device=env.device)
+  kg = getattr(env, "payload_kg", None)
+  r = _raw(env, term)
+  if kg is None or r is None:
+    return out
+  raw, w = r
+  frac = (kg.float() / payload_limit(env) - LIGHT_FRAC) / (1.0 - LIGHT_FRAC)
+  return raw * w * (scale - 1.0) * frac.clamp(0.0, 1.0)
+
+
 class heavy_log:
   """Curriculum term: each HEAVY_ITEMS item measured on the light (<= LIGHT_FRAC of the limit) and on the heavy
   (>= HEAVY_FRAC) robots, smoothed like the constraints; logged as Curriculum/u_heavy/<item>/{light,heavy,gap}.

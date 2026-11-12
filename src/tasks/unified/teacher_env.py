@@ -438,6 +438,9 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     terms = [t for t in terms if t in rewards]
     if terms:
       rewards[f"u_heavy_{item}"] = RewardTermCfg(func=ucons.heavy_group, weight=1.0, params={"terms": terms})
+  if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
+    rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
+                                             params={"scale": float(os.environ["U_LOADED_FALL"])})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
@@ -545,7 +548,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          constraints would relax;
     U_METER_EMA=<steps>  the stairs meters' memory in env steps (constraints.meter and lib_meter: 20000 = 833
                          iterations, so a reading had covered a third of a change of behaviour by the time its
-                         multiplier was at the cap)."""
+                         multiplier was at the cap);
+    U_LOADED_FALL=<k>    a fall or an illegal contact costs a loaded robot more: 1x at a quarter of the payload limit
+                         -> k times at the limit (constraints.loaded_fall, set up in _rewards: the heavy evaluation
+                         robots failed three times as many fixed-row stairs episodes as the light ones)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
