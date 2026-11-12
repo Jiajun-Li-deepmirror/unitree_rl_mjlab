@@ -193,7 +193,9 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 18 --metrics
     pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs 768
     pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs 384
-    pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs 768 $YAW $LIN
+    # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
+    # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)
+    pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $([ $KIND = depth ] && echo 384 || echo 768) $YAW $LIN
     pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
     pool $pay ${P}_stand$X.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 768 $LIN $YAW
     pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96

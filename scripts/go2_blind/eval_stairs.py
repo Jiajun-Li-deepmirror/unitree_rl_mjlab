@@ -123,6 +123,10 @@ def main() -> None:
   if args.metrics:
     meter = metrics_mj.StairsMeter(env, torch.arange(num_envs, device=dev), wheeled="wheel_vel" in env_cfg.actions,
                                    ema_steps=1e12, min_steps=1.0)
+    # the counts per tile too (2026-11-12, go2-depth: which steps drive a reading): band x direction x tread
+    tile_groups = {f"{band(lvl)} {d} {tr}": (env_level == lvl) & (env_dir == d) & (env_tread == tr)
+                   for lvl in range(gen.num_rows) for d in ("up", "down") for tr in ("wide", "narrow")}
+    meter.groups = lambda env_, ids_: tile_groups
   leg_hits = torch.zeros(num_envs, device=dev)
   steps_alive = torch.zeros(num_envs, device=dev)
   max_dist = torch.zeros(num_envs, device=dev)
@@ -224,6 +228,18 @@ def main() -> None:
       print(f"metrics (src/metrics): steps {steps:.0f}, kicks {meter.rate('kicks') or 0.0:.3f} / step, "
             f"slips {meter.rate('slips') or 0.0:.4f} / step, mid {meter.rate('mid') or 0.0:.3f}, "
             f"edge {meter.rate('edge') or 0.0:.3f} of {s.get('placed', 0.0):.0f} placements")
+    # the same counts by tile (lines start with "tile": the table parsers read lines starting with a band)
+    for g in tile_groups:
+      gs = meter.group_sums.get(g, {})
+      if meter.wheeled:
+        if gs.get("ups", 0.0) > 0:
+          r = meter.rate("slide_back", g)
+          print(f"tile {g}: step-ups {gs['ups']:.0f}, slide-back {'-' if r is None else f'{r:.3f}'}")
+      else:
+        st = (gs.get("ups", 0.0) + gs.get("downs", 0.0)) / meter.feet
+        if st > 0:
+          v = {k: meter.rate(k, g) for k in ("kicks", "slips", "mid", "edge")}
+          print(f"tile {g}: steps {st:.0f}, " + ", ".join(f"{k} {'-' if x is None else f'{x:.3f}'}" for k, x in v.items()))
   env.close()
 
 
