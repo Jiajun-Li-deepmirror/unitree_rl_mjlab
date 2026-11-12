@@ -18,6 +18,8 @@ source env.sh > /dev/null 2>&1
 [ -f "$T" ] || { echo "smoke_students.sh: no teacher checkpoint $T" >&2; exit 2; }
 N=${S_ITERS:-20}
 rm -f logs/jobs/unified_${r}_blind_smoke.pick logs/jobs/unified_${r}_depth_smoke.pick
+STAMP=$(mktemp) && touch $STAMP   # (the pair test's verdict must be newer)
+trap 'rm -f $STAMP' EXIT
 SMOKE=1 TEACHER=$T S1_ITERS=$N S2_ITERS=$N NUM_ENVS=${NUM_ENVS:-512} SAVE_EVERY=10 \
   CANDIDATES=avg AVG_N=2 AVG_CANDS=1 TN_GATE=${TN_GATE:-skip} bash jobs/unified/students.sh $R
 fails=()
@@ -35,6 +37,14 @@ for kind in blind depth; do
   UNIFIED_TASKS=1 $PY scripts/unified/export_student.py $R $kind $ck $pkg > $pkg.export.log 2>&1
   [ -s $pkg/policy.onnx ] || fails+=("$kind: export failed ($pkg.export.log)")
 done
+# the camera-failure pair test (doc/redesign.md 2.2.1) ran on the two smoke picks and gave a verdict (not judged; its
+# own file, not the formal one), and both kinds were delivered (smoke: marked, not packaged)
+V=logs/jobs/unified_${r}_pair_smoke.verdict
+for kind in blind depth; do
+  [ -f logs/jobs/unified_${r}_${kind}_smoke.pick.delivered ] || fails+=("$kind: no delivery marker")
+done
+if [ ! -f $V ] || [ $V -ot $STAMP ]; then fails+=("pair test: no verdict from this smoke ($V)")
+elif ! grep -qE "^(PASS|FAIL)" $V; then fails+=("pair test: $(head -c 160 $V)"); fi
 if [ ${#fails[@]} = 0 ]; then echo "SMOKE PASS ($R, teacher $T)"; exit 0; fi
 printf 'SMOKE FAIL: %s\n' "${fails[@]}"
 exit 1

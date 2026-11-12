@@ -126,7 +126,11 @@ def main() -> None:
   leg_hits = torch.zeros(num_envs, device=dev)
   steps_alive = torch.zeros(num_envs, device=dev)
   max_dist = torch.zeros(num_envs, device=dev)
-  for _ in range(int(round(3.6 / max(abs(args.vx), 0.1) * 2.0 / dt))):
+  # the speed on the flight (2026-11-12, doc/redesign.md 2.2: the typical payload's stairs speed against the unloaded):
+  # when the base passes the 2 m central platform's edge (1.0 m) and the last step (3.6 m)
+  t_enter = torch.full((num_envs,), -1.0, device=dev)
+  t_reach = torch.full((num_envs,), -1.0, device=dev)
+  for k in range(int(round(3.6 / max(abs(args.vx), 0.1) * 2.0 / dt))):
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
     if meter is not None:
@@ -137,9 +141,14 @@ def main() -> None:
     steps_alive += active.float()
     alive &= ~(term & active)
     max_dist = torch.where(alive, torch.maximum(max_dist, cheb_dist()), max_dist)
-    success |= alive & (cheb_dist() >= 3.6)
+    d_now = cheb_dist()
+    t_enter = torch.where(alive & (t_enter < 0) & (d_now >= 1.0), torch.full_like(t_enter, (k + 1) * dt), t_enter)
+    t_reach = torch.where(alive & ~success & (d_now >= 3.6), torch.full_like(t_reach, (k + 1) * dt), t_reach)
+    success |= alive & (d_now >= 3.6)
   trav_ok = success.cpu().numpy()
   trav_fell = (~alive).cpu().numpy()
+  te, tr = t_enter.cpu().numpy(), t_reach.cpu().numpy()
+  flight_speed = np.where(trav_ok & (te >= 0) & (tr > te), (3.6 - 1.0) / np.maximum(tr - te, 1e-6), np.nan)
   leg_frac = (leg_hits / steps_alive.clamp(min=1)).cpu().numpy()
   max_dist = max_dist.cpu().numpy()
 
@@ -191,10 +200,19 @@ def main() -> None:
       feet_frac = np.nanmean(feet_down[mr]) if np.isfinite(feet_down[mr]).any() else float("nan")
       print(f"{band(lvl):>9} {d:>4} | {trav_ok[m].mean():11.0%} {trav_fell[m].mean():5.0%} {leg_frac[m].mean():9.1%} "
             f"{np.median(max_dist[m]):7.2f} | {stop_ok[m].mean():7.0%} {(~alive_np[m]).mean():5.0%} {drift_cm:8.1f} {feet_frac:6.2f}")
+  # (these lines start with "speed": the table's parsers -- accept_tables, accept_judge -- read lines starting with a band)
+  print("speed on the flight (m/s, the platform edge at 1.0 m to the last step at 3.6 m; the robots that got past it):")
+  for lvl in range(NUM_ROWS):
+    for d in ("up", "down"):
+      m = (env_level == lvl) & (env_dir == d) & np.isfinite(flight_speed)
+      sp = float(np.mean(flight_speed[m])) if m.any() else float("nan")
+      print(f"speed {band(lvl):>9} {d:>4} | {sp:.3f} m/s x{sp / max(abs(args.vx), 1e-6):.2f} of the command, n {int(m.sum())}")
   for tread in ("narrow", "wide"):
     m = env_tread == tread
     print(f"tread {tread:>6}: traverse ok {trav_ok[m].mean():.0%}, stop ok {stop_ok[m].mean():.0%}")
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
+  # exact counts (2026-11-12, doc/redesign.md 2.2's "0 falls": the table's whole percents read 1-2 robots of 72 as 0%)
+  print(f"falls: traverse {int(trav_fell.sum())} of {num_envs}, stop {int((~alive_np).sum())} of {num_envs}")
   if meter is not None:
     s = meter.sums
     if meter.wheeled:

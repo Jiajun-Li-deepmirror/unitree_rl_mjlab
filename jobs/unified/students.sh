@@ -70,19 +70,35 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
 KINDS="${KINDS:-blind depth}"
 TRIED=" $TSEED " WHY=""
 declare -A FINAL=()
+# a previous run's student picks are not this run's (accept.sh pairs the depth and the blind pick it finds)
+SFX=$([ $SMOKE = 1 ] && echo _smoke)
+for kind in $KINDS; do rm -f logs/jobs/unified_${r}_$kind$SFX.pick logs/jobs/unified_${r}_$kind$SFX.pick.*; done
 while true; do
   [ -f "$T" ] || { log "no teacher checkpoint $T"; exit 2; }
   T=$(cd $(dirname $T) && pwd)/$(basename $T)
   log "teacher $T (seed $TSEED, code $(cat REPO_COMMIT 2>/dev/null)); kinds $KINDS; stage 1 $S1 it, stage 2 $S2 it, $ENVS robots each"
   declare -A PIDS=() RC=()
   for kind in $KINDS; do one $kind & PIDS[$kind]=$!; done
-  failed=""
   for kind in $KINDS; do
     wait ${PIDS[$kind]}; RC[$kind]=$?
     FINAL[$kind]=${RC[$kind]}
-    [ ${RC[$kind]} = 1 ] && failed="$failed $kind"
   done
   log "done with teacher seed $TSEED ($(for kind in $KINDS; do echo -n "$kind exit ${RC[$kind]} "; done))"
+  # the markers accept.sh left, read the same way whichever kind's run ran the pair test (doc/redesign.md 2.2.1;
+  # go2-depth's review 11-12): over every kind accepted so far, this round's and earlier rounds'
+  for kind in "${!FINAL[@]}"; do
+    [ "${FINAL[$kind]}" = 0 ] || continue
+    pf=logs/jobs/unified_${r}_$kind$SFX.pick
+    if [ $kind = depth ] && [ -f $pf.pairfail ]; then
+      FINAL[$kind]=1; log "depth: the camera-failure pair test failed ($(head -c 160 logs/jobs/unified_${r}_pair$SFX.verdict 2> /dev/null)) -- counted as not accepted"
+    elif [ $kind = depth ] && [ -f $pf.pairfault ]; then
+      FINAL[$kind]=4; log "depth: the camera-failure pair test had a tool fault ($pf.pairfault; PAIR_ONLY=1 accept.sh reruns it)"
+    elif [ ! -f $pf.delivered ] && ! { [ $kind = depth ] && [ -f $pf.pending ]; }; then
+      FINAL[$kind]=4; log "$kind: accepted, but not delivered ($pf.delivered missing) -- a tool fault"
+    fi
+  done
+  failed=""
+  for kind in "${!FINAL[@]}"; do [ "${FINAL[$kind]}" = 1 ] && failed="$failed $kind"; done
   [ -n "$failed" ] || break
   [ $FALLBACK = 1 ] || { WHY="fallback off$([ -n "${TEACHER:-}" ] && echo ' (TEACHER= given)')"; break; }
   # the fallback: the next teacher seed teacher.sh kept (read once: the fallback's own teacher.sh run rewrites it)
@@ -102,6 +118,10 @@ while true; do
   if [ ! -s $PICK ] || ! grep -q "seed $next" $PICK; then WHY="teacher seed $next did not pass its gate"; break; fi
   T=$(cut -d' ' -f1 $PICK) TSEED=$next KINDS=$failed
 done
+# a depth student still waiting for an accepted blind student to pair with is not delivered
+if [ "${FINAL[depth]:-x}" = 0 ] && [ -f logs/jobs/unified_${r}_depth$SFX.pick.pending ]; then
+  FINAL[depth]=1; WHY="${WHY:+$WHY; }depth: accepted, but no accepted blind student to pair it with"
+fi
 # the outcome over every round: a kind whose last acceptance failed with nothing left to try is for a human
 nopick="" fault=""
 for kind in "${!FINAL[@]}"; do
