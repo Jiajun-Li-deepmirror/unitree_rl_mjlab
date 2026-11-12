@@ -28,6 +28,7 @@ later one started it at the step counter (the ramps jumped ahead by the time the
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner, VelocityOnPolicy
 
 from . import diagnostics
 from .constraints import eval_count
+from .curriculum import Q_IN, ramp
 
 
 def code_version() -> str:
@@ -75,6 +77,7 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
     self._segment = {"from": 0, "to": 0, "commit": self._commit}
     print(f"[unified] code {self._commit}")
     self._split_eval(eval_count(env.num_envs))
+    self._entropy_by_q()
     diagnostics.attach(self)   # the training records (after the evaluation split: its hooks wrap what is there)
 
   def _split_eval(self, k: int) -> None:
@@ -118,6 +121,26 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
       u_scan_mask(e, torch.arange(k, device=e.device), **params)
     print(f"[unified] evaluation robots: the first {k} of {e.num_envs} act with the mean action; the constraints are "
           f"measured on them")
+
+  def _entropy_by_q(self) -> None:
+    """U_ENTROPY_Q=<x> (a probe switch as teacher_env._probe_switches', off unless set): the entropy bonus goes from
+    the task's to x as the stairs quality q goes 0 -> Q_IN, with the P weights. The Go2W probes with a larger fall
+    cost (2026-11-12, uprobe_s13 x5, uprobe_s16 x10): the rare large costs widen the advantages (their std 1.0 -> 1.8),
+    the normalized advantages of everything else shrink against a bonus that stays, and the action std rose
+    0.72 -> 1.00 in 450 iterations while the mean action's stairs readings improved."""
+    v = os.environ.get("U_ENTROPY_Q")
+    if not v:
+      return
+    alg, e = self.alg, self.env.unwrapped
+    base, end = float(alg.entropy_coef), float(v)
+    update = alg.update
+
+    def updating(*a, **k):
+      alg.entropy_coef = base + (end - base) * ramp(float(getattr(e, "u_quality", 0.0)), 0.0, Q_IN)
+      return update(*a, **k)
+
+    alg.update = updating
+    print(f"[unified] U_ENTROPY_Q: the entropy bonus {base} -> {end} along the stairs quality")
 
   def _parts(self) -> dict:
     env = self.env.unwrapped

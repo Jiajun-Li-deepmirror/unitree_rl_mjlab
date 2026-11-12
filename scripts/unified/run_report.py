@@ -873,7 +873,8 @@ def main() -> int:
   if snaps:
     g, ph, perf = last.get("grad") or {}, last.get("phys") or {}, last.get("perf") or {}
     P(f"\n== 优化与物理（迭代 {it_last}）==")
-    P(f"  价值网络解释方差 {f(roll.get('ev'))}  优势标准差 {f(roll.get('adv_std'))}  损失 "
+    P(f"  价值网络解释方差 {f(roll.get('ev'))}  优势标准差 {f(roll.get('adv_std'))}  "
+      f"熵系数 {roll.get('entropy_coef', '-')}  损失 "
       + " ".join(f"{k} {f(v)}" for k, v in (last.get("loss") or {}).items()))
     P(f"  梯度范数（裁剪后）actor {f(g.get('actor'))} / critic {f(g.get('critic'))}，被裁剪的更新占 actor "
       f"{f(g.get('actor_clipped'))} / critic {f(g.get('critic_clipped'))}")

@@ -1020,6 +1020,8 @@ class Recorder:
       put("return", ret.mean())
       put("ev", 1.0 - err.var() / (ret.var() + 1e-8))   # the critic's explained variance
       put("adv_std", err.std())
+      if getattr(self.runner.alg, "entropy_coef", None) is not None:   # (runner._entropy_by_q moves it)
+        put("entropy_coef", v.new_tensor(float(self.runner.alg.entropy_coef)))
     if getattr(st, "dones", None) is not None:
       put("done_share", st.dones.float().mean())
     a = getattr(st, "actions", None)
@@ -1305,7 +1307,7 @@ class Recorder:
       return
     out = {}
     for k, v in s["rollout"].items():
-      if k in ("ev", "adv_std", "action_abs", "action_max", "action_clipped"):
+      if k in ("ev", "adv_std", "entropy_coef", "action_abs", "action_max", "action_clipped"):
         out[f"Diag/{k}"] = v
     for k in ("grad_actor", "grad_critic", "grad_actor_clipped", "grad_critic_clipped"):
       if self.acc.get(k):
