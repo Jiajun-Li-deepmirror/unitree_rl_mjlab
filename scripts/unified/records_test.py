@@ -519,6 +519,10 @@ def units(ok, out: Path) -> None:
      and cons.count["spin@seen"] == 900 and cons.values["creep_total@blind"] == 0.5)
   ok(f"unit load: march_hip, split off march, starts at march's multiplier then ({cons.scale.get('march_hip')})",
      cons.scale.get("march_hip") == 2.5)
+  # (2026-11-13) the items the flat protocols measure anew keep their multipliers (constraints.CARRY_SCALE)
+  ok(f"unit load: the items now read from the flat scripts keep their multipliers, their readings start afresh "
+     f"({cons.remeasured})", sorted(cons.remeasured) == ["clock", "side_drift", "straight_drift"]
+     and all(cons.scale[k] == 2.0 and k not in cons.value and f"{k}@seen" not in cons.count for k in cons.remeasured))
   cons2 = ucons.constraints(NS(params={"items": items}), NS())
   cons2.load(dict(old_state) | {"sig": cons.state()["sig"]})
   ok("unit load: a checkpoint of the same measures is taken whole", not cons2.redefined and cons2.scale["creep"] == 3.0
@@ -532,18 +536,18 @@ def units(ok, out: Path) -> None:
   from torch.utils.tensorboard import SummaryWriter
   from src.tasks.unified.teacher_env import SURVIVE_BAR
 
-  def gate(name: str, survive: float, logged_bar: float) -> str:
+  def gate(name: str, survive: float, logged_bar: float, absent=(), bar_only=()) -> str:
     run = out / "gate" / "go2_u_teacher" / name
     w = SummaryWriter(str(run))
     for it in range(0, 601):
       w.add_scalar("Curriculum/u_progress/p", 1.0, it)
       w.add_scalar("Curriculum/u_progress/q", 1.0, it)
       for c in constraint_items("legged"):
-        if not c["enforce"]:
+        if not c["enforce"] or c["name"] in absent:
           continue
         tag = f"Curriculum/u_constraints/{c['name']}/"
         good = c["target"] * (1.1 if c["sense"] == "min" else 0.9)
-        for m in c["modes"]:
+        for m in () if c["name"] in bar_only else c["modes"]:
           w.add_scalar(tag + f"value_{m}", survive if c["name"] == "survive_up" and m == "blind" else
                        min(good, survive) if c["name"].startswith("survive") else good, it)
         w.add_scalar(tag + "bar", logged_bar if c["name"].startswith("survive") else c["target"], it)
@@ -559,9 +563,328 @@ def units(ok, out: Path) -> None:
   g = gate("miss", SURVIVE_BAR + 0.05, 0.99)
   ok(f"unit gate: over it does not ({g})", g.startswith("NOT YET 600 ") and "survive_up_blind" in g
      and "survive_up_seen" not in g and "survive_down" not in g and g.count(" vs ") == 1)
+  # (2026-11-13) a run whose code had no such item (from before the flat protocols, or U_FLAT_SCRIPTS=0)
+  from src.tasks.unified.teacher_env import FLAT_NEW
+  g = gate("before_flat", SURVIVE_BAR - 0.02, 0.0, absent=FLAT_NEW)
+  ok(f"unit gate: a run that logged nothing of an item is judged on the items it trained with ({g[-110:]})",
+     g.startswith("PASS 500 ") and "head_tail" not in g.split("teacher_gate:")[0]
+     and "not judged: " + " ".join(FLAT_NEW) in g)
+  g = gate("no_reading", SURVIVE_BAR - 0.02, 0.0, bar_only=("stance",))
+  ok(f"unit gate: an item the run has (its bar is logged) but never read stays unmeasured ({g})",
+     g.startswith("NOT YET 600 ") and "stance unmeasured" in g and "not judged" not in g)
   wheel_counter(ok)
   meter_eval_mask(ok)
   sticky_payload_units(ok)
+  flat_units(ok, out)
+
+
+def flat_units(ok, out: Path) -> None:
+  """flat.py, the flat protocols (2026-11-13). The command bins and the statistics; the items with the scripts on
+  and off (U_FLAT_SCRIPTS) and a checkpoint from before them; then the tracker on a kinematic stand-in: every robot
+  follows its command exactly but for planted errors, so each reading has a known value -- forward speed 90% of the
+  command, a 0.01 rad/s turn under a command without one (a 10 s line: 5.73 deg, a drift of tan 0.05), 5 mm/s of
+  creep under a zero command (ten times that on the heavy robots), the leg joints 0.12 rad off at the most and 0.07
+  on average, the splayed robots' hips 0.14 rad out until a march brings them to 0.02, 85% of the feet in step.
+  Then the scripts given up, the checkpoint state, the fault path and the records' tags."""
+  import collections
+  import math
+
+  from src.tasks.unified import flat as uflat
+  from src.tasks.unified.teacher_env import FLAT_NEW
+
+  # -- the bins and the statistics
+  bins = dict(collections.Counter(uflat.flat_bin(c) for c in uflat.FLAT_TRACK_CMDS))
+  ok(f"unit flat: the acceptance's 44 tracking commands by bin ({bins})", bins == {
+    "fwd": 4, "fast": 1, "back": 2, "side": 5, "diag": 2, "turn": 8, "arc": 8, "arc_tight": 2, "fast_arc": 6,
+    "back_arc": 2, "back_arc_fast": 2, "mix": 2})
+  ok("unit flat: the stops' bins (one per pre-stop command) and the lines'",
+     [uflat.flat_bin(c) for c in uflat.FLAT_STOP_CMDS] == ["fwd", "back", "side", "turn", "arc", "fast"]
+     and sorted({uflat.flat_line_bin(c) for c in uflat.FLAT_LINE_CMDS}) == ["back", "fwd", "fwd_slow", "side"])
+  vals = [0.3, -1.2, 0.7, 2.5, 0.1, -0.4, 1.9, 0.0, 0.6, -2.2, 1.1]
+  t = torch.tensor(vals, dtype=torch.float64)
+  q = lambda p: float(torch.quantile(t, p))   # noqa: E731
+  near = lambda a, b, tol=1e-9: a is not None and abs(a - b) < tol   # noqa: E731
+  ok("unit flat: the statistics (mean, |mean - 1|, the quantiles as torch.quantile, both tails, |median|)",
+     near(uflat.flat_stat(vals, "mean"), float(t.mean())) and near(uflat.flat_stat(vals, "dev1"), abs(float(t.mean()) - 1))
+     and all(near(uflat.flat_stat(vals, f"p{p}"), q(p / 100)) for p in (10, 50, 90))
+     and near(uflat.flat_stat(vals, "tail"), max(abs(q(0.1)), abs(q(0.9))))
+     and near(uflat.flat_stat(vals, "absmed"), abs(q(0.5))))
+  pairs = [(100 * j, float(j)) for j in range(10)]   # (step, value): steps 0 .. 900
+  ok("unit flat: a bin's samples -- the fresh ones; else the newest `need`, none older than max_age; else none",
+     uflat.flat_recent(pairs, 1000, 3, 400, 5000) == [6.0, 7.0, 8.0, 9.0]
+     and uflat.flat_recent(pairs, 1000, 6, 400, 5000) == [4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+     and uflat.flat_recent(pairs, 1000, 6, 400, 500) is None and uflat.flat_recent(pairs, 1000, 11, 400, 5000) is None)
+  fits = lambda yaw, cmd, steps=500: uflat.flat_path_fits(0.0, 0.0, yaw, cmd, steps, 0.02, 0.0, 2.0, -50.0, 50.0)  # noqa: E731
+  ok("unit flat: a 10 s line fits the strip along it and not across it, a sideways one the other way round",
+     fits(0.0, (1.0, 0.0, 0.0)) and not fits(0.5 * math.pi, (1.0, 0.0, 0.0)) and fits(0.5 * math.pi, (0.0, 0.6, 0.0))
+     and not fits(0.0, (0.0, 0.6, 0.0)) and fits(1.0, (0.0, 0.0, 1.5)) and not fits(0.0, (1.0, 0.0, 0.2), 1000))
+
+  # -- the items, scripts on and off
+  def items_for(value: str | None) -> dict:
+    old = os.environ.pop("U_FLAT_SCRIPTS", None)
+    if value is not None:
+      os.environ["U_FLAT_SCRIPTS"] = value
+    try:
+      return {kind: {c["name"]: c for c in constraint_items(kind)} for kind in ("legged", "wheeled")}
+    finally:
+      os.environ.pop("U_FLAT_SCRIPTS", None)
+      if old is not None:
+        os.environ["U_FLAT_SCRIPTS"] = old
+
+  on, off = items_for(None), items_for("0")
+  moved = ("clock", "side_drift", "straight_drift", "creep", "march_hip")
+  copies = {"clock_side": "clock", "side_drift_p90": "side_drift", "straight_drift_p90": "straight_drift",
+            "creep_pooled": "creep", "march_hip_in": "march_hip"}
+  for kind in ("legged", "wheeled"):
+    a, b = on[kind], off[kind]
+    ok(f"unit flat items ({kind}): U_FLAT_SCRIPTS=0 gives the items as they were -- no flat: metric, none of the new "
+       f"names, the five measured as constraints.CARRY_SCALE lists",
+       not any(c["metric"].startswith("flat:") for c in b.values()) and not {*FLAT_NEW, *copies} & set(b)
+       and all(ucons.item_sig(b[k]) in ucons.CARRY_SCALE[k] for k in moved))
+    ok(f"unit flat items ({kind}): on -- the five read the scripts, their old readings stay as logged-only copies, "
+       f"the six new items are enforced (cap 2), every other item is the same",
+       all(a[k]["metric"].startswith("flat:") and a[k]["enforce"] for k in moved)
+       and all(a[c]["metric"] == b[k]["metric"] and a[c].get("stat") == b[k].get("stat") and not a[c]["enforce"]
+               and not a[c]["terms"] for c, k in copies.items())
+       and all(a[k]["enforce"] and a[k]["metric"].startswith("flat:") and a[k]["max_scale"] == 2.0 for k in FLAT_NEW)
+       and {k: c for k, c in a.items() if k not in (*moved, *copies, *FLAT_NEW)}
+       == {k: c for k, c in b.items() if k not in moved})
+
+  # -- a checkpoint from before the scripts (its signatures: the old measures), and one of them read without them
+  items = constraint_items("legged")
+  before = [c["name"] for c in items if c["name"] not in (*FLAT_NEW, *copies)]
+  sig = {c["name"]: ucons.item_sig(c) for c in items} | {k: next(iter(ucons.CARRY_SCALE[k])) for k in moved}
+  state = {"scale": {k: 2.0 for k in before} | {"creep": 3.0}, "value": {k: 0.5 for k in before},
+           "values": {f"{k}@{m}": 0.5 for k in before for m in ucons.MODES},
+           "count": {f"{k}@{m}": 900 for k in before for m in ucons.MODES}, "relax": {}, "ref": {},
+           "sig": {k: sig[k] for k in before}}
+  cons = ucons.constraints(NS(params={"items": items}), NS())
+  cons.load(dict(state))
+  ok(f"unit flat load: a checkpoint from before the scripts -- the five re-measured items keep their multipliers and "
+     f"read afresh ({cons.remeasured}), nothing else starts over ({cons.redefined}), the new items have none yet",
+     sorted(cons.remeasured) == sorted(moved) and not cons.redefined and cons.scale["creep"] == 3.0
+     and cons.scale["clock"] == 2.0 and not set(moved) & set(cons.value)
+     and not [k for k in {*cons.values, *cons.count} if k.split("@")[0] in moved] and cons.count["spin@seen"] == 900
+     and not set(FLAT_NEW) & set(cons.scale))
+  items_off = list(off["legged"].values())
+  cons_off = ucons.constraints(NS(params={"items": items_off}), NS())
+  cons_off.load({**cons.state(), "flat": {"step": 5, "buf": {}, "tally": {}, "drops": {}}})
+  ok(f"unit flat load: the other way (a scripts-on checkpoint under U_FLAT_SCRIPTS=0) the five start afresh "
+     f"({cons_off.redefined})", sorted(cons_off.redefined) == sorted(moved) and not cons_off.remeasured
+     and not set(moved) & set(cons_off.scale) and cons_off.scale["spin"] == 2.0)
+
+  # -- the tracker on the kinematic stand-in
+  n, k_eval, dt = 256, 192, 0.02
+  i = torch.arange(n)
+  on_flat = (i % 8) != 7                              # one robot in eight on another ground
+  kg = torch.tensor([0.0, 1.6, 4.0, 6.0])[i % 4]      # light, light, in between, heavy (the limit: 8 kg)
+  heavy, mid = (i % 4) == 3, (i % 4) == 2
+  splay = (i % 16) == 1                               # the hips out at the episode's start
+  gen = torch.Generator().manual_seed(0)
+  term = NS(vel_command_b=torch.zeros(n, 3), time_left=torch.zeros(n), march=torch.zeros(n, dtype=torch.bool),
+            cfg=NS(ranges=NS(lin_vel_x=(-1.0, 1.5), lin_vel_y=(-0.6, 0.6), ang_vel_z=(-1.5, 1.5))))
+  env = NS(num_envs=n, device="cpu", common_step_counter=0, step_dt=dt, max_episode_length=1000,
+           episode_length_buf=torch.zeros(n, dtype=torch.long), u_eval_mask=i < k_eval, payload_kg=kg.reshape(n, 1),
+           u_payload_full=8.0, u_scan_on=(i % 2).float(), command_manager=NS(get_term=lambda name: term))
+  st = NS(pos=torch.zeros(n, 2), yaw=torch.zeros(n), vel=torch.zeros(n, 3), hip=torch.zeros(n), broken=False)
+
+  class Tracker(uflat.flat_measure):
+    def _kin(self, env):
+      if st.broken:
+        raise ValueError("planted")
+      return {"pos": st.pos, "yaw": st.yaw, "vel": st.vel, "hip": st.hip, "leg_max": torch.full((n,), 0.12),
+              "leg_mean": torch.full((n,), 0.07)}
+
+    def _flat_mask(self, env):
+      return on_flat
+
+    def _bounds(self, env):
+      return (4.0, -60.0, 60.0)
+
+    def _centre(self, env):
+      return torch.zeros(n)
+
+    def _gait_value(self, env):
+      return torch.full((n,), 0.85)
+
+    def _gait_counts(self, env, cmd):
+      return abs(cmd[0]) <= 1.0
+
+  params = {"min_n": 4, "min_q": 6, "seed": 0}
+  tr = Tracker(NS(params=params), env)
+  bad = {"training robot": 0, "other ground": 0, "payload in between": 0, "command": 0}
+
+  def reset(ids) -> None:
+    u = torch.rand(len(ids), generator=gen)
+    anywhere = 6.28 * torch.rand(len(ids), generator=gen) - 3.14
+    st.pos[ids] = 0.0
+    # (flat_reset_yaw's part in the environment: most start along the strip or across it)
+    st.yaw[ids] = torch.where(u < 0.3, 0.0, torch.where(u < 0.6, math.pi, torch.where(
+      u < 0.7, 0.5 * math.pi, torch.where(u < 0.8, -0.5 * math.pi, anywhere))))
+    st.hip[ids] = torch.where(splay[ids], 0.14, 0.05)
+    env.episode_length_buf[ids] = 0
+    term.time_left[ids] = 0.0
+    term.march[ids] = False
+    tr.reset(ids)
+
+  def step() -> None:
+    cmd = term.vel_command_b
+    zero = cmd.abs().amax(dim=1) < 1e-6
+    vel = cmd * torch.tensor([0.9, 1.0, 1.0])
+    vel[:, 2] += torch.where(~zero & (cmd[:, 2].abs() < 1e-6), 0.01, 0.0)
+    c, s = torch.cos(st.yaw), torch.sin(st.yaw)
+    creep = torch.where(zero & ~term.march, torch.where(heavy, 0.05, 0.005), 0.0)
+    st.pos = st.pos + dt * torch.stack([c * vel[:, 0] - s * vel[:, 1] + creep, s * vel[:, 0] + c * vel[:, 1]], dim=1)
+    st.yaw = st.yaw + dt * vel[:, 2]
+    st.vel = vel
+    st.hip = torch.where(term.march, (st.hip - 0.002).clamp(min=0.02), st.hip)
+    env.episode_length_buf += 1
+    env.common_step_counter += 1
+    tr(env)
+    bad["training robot"] += int((tr.on & ~env.u_eval_mask).sum())
+    bad["other ground"] += int((tr.on & ~on_flat).sum())
+    bad["payload in between"] += int((tr.on & mid).sum())
+    bad["command"] += int(((term.vel_command_b - tr.cmd).abs().amax(dim=1)[tr.on] > 1e-6).sum())
+    done = (env.episode_length_buf >= 1000).nonzero().flatten()
+    if len(done):
+      reset(done)
+    # the command term: a drawn command for 3 s when the time is up (a script holds the time at 1 s)
+    term.time_left -= dt
+    new = (term.time_left <= 0.0).nonzero().flatten()
+    if len(new):
+      term.vel_command_b[new] = (torch.rand(len(new), 3, generator=gen) - 0.5) * torch.tensor([1.0, 0.6, 1.0])
+      term.time_left[new] = 3.0
+      term.march[new] = False
+
+  reset(i)
+  step()
+  light = env.u_eval_mask & on_flat & ~heavy & ~mid
+  n_light, n_heavy = int((tr.on & light).sum()), int((tr.on & heavy).sum())
+  ok(f"unit flat scripts: at the first step {n_light} of the {int(light.sum())} light evaluation robots on the flat "
+     f"column are under a script (share 0.7), {n_heavy} of the {int((env.u_eval_mask & on_flat & heavy).sum())} heavy "
+     f"ones (0.4)", 0.55 * 96 <= n_light <= 0.85 * 96 and 0.15 * 24 <= n_heavy <= 0.65 * 24)
+  for _ in range(4000):
+    step()
+  ok(f"unit flat scripts: only light or heavy evaluation robots on the flat column are ever under a script, and "
+     f"their command is the script's ({bad})", not any(bad.values()))
+  ok(f"unit flat scripts: over four episodes no script runs into an episode's end or leaves the strip ({tr.drops}); "
+     f"every script kind finished ({sorted({g for g, _, _ in tr.tally})})", not tr.drops
+     and {g for g, _, _ in tr.tally} == {"line", "march", "stop", "track"})
+  rd = tr.read
+  speed_lin, speed_yaw = rd("speed_lin", "dev1"), rd("speed_yaw", "dev1")
+  ok(f"unit flat readings: the forward speed at 90% of the command reads 0.1 off on the worst linear bin "
+     f"({speed_lin}), the turn rate none ({speed_yaw})", near(speed_lin, 0.1, 1e-3) and near(speed_yaw, 0.0, 1e-3))
+  head_t, head_m, drift = rd("head", "tail"), rd("head", "absmed"), rd("drift", "tail")
+  ok(f"unit flat readings: a 10 s line turning 0.01 rad/s -- heading {head_t} / {head_m} deg (5.73), drift {drift} "
+     f"(tan 0.05), on the sideways and the straight lines alike", near(head_t, math.degrees(0.1), 0.05)
+     and near(head_m, math.degrees(0.1), 0.05) and near(drift, math.tan(0.05), 2e-3)
+     and near(rd("drift", "tail", bins=["side"]), math.tan(0.05), 2e-3)
+     and near(rd("drift", "tail", bins=["fwd", "fwd_slow", "back"]), math.tan(0.05), 2e-3))
+  creep, creep_seen = rd("creep", "mean"), rd("creep", "mean", scan="seen")
+  heavy_creep = [v for (r, m, b), buf in tr.buf.items() if r == "creep" and m == "heavy" for v in buf.v]
+  ok(f"unit flat readings: 5 mm/s of creep over the 199 judged steps reads {creep} m (0.0199) on the light robots' "
+     f"worst bin; the heavy robots' ten times that ({len(heavy_creep)} samples) reaches no constraint",
+     near(creep, 0.0199, 5e-4) and near(creep_seen, 0.0199, 5e-4) and near(rd("creep", "mean", bins=["rest"]), 0.0199, 5e-4)
+     and len(heavy_creep) > 0 and all(near(v, 0.199, 5e-3) for v in heavy_creep))
+  stance, stance_stop = rd("stance", "p90"), rd("stance_stop", "p90", bins=["fast", "fwd"])
+  ok(f"unit flat readings: the stance -- the leg joints' largest offset over the 9 s rest ({stance}), their mean 3 s "
+     f"after a stop from a forward command ({stance_stop})", near(stance, 0.12, 1e-6) and near(stance_stop, 0.07, 1e-6))
+  hip = rd("march_hip", "mean")
+  hip_before = [v for (r, m, b), buf in tr.buf.items() if r == "march_before" for v in buf.v]
+  ok(f"unit flat readings: the march script runs on the splayed robots only -- hips 0.14 rad before it "
+     f"({len(hip_before)} samples), {hip} after the stand that follows", near(hip, 0.02, 1e-6) and len(hip_before) > 0
+     and all(near(v, 0.14, 1e-6) for v in hip_before))
+  gait = rd("gait", "mean", worst="min")
+  ok(f"unit flat readings: the gait's worst bin ({gait}); none above 1 m/s forward (the acceptance judges none there)",
+     near(gait, 0.85, 1e-6) and not [b for r, _, b in tr.buf if r == "gait" and b in ("fast", "fast_arc")])
+
+  # -- the scripts given up: a fall, a robot carried off the strip (a line that ran 3 s still gives its drift), a
+  #    command rewritten by something else
+  def given_up(reason: str, pick, act) -> tuple:
+    for _ in range(800):
+      j = pick().nonzero().flatten()
+      if len(j):
+        break
+      step()
+    j = int(j[0])
+    was, lines = tr.drops.get(reason, 0), sum(v for (g, _, _), v in tr.tally.items() if g == "line")
+    act(j)
+    step()
+    return tr.drops.get(reason, 0) - was, sum(v for (g, _, _), v in tr.tally.items() if g == "line") - lines, j
+
+  fell = given_up("fell", lambda: tr.on & (tr.k > 20), lambda j: reset(torch.tensor([j])))
+  strip = given_up("strip", lambda: tr.on & (tr.kind == uflat.F_MOVE) & (tr.k > 20),
+                   lambda j: st.pos.__setitem__((j, 1), 3.9))
+  line = given_up("strip", lambda: tr.on & (tr.kind == uflat.F_LINE) & (tr.k >= 150) & (tr.k < 400),
+                  lambda j: st.pos.__setitem__((j, 1), 3.9))
+  cmd = given_up("cmd", lambda: tr.on & (tr.k > 20), lambda j: term.vel_command_b.__setitem__((j, 0), 0.123))
+  ok(f"unit flat scripts: given up and counted once each -- a fall {fell[:2]}, off the strip while tracking "
+     f"{strip[:2]}, off it 3 s or more into a line (its drift still taken) {line[:2]}, the command rewritten "
+     f"{cmd[:2]}; the robot is handed back", fell[:2] == (1, 0) and strip[:2] == (1, 0) and line[:2] == (1, 1)
+     and cmd[:2] == (1, 0) and not bool(tr.on[[strip[2], line[2], cmd[2]]].any()))
+
+  # -- the checkpoint: the tracker's own state, and inside the constraints'
+  asks = [(("creep", "mean"), {}), (("drift", "tail"), {"bins": ["side"]}), (("head", "absmed"), {}),
+          (("speed_lin", "dev1"), {"scan": "blind"}), (("gait", "mean"), {"worst": "min"}), (("stance", "p90"), {})]
+  tr2 = Tracker(NS(params=params), NS(num_envs=n, device="cpu"))
+  tr2.load(json.loads(json.dumps(tr.state())))
+  ok("unit flat state: the samples, tallies and drops come back from the (JSON-plain) state, the readings with them",
+     all(tr.read(*a, **kw) is not None and tr2.read(*a, **kw) == tr.read(*a, **kw) for a, kw in asks)
+     and tr2.tally == tr.tally and tr2.drops == tr.drops and tr2.table()["bins"] == tr.table()["bins"])
+  cons_a = ucons.constraints(NS(params={"items": items}), env)
+  env.u_constraints = cons_a
+  saved = cons_a.state()
+  env3 = NS(num_envs=n, device="cpu")
+  tr3 = Tracker(NS(params=params), env3)
+  cons_b = ucons.constraints(NS(params={"items": items}), env3)
+  cons_b.load(dict(saved))
+  got = tr3.read("creep", "mean")
+  cons_b.load({k: v for k, v in saved.items() if k != "flat"})
+  ok("unit flat state: the samples travel in the constraints' checkpoint state; one without them loads and leaves "
+     "the tracker as it is", "flat" in saved and got is not None and got == tr.read("creep", "mean")
+     and tr3.read("creep", "mean") == got and not cons_b.redefined and not cons_b.remeasured)
+
+  # -- a fault inside the tracker: it stops, the robots get drawn commands again, the flat: items' readings are
+  #    dropped (their multipliers hold), the training goes on
+  cons_a.values.update({"creep@seen": 0.5, "spin@seen": 0.4})
+  cons_a.count.update({"creep@seen": 900, "spin@seen": 900})
+  cons_a.value.update({"creep": 0.5, "spin": 0.4})
+  cons_a.scale.update({"creep": 1.7})
+  was_on, drops = tr.on.clone(), dict(tr.drops)
+  st.broken = True
+  step()
+  st.broken = False
+  for _ in range(5):
+    step()
+  ok(f"unit flat fault: the tracker stops for good ({(tr.fault or '').strip().splitlines()[-1:]}), its "
+     f"{int(was_on.sum())} robots are handed back, read() gives nothing, the constraints forget the flat: readings "
+     f"and keep the multiplier", bool(was_on.any()) and tr.fault is not None and "planted" in tr.fault
+     and not bool(tr.on.any()) and not tr.info and bool((term.time_left[was_on] > 1.0).all())
+     and tr.read("creep", "mean") is None and "planted" in tr.table()["fault"] and tr.drops == drops
+     and "creep" not in cons_a.value and "creep@seen" not in cons_a.values and "creep@seen" not in cons_a.count
+     and cons_a.scale["creep"] == 1.7 and cons_a.values.get("spin@seen") == 0.4 and cons_a.count.get("spin@seen") == 900)
+
+  # -- the records: the table in the snapshots, a tag per bin, the fault as an alert
+  table = tr2.table() | {"fault": "Traceback (most recent call last):\n  ...\nValueError: planted"}
+  envd = fake_env(items)
+  envd.u_flat = NS(table=lambda: table)
+  diagnostics.episodes(None, envd)
+  run = Runner(envd, str(out / "FLAT"), script(items)[0])
+  os.makedirs(out / "FLAT", exist_ok=True)
+  run.learn(45)
+  run.rec.ended or run.rec._atexit()
+  ev, snaps = read(out / "FLAT/records/timeline.jsonl"), read(out / "FLAT/records/record.jsonl")
+  tags = run.logger.writer.tags
+  want = ({f"Diag/flat/{shown}/{b}" for shown, d in table["bins"].items() for b in d}
+          | {f"Diag/flat_n/creep/{b}" for b in table["bins"]["creep"]} | {f"Diag/flat_drop/{k}" for k in table["drops"]}
+          | {"Diag/flat/scripted"})
+  ok(f"unit flat records: a tag per reading, bin and mode ({len(want)}), the sample counts of the main readings "
+     f"only, the scripts given up by reason", len(want) > 40 and want <= tags
+     and {"Diag/flat_drop/fell", "Diag/flat_drop/strip", "Diag/flat_drop/cmd"} <= tags
+     and not [x for x in tags if x.startswith(("Diag/flat_n/stop_dist/", "Diag/flat_n/head/"))])
+  ok("unit flat records: the snapshots carry the table; the tracker's fault is the alert flat_fault",
+     bool(snaps) and snaps[-1].get("flat", {}).get("drops") == table["drops"] and "fault" not in [e["ev"] for e in ev]
+     and any(e["ev"] == "alert" and e.get("name") == "flat_fault" and "planted" in e["msg"] for e in ev))
 
 
 def sticky_payload_units(ok) -> None:

@@ -67,6 +67,7 @@ def main() -> int:
   q = series(acc, "Curriculum/u_progress/q")   # empty for a run from before the stairs quality stage
   items = items_for(a.run)
   vals, bars, sense = {}, {}, {}   # "<name>_<mode>" (or "<name>") -> the readings; the bar they are judged at
+  absent = []
   for c in items:
     n = c["name"]
     tag = f"Curriculum/u_constraints/{n}/"
@@ -75,8 +76,16 @@ def main() -> int:
     per = {f"{n}_{m}": series(acc, tag + f"value_{m}") for m in c.get("modes", ("seen", "blind"))}
     if not any(per.values()):
       per = {n: series(acc, tag + "value")}
+    if fixed is None and not bar and not any(per.values()):
+      # The run logged nothing of this item: its code did not have it (a run from before the item, or one trained
+      # with it switched off -- U_FLAT_SCRIPTS=0). The run is judged on the items it trained with. An item the run
+      # has logs its bar from the first iteration on, and stays "unmeasured" below until its readings come.
+      absent.append(n)
+      continue
     for key, v in per.items():
       vals[key], bars[key], sense[key] = v, ({i: fixed for i in v} if fixed is not None else bar), c["sense"]
+  if absent:
+    print(f"teacher_gate: nothing of these in the run's log, not judged: {' '.join(absent)}", file=sys.stderr)
   steps = sorted(p)
   if not steps:
     print("NOT YET 0 no progress logged")
