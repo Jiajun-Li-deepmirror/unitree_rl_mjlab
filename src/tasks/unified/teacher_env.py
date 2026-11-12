@@ -885,7 +885,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          acceptance does (mdp.stair_speed_deficit axis_min; the wheeled have it at 0.2 from the old
                          flow's "diagaxis", nothing changes for them). Go2 uprobe_s42 / s43 6596: the diagonal's
                          sideways part at 72-77 % in training and (0.6, +-0.4) y 74-76 % in tier 2 (bar 80 %),
-                         the speed along the command inside the 0.9-1.1 band, so nothing was charged."""
+                         the speed along the command inside the 0.9-1.1 band, so nothing was charged;
+    U_FLAT_SPEED_W=<w>   the flat speed deficit at the weight -<w> where it is lighter (the legged: -2; the wheeled
+                         have -4 from the old flow's "speedw4", nothing changes for them). Go2 uprobe_s43 6596
+                         (U_HEADING_OBS=1), tier 2: seen every forward command 90 % and more, blind (0.5, 0, 0) and
+                         (1.0, 0, 0) and their arcs x 75-79 % (bar 80 %), the speed_lin multiplier at its cap."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -936,6 +940,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     term = cfg.rewards["flat_speed_deficit"]
     if "axis_min" not in term.params:   # the wheeled group's own (0.2) stays
       term.params = {**term.params, "axis_min": float(v)}
+  v = os.environ.get("U_FLAT_SPEED_W")
+  if v and "flat_speed_deficit" in cfg.rewards:
+    assert 2.0 <= float(v) <= 8.0, f"U_FLAT_SPEED_W {v}: the cost's weight, 2-8"
+    term = cfg.rewards["flat_speed_deficit"]
+    if -term.weight < float(v):   # a heavier one stays (the wheeled group's -4)
+      term.weight = -float(v)
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
