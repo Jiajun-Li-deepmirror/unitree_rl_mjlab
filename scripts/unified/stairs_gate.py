@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""stairs_gate.py R PREFIX (unitree-rl-mjlab-62 2026-11-13; go2-depth's gate design, option (b) of doc/redesign.md's
+"""stairs_gate.py R PREFIX [--pay N] (unitree-rl-mjlab-62 2026-11-13; go2-depth's gate design, option (b) of doc/redesign.md's
 teacher gate): does a teacher checkpoint pass the stairs part of its gate? Read from tier-2's own stairs test
 (scripts/go2_blind/eval_stairs.py --metrics, Unitree-<R>-U-Teacher-Stairs, unloaded) in both scan modes:
 PREFIX_on.txt and PREFIX_off.txt. jobs/unified/stairs_gate.sh runs them; jobs/unified/teacher.sh calls it on a seed's
@@ -9,13 +9,15 @@ Why tier 2 and not the training's readings: on one checkpoint the training's sta
 acceptance's (Go2 kicks 0.72 / 0.46, Go2W slides 0.094 / 0.028, 11-13), the ratio moving with the policy.
 
 Judged, in each scan mode (the students' bars unless said):
-  falls        traverse + stop, exact count: 0 (FALLS_MAX)
+  falls        traverse + stop, exact count: <= FALLS_MAX (2) per mode
   stop ok      the mid-flight stop's share: >= 95%
   four feet    the stop's all-feet-down share per band and direction: >= accept_tables.stop_feet_bar
   speed        the flight speed over the command (eval_stairs' "speed" lines, robots weighted), up and down: 0.8-1.2
   counts       TEACHER_COUNT_BARS: "no worse than the delivered model" on tier 2 (option (b): the students' 0.245 kicks
                is beyond even the delivered Go2 blind; a teacher worse than delivered does not go on); a robot without
                an entry: the students' bars. Fewer than MIN_EVENTS counted: untested (a tool fault)
+--pay N: also PREFIX_pay.txt (the seen mode with the walking payload, 8 kg at the acceptance's point), judged on its
+falls only (traverse + stop <= N); its speed, four feet and counts reported.
 Reported only: the stalled share, the heading on the flight.
 First line: "PASS ...", "FAIL (gap G): <reasons>" (G: the summed relative shortfall, for picking the best judged at the
 cap) or "FAULT: <what could not be read>". Exit 0 / 1 / 4.
@@ -32,7 +34,8 @@ sys.path.insert(0, str(ROOT / "scripts" / "unified"))
 import accept_judge as aj  # noqa: E402
 
 at = aj.at
-FALLS_MAX = 0
+FALLS_MAX = 2   # per scan mode, traverse + stop, of 576 (go2-depth 11-13: one number for every robot; the students'
+                # acceptance keeps 0 + the luck rule)
 STOP_OK_MIN = 95.0
 SPEED_RANGE = (0.8, 1.2)
 MIN_EVENTS = aj.MIN_STAIR_EVENTS
@@ -73,7 +76,7 @@ def feet(t: str) -> list[tuple[str, str, float]]:
     r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", t, re.M)]
 
 
-def judge(r: str, prefix: str) -> tuple[str, int]:
+def judge(r: str, prefix: str, pay_falls: int | None = None) -> tuple[str, int]:
   wheeled = r in at.WHEELED
   kind = "wheeled" if wheeled else "legged"
   entry = TEACHER_COUNT_BARS.get(r)
@@ -135,6 +138,24 @@ def judge(r: str, prefix: str) -> tuple[str, int]:
     ha, hu = aj.stairs_heading(path)
     detail.append(f"{tag}: stalled {st.group(1) if st else '-'}%, heading {ha if ha is not None else '-'} deg"
                   f" (15-18cm up {hu if hu is not None else '-'}) (reported)")
+  # the walking payload (go2-depth 11-13, the user's hard rule "带负载一定不能摔"): PREFIX_pay.txt -- the seen mode,
+  # 8 kg at the acceptance's point -- judged on its falls only (pay_falls); speed, four feet and the counts reported
+  if pay_falls is not None:
+    path = f"{prefix}_pay.txt"
+    t = aj.txt(path)
+    pf = aj.stairs_fall_counts(path) if t else None
+    if pf is None:
+      missing.append(f"loaded: no falls line ({path})")
+    else:
+      sp, so = speeds(t), stop_ok(t)
+      sm = aj.stairs_metrics(path)
+      detail.append(f"loaded (scan on): falls {pf} (<= {pay_falls}); stop ok {so}; speed "
+                    + " ".join(f"{d} x{v:.2f}" for d, v in sp.items()) + "; "
+                    + ", ".join(f"{k} {v:.3f}" for k, v in sm.items() if k in ("kicks", "slips", "mid", "slide_back"))
+                    + " (reported)")
+      if pf > pay_falls:
+        bad.append(f"满载摔倒 {pf}")
+        gap += 1.0 + 0.1 * (pf - pay_falls)
   src = entry["source"] if entry else "the students' bars (no delivered reading for this robot)"
   if bad:
     head, rc = f"FAIL (gap {gap:.2f}): " + "；".join(bad + [f"未测 {m}" for m in missing]), 1
@@ -146,11 +167,17 @@ def judge(r: str, prefix: str) -> tuple[str, int]:
 
 
 def main() -> int:
-  if len(sys.argv) != 3:
+  args = sys.argv[1:]
+  pay = None
+  if "--pay" in args:
+    i = args.index("--pay")
+    pay = int(args[i + 1])
+    args = args[:i] + args[i + 2:]
+  if len(args) != 2:
     print(__doc__)
     return 2
   try:
-    out, rc = judge(sys.argv[1], sys.argv[2])
+    out, rc = judge(args[0], args[1], pay)
   except Exception as e:   # a tool fault, not a fail
     print(f"FAULT: stairs gate error: {type(e).__name__}: {e}")
     return 4
