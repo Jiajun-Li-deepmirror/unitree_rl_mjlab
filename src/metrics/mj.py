@@ -114,6 +114,15 @@ class StairsMeter:
     # checkpoint's counts taken over every robot, exploration noise included, are not carried on then
     self.eval = False
 
+  def _eval_only(self, env):
+    """(n,) the env's evaluation robots among this meter's, or None when every one of them counts. Only a meter the
+    teacher's runner marked (self.eval: the env's own training meters, tasks/unified/runner.py) is held to them. A
+    meter an evaluation script builds for itself counts every robot it was given (until 2026-11-12 any meter on an
+    env with u_eval_mask was held to it: eval_stairs.py loads the teacher through its runner, which sets the mask, so
+    the second tier's teacher readings came from the first 72 of 576 robots -- the first 4 tiles)."""
+    ev = getattr(env, "u_eval_mask", None) if self.eval else None
+    return None if ev is None else ev[self.ids]
+
   def _state(self, env):
     ids = self.ids
     d = env.scene[SENSOR].data
@@ -131,9 +140,9 @@ class StairsMeter:
     h_ahead = self.grid.h_v(base + 0.5 * heading)
     up = np.nan_to_num(h_ahead, nan=-np.inf) > np.nan_to_num(h_here, nan=np.inf) + JUMP
     on_stairs = env.command_manager.get_term("twist").is_stair_env[ids]
-    ev = getattr(env, "u_eval_mask", None)   # the teacher's evaluation robots (tasks/unified/constraints.py): only they count
+    ev = self._eval_only(env)
     if ev is not None:
-      on_stairs = on_stairs & ev[ids]
+      on_stairs = on_stairs & ev
     on_stairs = on_stairs.cpu().numpy()
     if self.straight:
       c = env.command_manager.get_command("twist")[ids]

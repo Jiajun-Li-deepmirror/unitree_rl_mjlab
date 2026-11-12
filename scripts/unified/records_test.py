@@ -560,6 +560,27 @@ def units(ok, out: Path) -> None:
   ok(f"unit gate: over it does not ({g})", g.startswith("NOT YET 600 ") and "survive_up_blind" in g
      and "survive_up_seen" not in g and "survive_down" not in g and g.count(" vs ") == 1)
   wheel_counter(ok)
+  meter_eval_mask(ok)
+
+
+def meter_eval_mask(ok) -> None:
+  """The shared stairs meter (src/metrics/mj.py) and the evaluation robots: the env's own training meters (marked by
+  the teacher's runner) count only them; a meter an evaluation script builds counts every robot it was given, also on
+  an env whose runner set the mask (eval_stairs.py on a teacher: 72 of 576 robots counted until 2026-11-12)."""
+  from types import SimpleNamespace
+
+  from src.metrics.mj import StairsMeter
+
+  ids = torch.tensor([0, 1, 5, 6])
+  masked = SimpleNamespace(u_eval_mask=torch.arange(8) < 2)
+  m = object.__new__(StairsMeter)
+  m.ids, m.eval = ids, False
+  ok("stairs meter: an evaluation script's meter counts every robot on an env with evaluation robots",
+     m._eval_only(masked) is None)
+  m.eval = True
+  ok("stairs meter: the training's meter counts the evaluation robots only",
+     m._eval_only(masked).tolist() == [True, True, False, False])
+  ok("stairs meter: no evaluation robots, every robot counts", m._eval_only(SimpleNamespace()) is None)
 
 
 def wheel_counter(ok) -> None:
