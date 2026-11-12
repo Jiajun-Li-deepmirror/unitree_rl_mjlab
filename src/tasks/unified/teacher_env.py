@@ -217,6 +217,19 @@ def constraint_items(kind: str) -> list[dict]:
     for item in items:
       if item["name"] in ("descent", "climb"):
         item["metric"] = "u_stair_speed_h"   # (a resume keeps the multipliers: constraints.CARRY_SCALE)
+  # -- the loaded-falls and kicks switches (probes, _probe_switches)
+  if os.environ.get("U_STAIR_SPEED_LOADED"):
+    # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
+    # that scale that cost read the robots it still holds for in full: up to the common payload
+    upto = {"stair_speed": "u_stair_speed_c", "u_stair_speed_h": "u_stair_speed_hc"}
+    for item in items:
+      if item["name"] in ("descent", "climb"):
+        item["metric"] = upto[item["metric"]]   # (a resume keeps the multipliers: constraints.CARRY_SCALE)
+  if os.environ.get("U_KICK_KEEPOUT") and kind == "legged":
+    # the keep-out cost (_add_riser_keepout) is one of the kicks item's costs: in with the stairs quality, scaled by
+    # the item's multiplier like the stumble costs (legged only: every robot's tasks are registered at import, and a
+    # wheeled robot rolls up the risers)
+    next(item for item in items if item["name"] == "kicks")["terms"].append(KEEPOUT_TERM)
   if uflat.scripts_on():
     items = _flat_script_items(items, c)
   return items
@@ -480,6 +493,60 @@ def _add_joint_dr(cfg: ManagerBasedRlEnvCfg) -> None:
               "operation": "scale"})
 
 
+KEEPOUT_TERM = "riser_keepout"   # (no "u_" prefix: quality_diff takes it as a cost of the P keys the M keys lack)
+
+
+def _add_riser_keepout(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
+  """U_KICK_KEEPOUT=<w> (a probe's switch, _probe_switches): the cost constraints.riser_keepout at the weight -w, on
+  the feet and the contact sensor of the recipe's swing clearance cost. Before constraint_items / _rewards: it is one
+  of the kicks item's terms (constraint_items), so it starts at Q_EPS of its weight and comes in with the stairs
+  quality (quality_diff: a cost the M keys do not have)."""
+  v = os.environ.get("U_KICK_KEEPOUT")
+  if not v or robot.kind != "legged":
+    return
+  w = float(v)
+  assert 0.0 < w <= 50.0, f"U_KICK_KEEPOUT {v}: the cost's weight"
+  src = cfg.rewards["foot_terrain_clearance"]
+  params = {"sensor_name": src.params["sensor_name"], "asset_cfg": deepcopy(src.params["asset_cfg"])}
+  if "foot_radius" in src.params:
+    params["foot_radius"] = src.params["foot_radius"]
+  cfg.rewards[KEEPOUT_TERM] = RewardTermCfg(func=ucons.riser_keepout, weight=-w, params=params)
+
+
+_M_WEIGHT_NOTED: set[tuple[str, str]] = set()   # (one line per robot and term, whatever the number of its tasks)
+
+
+def m_weight_factors() -> dict[str, float]:
+  """U_M_WEIGHT=<term>:<factor>,... (a probe's switch, _probe_switches) as {term: factor}."""
+  out = {}
+  for part in filter(None, (x.strip() for x in os.environ.get("U_M_WEIGHT", "").split(","))):
+    t, _, f = part.partition(":")
+    assert t and f and t not in out and 0.0 <= float(f) <= 100.0, f"U_M_WEIGHT {part}: <term>:<factor>, each term once"
+    out[t] = float(f)
+  return out
+
+
+def m_weights(factors: dict[str, float], items: list[dict], weights: dict, rewards: dict, by_p: set) -> list[str]:
+  """U_M_WEIGHT: each term's weight before the stairs quality (q = 0) times its factor; from q = Q_IN on it is the P
+  weight as before (a constraint's term: the item's "start", constraints._apply; any other: `weights`,
+  constraints.quality_terms -- a term equal in the M and P keys becomes a difference of the two). Returns the terms
+  this environment does not have (every robot's tasks are registered at import: another robot's term is no error)."""
+  missing = []
+  for t, f in factors.items():
+    assert t not in by_p and not t.startswith("u_"), f"U_M_WEIGHT {t}: not a cost the stairs quality brings in"
+    owners = [c for c in items if c["by"] == "q" and t in c["terms"]]
+    for c in owners:
+      c["start"][t] *= f
+    if owners:
+      continue
+    if t not in rewards:
+      missing.append(t)
+      continue
+    w_m, w_p = weights.get(t, (rewards[t].weight, rewards[t].weight))
+    weights[t] = (w_m * f, w_p)
+  return missing
+
+
 def _payload_point(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   """The payload's mount point drawn from the robot table's wide box (robot.payload_point; 2026-11-12, the user:
   "负载的重心偏移可以尽可能的大一些，因为我也不知道之后整机上会装在哪里"), in place of the blind chains' range. The
@@ -613,6 +680,11 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
                                              params={"scale": float(os.environ["U_LOADED_FALL"])})
+  if os.environ.get("U_STAIR_SPEED_LOADED"):   # a probe's switch (_probe_switches), after stair_speed_deficit
+    floor = float(os.environ["U_STAIR_SPEED_LOADED"])
+    assert 0.0 <= floor < 1.0 and "stair_speed_deficit" in rewards, f"U_STAIR_SPEED_LOADED {floor}: 0 <= x < 1"
+    rewards["u_stair_speed_loaded"] = RewardTermCfg(func=ucons.stair_speed_loaded, weight=1.0,
+                                                    params={"floor": floor})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
@@ -741,6 +813,16 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          body's x is 15% more than the ground covered, which is what the acceptance measures: the
                          descent / climb items read constraints._stair_speed_h (read in constraint_items) and the
                          cost term stair_speed_deficit becomes constraints.stair_speed_deficit_h.
+    U_STAIR_SPEED_LOADED=<x>  going slowly on the stairs costs a heavily loaded robot less: the cost as it is up to
+                         the common payload (half the limit), <x> times it from 2/3 of the limit up, linear in
+                         between (constraints.stair_speed_loaded, read in _rewards); the descent / climb items read
+                         the robots up to the common payload (read in constraint_items). 0: a heavy robot may stop
+                         on the stairs for nothing -- the acceptance judges only its falls;
+    U_KICK_KEEPOUT=<w>   legged: the cost riser_keepout at the weight -<w> -- a swinging foot close to a step face
+                         and below its top (constraints.riser_keepout) -- as one of the kicks item's costs (read in
+                         _add_riser_keepout and constraint_items);
+    U_M_WEIGHT=<term>:<f>,...  the weight of <term> before the stairs quality (q = 0) times <f>; the P weight from
+                         q = Q_IN on as before (m_weights, read in unified_teacher_env_cfg).
   The flat protocols (flat.py; U_FLAT_SCRIPTS=0 -- no scripts, the flat items as before -- is read where the items
   and the tracker are set up, not here):
     U_FLAT_SHARE=<l>[,<h>] the shares of the light / heavy evaluation robots on the flat column under a script
@@ -831,6 +913,7 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
   if terrain == "map3":
     _payload_point(cfg, robot)
     other_shares = _add_slopes(cfg)
+    _add_riser_keepout(cfg, robot)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:
@@ -843,6 +926,10 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
         if c["by"] == "q":
           c["start"] = {t: start[t] for t in c["terms"]}
           c["base"] = {t: cfg.rewards[t].weight for t in c["terms"]}
+      for t in m_weights(m_weight_factors(), items, weights, cfg.rewards, by_p):   # (_probe_switches)
+        if (robot.name, t) not in _M_WEIGHT_NOTED:
+          _M_WEIGHT_NOTED.add((robot.name, t))
+          print(f"[unified] U_M_WEIGHT: {robot.name} has no cost {t} -- nothing changed for it")
       if uflat.scripts_on():
         _flat_tracker(cfg)
       _probe_switches(cfg, items)

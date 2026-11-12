@@ -539,6 +539,7 @@ def _stand_hold_light(env: ManagerBasedRlEnv, term: str = "standing_position_hol
 # unloaded tests, judged by the constraints; heavy = their own reward group, no constraint (the user, 2026-11-11).
 LIGHT_FRAC = 0.25
 HEAVY_FRAC = 2.0 / 3.0
+COMMON_FRAC = 0.5   # the acceptance's common payload: half the limit (doc/redesign.md 2.1; Go2 / Go2W 4 kg of 8)
 DEFAULT_LIMIT_KG = 8.0   # Go2 / Go2W's walking payload; used only until curriculum.progress_payload sets env.u_payload_full
 
 
@@ -570,8 +571,21 @@ def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
   return f
 
 
+def upto_common(metric):
+  """`metric` (a name in METRICS, or a function like them) over the robots carrying at most the common payload
+  (COMMON_FRAC of the limit): the stairs speed items under U_STAIR_SPEED_LOADED, where the heavier robots' speed cost
+  is discounted (stair_speed_loaded) -- the acceptance judges the stairs speed unloaded and at the common payload,
+  and at the full payload only the falls."""
+  def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
+    value, mask = (METRICS[metric] if isinstance(metric, str) else metric)(env, **params)
+    pm = payload_mask(env, hi=COMMON_FRAC)
+    return value, (mask if pm is None else mask & pm)
+  return f
+
+
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stairs_heading": _stairs_heading,
           "u_stair_speed_h": _stair_speed_h,
+          "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
           "u_march_drift": _march_drift, "u_march_drift_light": _march_drift_light,
@@ -698,6 +712,104 @@ def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_term
   return raw * w * (scale - 1.0) * frac.clamp(0.0, 1.0)
 
 
+def stair_speed_loaded(env: ManagerBasedRlEnv, floor: float = 0.0, term: str = "stair_speed_deficit") -> torch.Tensor:
+  """Reward term (weight 1, after `term`): going slowly on the stairs costs a heavily loaded robot less -- the full
+  cost up to the common payload (COMMON_FRAC of the limit), `floor` times it from the heavy class (HEAVY_FRAC) up,
+  linear in between, on top of whatever `term` weighs now (the probe switch U_STAIR_SPEED_LOADED=<floor>,
+  teacher_env._rewards).
+
+  2026-11-13, tier 2 at the walking payload on the candidate teachers: Go2W fell on 97 of the stairs runs (s27, 10%
+  / 22% of the 12-15 / 15-18 cm climbs), Go2 on 50 (s36), against a bar of 6 -- and every descent was reached. The
+  costs say why: standing on a flight under a forward command costs the speed deficit for as long as it lasts (Go2W
+  -12 x 0.9 a second, some -216 over a 20 s episode; Go2 -36), a fall costs once (-40 with U_TERMINATED_Q=10), so a
+  robot that cannot make the step is paid to try it anyway. The user (2026-11-12): with payload the robot must never
+  fall; what is physically out of reach with it is not required. The acceptance judges the stairs speed unloaded and
+  at the common payload (80% of the unloaded reading) and at the full payload only the falls: up to the common
+  payload nothing changes, above it the robot may take the stairs as slowly as it needs, or not at all. The teacher
+  sees the payload, so its behaviour can depend on it."""
+  out = torch.zeros(env.num_envs, device=env.device)
+  kg = getattr(env, "payload_kg", None)
+  r = _raw(env, term)
+  if kg is None or r is None:
+    return out
+  raw, w = r
+  frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
+  return raw * w * (floor - 1.0) * frac.clamp(0.0, 1.0)
+
+
+class riser_keepout:
+  """Reward term (legged; the probe switch U_KICK_KEEPOUT, teacher_env._add_riser_keepout): a swinging foot in the
+  keep-out zone of a step face -- within `r_near` / `r_far` of it over the ground (the foot's centre) and lower than
+  the step's top + `margin`.
+
+  2026-11-13, Go2 candidate teachers on tier 2: 0.34-0.43 kicks per step against 0.31 (their gate) and 0.245 (the
+  students' bar), after the stumble costs' multiplier had sat at its cap. Where the kicks are (kick_anatomy on
+  uprobe_s29's model_5598): 70% a swinging foot against the face -- going up with the riser ahead, the foot rising
+  (20%) or coming down onto the nosing (21%), going down with the riser behind, the foot coming down (15%). The
+  stumble costs act at the touch, a few steps of an episode; this one acts on the swing's path, at every step the
+  foot is where a touch can happen: lift before closing in on a riser going up, clear the nosing before dropping
+  going down.
+
+  The heights are the shared metrics' raster of the terrain boxes (metrics.terrain, 2 cm cells; the stairs meter's
+  grid when the environment has one). Per foot: the cell under its centre and 8 points on each of the two rings
+  around it. A ring point is a step face when it is higher than the centre's cell by more than the metrics' JUMP (3
+  cm) and by at most `max_rise` (the flights' side walls are no steps). The depth in the zone is (top + margin -
+  sole) / `cap`, clipped to 0..1 (sole: the centre less `foot_radius`); the foot's value is the larger of its depth
+  at r_near and `far_weight` x its depth at r_far. The term's value is the sum over the feet out of contact
+  (`sensor_name`'s found <= 0): a foot standing next to a riser costs nothing."""
+
+  DIRS = 8
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.H: torch.Tensor | None = None
+
+  def reset(self, env_ids=None) -> None:
+    pass
+
+  def set_grid(self, H, x0: float, y0: float, res: float, device) -> None:
+    from src.metrics.terrain import JUMP
+
+    self.H = torch.as_tensor(H, dtype=torch.float32, device=device)
+    self.x0, self.y0, self.res, self.jump = float(x0), float(y0), float(res), float(JUMP)
+    ang = torch.arange(self.DIRS, device=device) * (2.0 * math.pi / self.DIRS)
+    self.ring = torch.stack([torch.cos(ang), torch.sin(ang)], dim=1)
+
+  def height(self, xy: torch.Tensor) -> torch.Tensor:
+    """The raster's height at (..., 2) world points (the cell as metrics.terrain.Grid.ij takes it; the border's cell
+    outside the raster)."""
+    i = ((xy[..., 0] - self.x0) / self.res).long().clamp(0, self.H.shape[0] - 1)
+    j = ((xy[..., 1] - self.y0) / self.res).long().clamp(0, self.H.shape[1] - 1)
+    return self.H[i, j]
+
+  def zone(self, pos: torch.Tensor, foot_radius: float = 0.022, r_near: float = 0.04, r_far: float = 0.08,
+           far_weight: float = 0.5, margin: float = 0.02, cap: float = 0.06, max_rise: float = 0.30) -> torch.Tensor:
+    """Each foot's value, 0..1, from the feet's centres (..., 3)."""
+    sole = pos[..., 2] - foot_radius
+    here = self.height(pos[..., :2])
+    cost = torch.zeros_like(sole)
+    for r, wgt in ((r_near, 1.0), (r_far, far_weight)):
+      top = self.height(pos[..., None, :2] + r * self.ring)
+      rise = top - here[..., None]
+      depth = ((top + margin - sole[..., None]) / cap).clamp(0.0, 1.0)
+      depth = torch.where((rise > self.jump) & (rise <= max_rise), depth, torch.zeros_like(depth))
+      cost = torch.maximum(cost, wgt * depth.amax(dim=-1))
+    return cost
+
+  def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, asset_cfg, foot_radius: float = 0.022,
+               r_near: float = 0.04, r_far: float = 0.08, far_weight: float = 0.5, margin: float = 0.02,
+               cap: float = 0.06, max_rise: float = 0.30) -> torch.Tensor:
+    if self.H is None:
+      grid = getattr(getattr(env, "u_lib_meter", None), "grid", None)
+      if grid is None:
+        from src.metrics.mj import terrain_grid
+        grid = terrain_grid(env)
+      self.set_grid(grid.H, grid.x0, grid.y0, grid.res, env.device)
+    pos = env.scene[asset_cfg.name].data.site_pos_w[:, asset_cfg.site_ids]
+    swing = env.scene[sensor_name].data.found <= 0
+    cost = self.zone(pos, foot_radius, r_near, r_far, far_weight, margin, cap, max_rise)
+    return (cost * swing.float()).sum(dim=1)
+
+
 class heavy_log:
   """Curriculum term: each HEAVY_ITEMS item measured on the light (<= LIGHT_FRAC of the limit) and on the heavy
   (>= HEAVY_FRAC) robots, smoothed like the constraints; logged as Curriculum/u_heavy/<item>/{light,heavy,gap}.
@@ -786,8 +898,10 @@ LEGACY_SIG = {"creep": "u_stand_hold_light|p90", "march": "u_stand_hold_light|p9
 CARRY_SCALE = {"clock": {"gait_match|mean"}, "side_drift": {"u_drift_light|p90"},
                "straight_drift": {"u_drift_light|p90"}, "creep": {"u_stop_creep_light|mean"},
                "march_hip": {"u_march_hip_light|mean"},
-               # (2026-11-13, U_STAIR_SPEED_H: the stairs speed over the ground instead of the body frame's)
-               "descent": {"stair_speed|mean"}, "climb": {"stair_speed|mean"}}
+               # (2026-11-13, U_STAIR_SPEED_H: the stairs speed over the ground instead of the body frame's;
+               # U_STAIR_SPEED_LOADED: either one over the robots up to the common payload -- u_stair_speed_c / _hc)
+               "descent": {"stair_speed|mean", "u_stair_speed_h|mean", "u_stair_speed_c|mean", "u_stair_speed_hc|mean"},
+               "climb": {"stair_speed|mean", "u_stair_speed_h|mean", "u_stair_speed_c|mean", "u_stair_speed_hc|mean"}}
 
 # An item split off another one: {new item: (the item its terms hung on, that item's signature then)}. A checkpoint
 # from before the split gives the new item the multiplier its terms had (2026-11-12: march_hip_default was scaled

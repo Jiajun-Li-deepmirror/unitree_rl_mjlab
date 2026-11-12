@@ -587,6 +587,7 @@ def units(ok, out: Path) -> None:
   wheel_counter(ok)
   meter_eval_mask(ok)
   sticky_payload_units(ok)
+  loaded_kick_units(ok)
   flat_units(ok, out)
 
 
@@ -1058,6 +1059,132 @@ def sticky_payload_units(ok) -> None:
   ok("sticky payload: the event carries the inner event's model fields and recompute level",
      teacher_env.sticky_payload.model_fields == mdp.base_payload_point.model_fields
      and teacher_env.sticky_payload.recompute == mdp.base_payload_point.recompute)
+
+
+def loaded_kick_units(ok) -> None:
+  """The probe switches of 2026-11-13 (teacher_env._probe_switches): U_STAIR_SPEED_LOADED (the stairs speed cost by
+  payload, the descent / climb items over the robots up to the common payload), U_KICK_KEEPOUT (the keep-out zone of
+  the step faces as one of the kicks item's costs), U_M_WEIGHT (a term's weight before the stairs quality)."""
+  import numpy as np
+
+  from src.tasks.unified import teacher_env as te
+
+  keys = ("U_STAIR_SPEED_LOADED", "U_STAIR_SPEED_H", "U_KICK_KEEPOUT", "U_M_WEIGHT", "U_STOP_FEET_DIR")
+
+  def under(fn, **env: str):
+    old = {k: os.environ.pop(k, None) for k in keys}
+    os.environ.update(env)
+    try:
+      return fn()
+    finally:
+      for k in keys:
+        os.environ.pop(k, None)
+        if old[k] is not None:
+          os.environ[k] = old[k]
+
+  def items_env(kind: str = "legged", **env: str) -> dict:
+    return under(lambda: {c["name"]: c for c in constraint_items(kind)}, **env)
+
+  speed = ("descent", "climb")
+  for kind in ("legged", "wheeled"):
+    base = items_env(kind)
+    for env, metric in (({"U_STAIR_SPEED_LOADED": "0"}, "u_stair_speed_c"),
+                        ({"U_STAIR_SPEED_LOADED": "0.3", "U_STAIR_SPEED_H": "1"}, "u_stair_speed_hc")):
+      got = items_env(kind, **env)
+      ok(f"unit loaded ({kind}): {env} -- descent and climb read {metric} (a measure of constraints.CUSTOM whose "
+         f"multipliers carry over from the plain ones), every other item is the same",
+         all(got[n]["metric"] == metric and {**got[n], "metric": base[n]["metric"]} == base[n] for n in speed)
+         and metric in ucons.CUSTOM and all({"stair_speed|mean", "u_stair_speed_h|mean", "u_stair_speed_c|mean",
+                                            "u_stair_speed_hc|mean"} <= ucons.CARRY_SCALE[n] for n in speed)
+         and {n: c for n, c in got.items() if n not in speed} == {n: c for n, c in base.items() if n not in speed})
+    kick = items_env(kind, U_KICK_KEEPOUT="2")
+    if kind == "legged":
+      ok("unit keep-out (legged): U_KICK_KEEPOUT -- riser_keepout joins the kicks item's costs, nothing else changes",
+         kick["kicks"]["terms"] == base["kicks"]["terms"] + [te.KEEPOUT_TERM] and te.KEEPOUT_TERM == "riser_keepout"
+         and {**kick["kicks"], "terms": base["kicks"]["terms"]} == base["kicks"]
+         and {n: c for n, c in kick.items() if n != "kicks"} == {n: c for n, c in base.items() if n != "kicks"})
+    else:
+      ok("unit keep-out (wheeled): U_KICK_KEEPOUT changes nothing (every robot's tasks are built at import)",
+         kick == base)
+  base = items_env()
+  state = {"scale": {n: 2.0 for n in base}, "value": {n: 0.5 for n in base},
+           "values": {f"{n}@{m}": 0.5 for n in base for m in ucons.MODES},
+           "count": {f"{n}@{m}": 900 for n in base for m in ucons.MODES}, "relax": {}, "ref": {},
+           "sig": {n: ucons.item_sig(c) for n, c in base.items()}}
+  cons = ucons.constraints(NS(params={"items": list(items_env(U_STAIR_SPEED_LOADED="0").values())}), NS())
+  cons.load(dict(state))
+  ok(f"unit loaded load: a checkpoint measured over every payload under U_STAIR_SPEED_LOADED -- descent and climb "
+     f"keep their multipliers and read afresh ({cons.remeasured}), nothing else starts over ({cons.redefined})",
+     sorted(cons.remeasured) == ["climb", "descent"] and not cons.redefined and cons.scale["descent"] == 2.0
+     and cons.scale["climb"] == 2.0 and "climb" not in cons.value and cons.count["kicks@seen"] == 900)
+
+  # -- the discount: 5 robots at 0 / 0.5 / 0.5833 / 0.6667 / 1 of an 8 kg limit, each short of the stairs speed
+  limit, w = 8.0, -12.0
+  kg = torch.tensor([0.0, 0.5, (0.5 + ucons.HEAVY_FRAC) / 2, ucons.HEAVY_FRAC, 1.0]) * limit
+  raw = torch.tensor([0.6, 0.6, 0.6, 0.6, 0.3])
+  rm = NS(_term_names=["stair_speed_deficit"], get_term_cfg=lambda t: NS(weight=w), _step_reward=(raw * w)[:, None])
+  env = NS(num_envs=5, device="cpu", payload_kg=kg, u_payload_full=limit, reward_manager=rm)
+  for floor, want in ((0.0, [1.0, 1.0, 0.5, 0.0, 0.0]), (0.25, [1.0, 1.0, 0.625, 0.25, 0.25])):
+    total = raw * w + ucons.stair_speed_loaded(env, floor=floor)
+    ok(f"unit loaded cost: floor {floor} -- the speed cost x {want} at 0 / 0.5 / 0.583 / 0.667 / 1 of the limit "
+       f"({[round(v, 3) for v in (total / (raw * w)).tolist()]})",
+       bool(torch.allclose(total, raw * w * torch.tensor(want), atol=1e-5)) and ucons.COMMON_FRAC == 0.5)
+  ok("unit loaded cost: nothing before the first payload draw, nothing without the cost term",
+     float(ucons.stair_speed_loaded(NS(num_envs=5, device="cpu", reward_manager=rm)).abs().sum()) == 0.0
+     and float(ucons.stair_speed_loaded(env, term="nosuch").abs().sum()) == 0.0)
+  value, mask = ucons.upto_common(lambda e, **kw: (torch.arange(5.0), torch.ones(5, dtype=torch.bool)))(env)
+  _, every = ucons.upto_common(lambda e, **kw: (torch.arange(5.0), torch.ones(5, dtype=torch.bool)))(NS())
+  ok(f"unit loaded measure: the robots up to the common payload ({mask.tolist()}); every robot before the first draw",
+     mask.tolist() == [True, True, False, False, False] and value.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+     and bool(every.all()))
+
+  # -- the keep-out zone on a raster of 2 cm cells: a 15 cm step up at x = 1 m, a 1 m wall from y = 1.8 m
+  H = np.zeros((100, 100))
+  H[50:, :] = 0.15
+  H[:, 90:] = 1.0
+  term = ucons.riser_keepout(NS(params={}), NS())
+  term.set_grid(H, 0.0, 0.0, 0.02, "cpu")
+  r = 0.022
+  feet = {"far from the step": ((0.50, 0.5, 0.0), 0.0), "3 cm before it, on the ground": ((0.97, 0.5, 0.0), 1.0),
+          "3 cm before it, 1 cm under its top": ((0.97, 0.5, 0.14), 0.5),
+          "3 cm before it, 3 cm over its top": ((0.97, 0.5, 0.18), 0.0),
+          "7 cm before it, on the ground (outer ring)": ((0.93, 0.5, 0.0), 0.5),
+          "10 cm before it, on the ground": ((0.90, 0.5, 0.0), 0.0),
+          "on the step, 5 cm past its edge": ((1.05, 0.5, 0.15), 0.0),
+          "3 cm from the wall (higher than a step)": ((0.50, 1.77, 0.0), 0.0),
+          "outside the raster": ((-5.0, 9.0, 0.0), 0.0)}
+  pos = torch.tensor([[x, y, sole + r] for (x, y, sole), _ in feet.values()])
+  got = term.zone(pos, foot_radius=r)
+  ok("unit keep-out zone: " + "; ".join(f"{k} {float(v):.2f}" for k, v in zip(feet, got)),
+     bool(torch.allclose(got, torch.tensor([v for _, v in feet.values()]), atol=1e-4)))
+  four = pos[[1, 2, 4, 0]]
+  found = torch.tensor([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 2.0, 0.0]])
+  env = NS(scene={"robot": NS(data=NS(site_pos_w=torch.stack([four, four]))),
+                  "feet_ground_contact": NS(data=NS(found=found))},
+           device="cpu", u_lib_meter=NS(grid=NS(H=H, x0=0.0, y0=0.0, res=0.02)))
+  lazy = ucons.riser_keepout(NS(params={}), NS())
+  out = lazy(env, sensor_name="feet_ground_contact", asset_cfg=NS(name="robot", site_ids=[0, 1, 2, 3]), foot_radius=r)
+  ok(f"unit keep-out term: the sum over the swinging feet, on the stairs meter's raster ({out.tolist()}: four feet "
+     f"in the air 2.0, the two on the ground left out 0.5)",
+     bool(torch.allclose(out, torch.tensor([2.0, 0.5]), atol=1e-4)) and lazy.H.dtype == torch.float32)
+
+  # -- U_M_WEIGHT
+  factors = under(te.m_weight_factors, U_M_WEIGHT="a:3, b:0.3,c:0.5,zz:2")
+  items = [{"name": "x", "by": "q", "terms": ["a"], "start": {"a": -1.0}}, {"name": "y", "by": "p", "terms": ["p1"]}]
+  weights = {"b": (-1.0, -10.0)}
+  rewards = {"a": NS(weight=-2.0), "b": NS(weight=-10.0), "c": NS(weight=-4.0), "p1": NS(weight=-1.0)}
+  missing = te.m_weights(factors, items, weights, rewards, {"p1"})
+  ok(f"unit U_M_WEIGHT: a constraint's term -- its start weight x 3 ({items[0]['start']}); a difference of the M and "
+     f"P keys -- the M side x 0.3; a term equal in both -- (x 0.5, as it is) ({weights}); a term this robot has not "
+     f"is reported ({missing}); none set: nothing",
+     factors == {"a": 3.0, "b": 0.3, "c": 0.5, "zz": 2.0} and items[0]["start"] == {"a": -3.0}
+     and weights == {"b": (-0.3, -10.0), "c": (-2.0, -4.0)} and missing == ["zz"] and under(te.m_weight_factors) == {})
+  try:
+    te.m_weights({"p1": 2.0}, items, {}, rewards, {"p1"})
+    refused = False
+  except AssertionError:
+    refused = True
+  ok("unit U_M_WEIGHT: a flat constraint's term is refused", refused)
 
 
 def meter_eval_mask(ok) -> None:
