@@ -197,6 +197,26 @@ def reached(run: dict) -> dict:
           if k not in STAIRS_MILESTONES or (walk is not None and v[0] is not None and v[0] >= walk[0])}
 
 
+def fold_resumes(runs: list[dict]) -> list[dict]:
+  """A run that resumed another run of the list takes that run's curve points and events up to the resume point and
+  stands for both (2026-11-12: a move to new code is a resume into a new run directory; the board shows one training
+  per seed, not the stopped part beside the running one)."""
+  by = {f"{r['exp']}/{r['run']}": r for r in runs}
+  gone: set[int] = set()
+  for r in sorted(runs, key=lambda x: x["run"]):   # oldest first: a chain folds link by link
+    start = next((e for e in r["timeline"] if e.get("ev") == "start"), None)
+    res = (start or {}).get("resumed") or {}
+    parent = by.get("/".join(str(res.get("checkpoint") or "").split("/")[-3:-1]))
+    if parent is None or parent is r:
+      continue
+    at = res.get("it")
+    upto = lambda it: not isinstance(at, (int, float)) or not isinstance(it, (int, float)) or it <= at   # noqa: E731
+    r["series"] = [s for s in parent["series"] if upto(s[0])] + r["series"]
+    r["timeline"] = [e for e in parent["timeline"] if e.get("ev") != "end" and upto(e.get("it"))] + r["timeline"]
+    gone.add(id(parent))
+  return [r for r in runs if id(r) not in gone]
+
+
 def chain_zh(text: str) -> str | None:
   """A chain-log line's text in Chinese (None: not an event for the board); an unknown line stays as written."""
   base = lambda p: "/".join(p.rstrip("/").split("/")[-2:])   # noqa: E731
@@ -345,7 +365,7 @@ def main() -> int:
       continue
     now_t = d["now"]
     mine = []
-    for run in sorted(d["runs"], key=lambda x: (x["exp"], x["run"])):
+    for run in sorted(fold_resumes(d["runs"]), key=lambda x: (x["exp"], x["run"])):
       st, series = run["status"], run["series"]
       role, kind, lab = label(run["run"])
       it, cap = st.get("it"), st.get("total_it")
