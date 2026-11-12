@@ -228,6 +228,16 @@ def main() -> None:
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
   # exact counts (2026-11-12, doc/redesign.md 2.2's "0 falls": the table's whole percents read 1-2 robots of 72 as 0%)
   print(f"falls: traverse {int(trav_fell.sum())} of {num_envs}, stop {int((~alive_np).sum())} of {num_envs}")
+  # the traverse's robots that neither fell nor got past the last step in time (2026-11-13, go2-depth: As2 stopped at
+  # the first riser -- not a fall, so the falls miss it): a reading, its own line (accept_tables parses the band rows)
+  stalled = ~trav_ok & ~trav_fell
+  st_parts = []
+  for lvl in range(NUM_ROWS):
+    for d in ("up", "down"):
+      m = (env_level == lvl) & (env_dir == d)
+      st_parts.append(f"{band(lvl)} {d} {stalled[m].mean():.0%}")
+  print(f"stalled on the traverse (neither fell nor got past the last step): {stalled.mean():.1%} of {num_envs}; "
+        + ", ".join(st_parts))
   # heading on the flight (tinynav's quantity, pooled over the robot-steps as its mean): all, then per band and direction
   hd_all = hd_s.sum() / max(hd_c.sum(), 1.0)
   hd_parts = []
