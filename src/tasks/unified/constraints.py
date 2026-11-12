@@ -697,7 +697,15 @@ class flat_only:
   `calm` (constraints.calm) is the term's weight with every flat item's multiplier held at 1 or below: a multiplier
   that relaxed below 1 stays relaxed everywhere, and a stairs-quality item's weight on the same term stands. The
   heavy robots (>= `min_frac` of the payload limit) are left out on `heavy_terms`: their own group (heavy_group)
-  holds those terms at the configured weight already."""
+  holds those terms at the configured weight already.
+
+  `zero_terms` (the probe switch U_STAND_POSE_EVEN=1, 2026-11-13): these terms leave the uneven ground altogether,
+  for every robot -- raw x (0 - current). standing_pose_load (the leg joints' distance from the default pose of a
+  robot at rest, times 1 + payload / 8 kg) is the flat stance item's cost and has no terrain mask: on a flight, where
+  a level stance has the front and rear legs far from the default, it was the largest cost of a stop -- 4.2 a second
+  nose up and 5.4 nose down with the full payload, 1.7 / 2.1 with none (stand_stairs_terms on uprobe_s41's
+  model_6097; a stop on even ground earns about +4 a second, on the stairs -0.3 to -9.3) -- and more than half of
+  the full payload's falls in tier 2 were stops on a descent, 0-4 s after the stop."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     pass
@@ -706,15 +714,21 @@ class flat_only:
     pass
 
   def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, heavy_terms: list[str],
-               min_frac: float = HEAVY_FRAC) -> torch.Tensor:
+               min_frac: float = HEAVY_FRAC, zero_terms: tuple[str, ...] = ()) -> torch.Tensor:
     from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
     out = torch.zeros(env.num_envs, device=env.device)
     calm = getattr(getattr(env, "u_constraints", None), "calm", {})
-    if not calm:
+    if not calm and not zero_terms:
       return out
     uneven = uneven_terrain_mask(env, sensor_name)
     heavy = payload_mask(env, lo=min_frac)
+    for t in zero_terms:   # off the uneven ground, for every robot
+      r = _raw(env, t)
+      if r is not None:
+        out -= uneven.float() * r[0] * r[1]
     for t, w_calm in calm.items():
+      if t in zero_terms:
+        continue
       r = _raw(env, t)
       if r is None:
         continue

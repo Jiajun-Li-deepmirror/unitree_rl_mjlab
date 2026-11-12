@@ -696,8 +696,12 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if os.environ.get("U_FLAT_ONLY") == "1":   # a probe's switch (_probe_switches), after the heavy groups
     heavy_terms = sorted({t for _, _, _, ts in ucons.HEAVY_ITEMS.values() for t in ts if t in rewards})
     sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
-    rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params={
-      "sensor_name": sensor or "terrain_scan", "heavy_terms": heavy_terms})
+    params = {"sensor_name": sensor or "terrain_scan", "heavy_terms": heavy_terms}
+    if os.environ.get("U_STAND_POSE_EVEN") == "1" and "standing_pose_load" in rewards:   # a probe's switch
+      params["zero_terms"] = ("standing_pose_load",)
+    rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params=params)
+  assert os.environ.get("U_STAND_POSE_EVEN") != "1" or os.environ.get("U_FLAT_ONLY") == "1", \
+    "U_STAND_POSE_EVEN goes with U_FLAT_ONLY=1 (its term takes the cost off the uneven ground)"
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
                                              params={"scale": float(os.environ["U_LOADED_FALL"])})
@@ -866,6 +870,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          behind it: the seen mode stopped at the top of 24% of its descents);
     U_M_WEIGHT=<term>:<f>,...  the weight of <term> before the stairs quality (q = 0) times <f>; the P weight from
                          q = Q_IN on as before (m_weights, read in unified_teacher_env_cfg).
+    U_STAND_POSE_EVEN=1  with U_FLAT_ONLY=1: standing_pose_load (the flat stance item's cost: a resting robot's leg
+                         joints off the default pose, times 1 + payload / 8 kg) acts on even ground only
+                         (constraints.flat_only's zero_terms, read in _rewards) -- on a flight it was the largest
+                         cost of a loaded robot's stop (4.2-5.4 a second), and more than half of the full payload's
+                         falls in tier 2 were stops on a descent.
   The heading on even ground (2026-11-13: tier 2 on the Go2 candidate, s34 model_6097 -- 12-17 deg off 10 s into a
   line to the right, line drift 15-19% against 5%, the compound commands' yaw at 46-86%; read in _rewards):
     U_HEADING_OBS=1      the line costs (straight_drift, side_drift) hold the heading the actor is shown -- the
