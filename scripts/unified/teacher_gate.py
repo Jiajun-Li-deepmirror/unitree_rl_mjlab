@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""teacher_gate.py RUN_DIR [--hold N] [--json] -- has the unified teacher of RUN_DIR passed (go2-depth 2026-11-11)?
+"""teacher_gate.py RUN_DIR [--hold N] [--pre] [--json] -- has the unified teacher of RUN_DIR passed (go2-depth 2026-11-11)?
 
 The teacher is judged on its constraints in training (src/tasks/unified/constraints.py: every acceptance item as a
 measurement per scan mode, a target and a multiplier, logged as Curriculum/u_constraints/<name>/{value_seen,
@@ -19,6 +19,17 @@ Prints one line: "PASS K <items>" or "NOT YET <iteration> <the items that miss, 
 <name>_<mode>); --json the details. Which constraints are enforced, their senses and modes come from the teacher
 task's items (registered with UNIFIED_TASKS=1). A run from before the modes or the margin (no value_<mode> / bar
 tags) is judged on <name>/value against <name>/target, as it was.
+
+--pre (2026-11-13): the first half of a two-step gate. The stairs readings in training are not the acceptance's:
+the same teacher read 1.5-1.9 times the pooled evaluation's riser kicks (Go2) and 3.4-4.3 times its slide-backs
+(Go2W, 0.094 in training against 0.028 there, under the 5 % bar), on other robots, commands and payloads. So with
+--pre the stairs-quality items (the items "by": "q" -- speeds, leg contact, stops, survival, edge, mid, slides,
+kicks, top landing, idle) are read but not judged: the line is "PRE-PASS K <the items judged>" for the NEWEST
+checkpoint K whose window has the curriculum through and every enforced flat item on its bar's side (the flat
+readings are the acceptance's own protocols, src/tasks/unified/flat.py), else "NOT YET ..." as above. The caller
+(jobs/unified/teacher.sh) then judges the stairs on model_K with the pooled evaluation and writes the pick; the
+newest K, so that a later call moves on after an evaluation that failed. --json marks the unjudged items
+("judged": false).
 """
 
 from __future__ import annotations
@@ -55,6 +66,8 @@ def main() -> int:
   ap.add_argument("run")
   ap.add_argument("--hold", type=int, default=500)
   ap.add_argument("--every", type=int, default=100, help="the checkpoint interval (judged only there)")
+  ap.add_argument("--pre", action="store_true", help="the flat items and the curriculum only: PRE-PASS K, the "
+                  "newest such checkpoint (the stairs items are the caller's, on the pooled evaluation)")
   ap.add_argument("--json", action="store_true")
   a = ap.parse_args()
   files = sorted(glob.glob(os.path.join(a.run, "events.out.tfevents*")))
@@ -67,6 +80,7 @@ def main() -> int:
   q = series(acc, "Curriculum/u_progress/q")   # empty for a run from before the stairs quality stage
   items = items_for(a.run)
   vals, bars, sense = {}, {}, {}   # "<name>_<mode>" (or "<name>") -> the readings; the bar they are judged at
+  unjudged = set()                 # the keys --pre reads without judging: the stairs-quality items
   absent = []
   for c in items:
     n = c["name"]
@@ -84,6 +98,8 @@ def main() -> int:
       continue
     for key, v in per.items():
       vals[key], bars[key], sense[key] = v, ({i: fixed for i in v} if fixed is not None else bar), c["sense"]
+      if a.pre and c.get("by") == "q":
+        unjudged.add(key)
   if absent:
     print(f"teacher_gate: nothing of these in the run's log, not judged: {' '.join(absent)}", file=sys.stderr)
   steps = sorted(p)
@@ -93,6 +109,7 @@ def main() -> int:
   last = steps[-1]
   report = {}
   last_miss = None
+  pre = None   # --pre: the newest checkpoint that passes, and its readings
   for k in steps:
     if k % a.every:   # judged at the checkpoints (saved every 100 iterations): the pick must be one
       continue
@@ -105,20 +122,32 @@ def main() -> int:
     for n in vals:
       window = [i for i in range(lo, k + 1) if i in vals[n] and i in bars[n]]
       if len(window) < a.hold // 2:
-        miss.append(f"{n} unmeasured")
+        if n in unjudged:
+          report.pop(n, None)
+        else:
+          miss.append(f"{n} unmeasured")
         continue
       v = sum(vals[n][i] for i in window) / len(window)
       t = sum(bars[n][i] for i in window) / len(window)
       ok = v >= t if sense[n] == "min" else v <= t
-      report[n] = {"value": round(v, 4), "bar": round(t, 4), "ok": ok}
-      if not ok:
+      report[n] = {"value": round(v, 4), "bar": round(t, 4), "ok": ok} | ({"judged": False} if n in unjudged else {})
+      if not ok and n not in unjudged:
         miss.append(f"{n} {v:.4g} vs {t:.4g}")
+    if not miss and a.pre:
+      pre = (k, {n: dict(r) for n, r in report.items()})
+      continue
     if not miss:
       print(f"PASS {k} {' '.join(sorted(report))}")
       if a.json:
         print(json.dumps(report))
       return 0
     last_miss = (k, miss)
+  if pre is not None:
+    k, report = pre
+    print(f"PRE-PASS {k} {' '.join(sorted(n for n, r in report.items() if r.get('judged', True)))}")
+    if a.json:
+      print(json.dumps(report))
+    return 0
   if last_miss is not None:
     k, miss = last_miss
     print(f"NOT YET {last} ({k}: {'; '.join(miss)})")

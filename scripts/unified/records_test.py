@@ -536,7 +536,7 @@ def units(ok, out: Path) -> None:
   from torch.utils.tensorboard import SummaryWriter
   from src.tasks.unified.teacher_env import SURVIVE_BAR
 
-  def gate(name: str, survive: float, logged_bar: float, absent=(), bar_only=()) -> str:
+  def gate(name: str, survive: float, logged_bar: float, absent=(), bar_only=(), args=(), flat_until=None) -> str:
     run = out / "gate" / "go2_u_teacher" / name
     w = SummaryWriter(str(run))
     for it in range(0, 601):
@@ -547,13 +547,15 @@ def units(ok, out: Path) -> None:
           continue
         tag = f"Curriculum/u_constraints/{c['name']}/"
         good = c["target"] * (1.1 if c["sense"] == "min" else 0.9)
+        bad = c["target"] * (0.5 if c["sense"] == "min" else 2.0)
         for m in () if c["name"] in bar_only else c["modes"]:
           w.add_scalar(tag + f"value_{m}", survive if c["name"] == "survive_up" and m == "blind" else
-                       min(good, survive) if c["name"].startswith("survive") else good, it)
+                       min(good, survive) if c["name"].startswith("survive") else
+                       bad if flat_until is not None and it > flat_until and c["name"] == "clock" else good, it)
         w.add_scalar(tag + "bar", logged_bar if c["name"].startswith("survive") else c["target"], it)
     w.close()
-    r = subprocess.run([sys.executable, str(ROOT / "scripts/unified/teacher_gate.py"), str(run)], capture_output=True,
-                       text=True, cwd=str(ROOT))
+    r = subprocess.run([sys.executable, str(ROOT / "scripts/unified/teacher_gate.py"), str(run), *args],
+                       capture_output=True, text=True, cwd=str(ROOT))
     return r.stdout.strip() + r.stderr.strip()[-300:]
 
   # (the logged bar is ignored for a gate-only item: 0.99 would pass anything, 0.0 nothing)
@@ -572,6 +574,16 @@ def units(ok, out: Path) -> None:
   g = gate("no_reading", SURVIVE_BAR - 0.02, 0.0, bar_only=("stance",))
   ok(f"unit gate: an item the run has (its bar is logged) but never read stays unmeasured ({g})",
      g.startswith("NOT YET 600 ") and "stance unmeasured" in g and "not judged" not in g)
+  # (2026-11-13) --pre: the stairs-quality items are read, not judged; the newest checkpoint that passes
+  g = gate("pre", SURVIVE_BAR + 0.05, 0.99, args=("--pre",))
+  ok(f"unit gate --pre: a stairs item over its bar does not hold the pre-pass, the newest checkpoint ({g[:60]})",
+     g.startswith("PRE-PASS 600 ") and "survive" not in g and "kicks" not in g and "clock_seen" in g)
+  g = gate("pre_flat", SURVIVE_BAR - 0.02, 0.0, bar_only=("stance",), args=("--pre",))
+  ok(f"unit gate --pre: a flat item never read still holds it ({g})",
+     g.startswith("NOT YET 600 ") and "stance unmeasured" in g)
+  g = gate("pre_newest", SURVIVE_BAR - 0.02, 0.0, args=("--pre", "--hold", "200"), flat_until=450)
+  ok(f"unit gate --pre: the newest checkpoint whose window passes, not the last one ({g[:40]})",
+     g.startswith("PRE-PASS 400 "))
   wheel_counter(ok)
   meter_eval_mask(ok)
   sticky_payload_units(ok)
