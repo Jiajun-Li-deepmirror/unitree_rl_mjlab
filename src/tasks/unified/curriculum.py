@@ -46,16 +46,21 @@ run. Instead the evaluation robots (env.u_eval_mask: the mean action, outside th
 stairs rows: spread evenly over the rows the acceptance covers (steps up to EVAL_STEP_MAX; eval_rows), the same row
 on the climbing columns and on the descents, both scan modes on every row. Their fail rate there
 (env.u_eval_fail, per family and per row) is a number that means the same at every iteration -- what share of the
-acceptance's stairs the policy fails -- and it is what relaxes the stairs constraints; the stairs constraints'
-readings, which are taken over the evaluation robots, come from those rows too (not from rows above the
-acceptance's, and not from wherever the curriculum stands). The training robots' rows, the terrain levels behind p
-and q's climbing row are the training robots' alone.
+acceptance's stairs the policy fails; the stairs constraints' readings, which are taken over the evaluation robots,
+come from those rows too (not from rows above the acceptance's, and not from wherever the curriculum stands). The
+training robots' rows, the terrain levels behind p and q's climbing row are the training robots' alone. The same
+episodes are kept split by payload class and scan mode (env.u_eval_split, PAY_CLASSES): the light robots' rate is
+what relaxes the stairs constraints -- when it rises above its own slowly tracked reference, not above a fixed
+level (constraints._families) -- and, on the worst step-height band, what the teacher's gate asks for
+(teacher_env.constraint_items: survive_up / survive_down).
 
 Everything else reads env.u_progress:
 
   stairs share     TEACHER_SHARE until p 0.3, then up to the robot's final share by p 0.8 (mdp.stairs_share's
                    column draw, with p in place of the training step)
-  commands         the initial ranges until p 0.25, the final ones after (as mdp.commands_vel's two stages)
+  commands         the initial ranges until p 0.25, the final ones after (as mdp.commands_vel's two stages); a
+                   wheeled robot's sideways range opens from 0.1 m/s over p 0.10 -> 0.25 (progress_commands'
+                   lateral_ramp, teacher_env.LAT_RAMP)
   payload          the heavy robots' payload limit rises with p to half the robot's limit at p 0.25 and stays there
                    until the stairs quality begins; the other half follows q (progress_payload: the smaller of
                    p / 0.5 and 0.5 + 0.5 q; mdp.base_payload_point's heavy_max)
@@ -64,7 +69,8 @@ Everything else reads env.u_progress:
                    ground's row; no acceptance item is measured there (slope_envs)
   constraints      the flat ones switch on at their own p and tighten from a loose target to the teacher's own (a
                    margin inside the students' bars); the stairs ones follow q; each relaxes while its own family of
-                   ground fails (constraints.py)
+                   ground fails (constraints.py: the other ground above a fixed fail rate, the stairs when the light
+                   evaluation robots' fail rate rises above its reference)
 
 Each term logs what it set (Curriculum/u_*), and p goes into the checkpoint (runner.py), so a resumed run carries on
 where it was.
@@ -102,6 +108,18 @@ SLOPE_NAMES = ("slope_down", "slope_up")   # the sloped tiles (teacher_env._add_
 # acceptance's highest (doc/acceptance.md: stairs to 18 cm; the training tiles go to 20). EVAL_FAIL_ALPHA: each
 # row's fail rate moves by this much per finished episode (the mean of its first 1 / alpha episodes before that).
 EVAL_STEP_MAX, EVAL_FAIL_ALPHA = 0.18, 0.05
+# The same episodes split (2026-11-12, env.u_eval_split): by the finished episode's payload class (PAY_CLASSES:
+# constraints.LIGHT_FRAC / HEAVY_FRAC of the robot's payload limit) and its scan mode ("all": both), per fixed row.
+# The light robots' rates (the acceptance's unloaded tests) are the ones acted on: they decide whether the stairs
+# constraints relax (constraints._families) and they are the teacher gate's survival items (eval_worst_band: the
+# worst of the acceptance's step-height bands; EVAL_BANDS: the bands' inner edges in m, a row by its lowest step).
+# The mid and heavy classes are recorded only. The all-payload rate above cannot do either job: it rises with the
+# payload curriculum whatever the policy does (the 11-12 probe, the old Go2 teacher continued: loaded 46-79% against
+# light 32-68% on every stairs ground; its fixed-row rate 0.36-0.40 kept all stairs constraints relaxed for the
+# whole quality stage, 2000 iterations, and the gate could not pass).
+PAY_CLASSES = ("light", "mid", "heavy")
+SPLIT_MODES = ("all", "seen", "blind")
+EVAL_BANDS = (0.08, 0.12, 0.15)   # 5-8 / 8-12 / 12-15 / 15-18 cm
 
 
 def eval_rows(env: ManagerBasedRlEnv, stair_names: tuple[str, ...], step_max: float = EVAL_STEP_MAX) -> torch.Tensor | None:
@@ -119,6 +137,7 @@ def eval_rows(env: ManagerBasedRlEnv, stair_names: tuple[str, ...], step_max: fl
   terrain = env.scene.terrain
   n_rows = int(terrain.max_terrain_level)
   k = n_rows
+  steps = None   # each row's lowest step (m); None on a terrain without a generator
   gen = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
   heights = [s.step_height_range for name, s in (gen.sub_terrains.items() if gen is not None else ())
              if name in stair_names and getattr(s, "step_height_range", None) is not None]
@@ -127,20 +146,96 @@ def eval_rows(env: ManagerBasedRlEnv, stair_names: tuple[str, ...], step_max: fl
     # a tile of row r draws its difficulty in [r, r + 1) / n_rows of the range, and its step height is linear in it
     lowest = [min(a + (b - a) * (lo + (hi - lo) * r / n_rows) for a, b in heights) for r in range(n_rows)]
     k = max(1, sum(h < step_max - 1e-9 for h in lowest))
+    steps = [float(h) for h in lowest[:k]]
   idx = ev.nonzero().flatten()
   fixed = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
   fixed[idx] = (torch.arange(len(idx), device=env.device) // 2) % k
-  env.u_eval_rows, env.u_eval_row_count = fixed, k
+  env.u_eval_rows, env.u_eval_row_count, env.u_eval_row_step = fixed, k, steps
   print(f"[unified] evaluation robots: {len(idx)} on fixed stairs rows 0..{k - 1} of {n_rows} "
-        f"(steps below {step_max} m), {len(idx) / k:.1f} per row")
+        f"(steps below {step_max} m), {len(idx) / k:.1f} per row; step-height bands of the rows "
+        f"{row_bands(env)}")
   return fixed
 
 
-def _eval_fail(env: ManagerBasedRlEnv, family: str, rows: list[int], failed: list[bool], alpha: float) -> None:
+def row_bands(env: ManagerBasedRlEnv) -> list[int]:
+  """Each fixed row's step-height band (0 .. len(EVAL_BANDS)), by the row's lowest step; one band for all on a
+  terrain without a generator."""
+  steps = getattr(env, "u_eval_row_step", None)
+  if steps is None:
+    return [0] * int(getattr(env, "u_eval_row_count", 0) or 0)
+  return [sum(h >= e - 1e-9 for e in EVAL_BANDS) for h in steps]
+
+
+def _split_new(k: int) -> dict:
+  return {c: {m: {"rate": [0.0] * k, "n": [0] * k} for m in SPLIT_MODES} for c in PAY_CLASSES}
+
+
+def _split_fits(fam: dict | None, k: int) -> bool:
+  return bool(fam) and all(len(fam.get(c, {}).get(m, {}).get(x, ())) == k
+                           for c in PAY_CLASSES for m in SPLIT_MODES for x in ("rate", "n"))
+
+
+def pay_class(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> list[int] | None:
+  """The payload class (index into PAY_CLASSES) of each of env_ids' robots, from the payload they carry now (at the
+  curriculum's call: the finished episode's, the reset events run after it); None before the first draw."""
+  from .constraints import HEAVY_FRAC, LIGHT_FRAC, payload_limit   # (constraints.py imports this module)
+
+  kg = getattr(env, "payload_kg", None)
+  if kg is None:
+    return None
+  limit = payload_limit(env)
+  k = kg.reshape(env.num_envs, -1)[env_ids, 0]
+  return ((k > LIGHT_FRAC * limit).long() + (k >= HEAVY_FRAC * limit).long()).tolist()
+
+
+def eval_light(env: ManagerBasedRlEnv, family: str, mode: str = "all", cls: str = "light") -> tuple[float | None, int]:
+  """The light evaluation robots' fail rate on their fixed rows of `family` (the mean over the rows that have had an
+  episode; None without one) and the number of episodes behind it. `cls`: another payload class."""
+  s = ((getattr(env, "u_eval_split", None) or {}).get(family) or {}).get(cls, {}).get(mode)
+  if not s:
+    return None, 0
+  seen = [v for v, n in zip(s["rate"], s["n"]) if n > 0]
+  return (sum(seen) / len(seen) if seen else None), int(sum(s["n"]))
+
+
+def eval_bands(env: ManagerBasedRlEnv, family: str, mode: str = "all", cls: str = "light") -> list[float | None]:
+  """The same per step-height band (row_bands): the mean of the band's rows that have had an episode, None for a
+  band without one."""
+  s = ((getattr(env, "u_eval_split", None) or {}).get(family) or {}).get(cls, {}).get(mode)
+  bands = row_bands(env)
+  out: list[float | None] = []
+  for b in range(max(bands) + 1 if bands else 0):
+    v = [s["rate"][r] for r, rb in enumerate(bands) if rb == b and s and r < len(s["n"]) and s["n"][r] > 0]
+    out.append(sum(v) / len(v) if v else None)
+  return out
+
+
+def eval_worst_band(env: ManagerBasedRlEnv, family: str, mode: str = "all") -> float | None:
+  """The light evaluation robots' fail rate on the worst step-height band of `family` (the teacher's survival
+  items, teacher_env.constraint_items); None before any band has an episode."""
+  v = [x for x in eval_bands(env, family, mode) if x is not None]
+  return max(v) if v else None
+
+
+def _eval_fail(env: ManagerBasedRlEnv, family: str, rows: list[int], failed: list[bool], alpha: float,
+               pay: list[int] | None = None, seen: list[bool] | None = None) -> None:
   """Add the evaluation robots' finished stairs episodes (their fixed rows, whether each failed) to the family's
   fail rates: per row in env.u_eval_stat[family] = {"rate": [...], "n": [...]} and, over the rows that have had an
-  episode, their mean in env.u_eval_fail[family]."""
+  episode, their mean in env.u_eval_fail[family]. With `pay` (each episode's payload class) also split by class and
+  scan mode (`seen`; None: an environment without scan modes, "all" only):
+  env.u_eval_split[family][class][mode] = {"rate": [...], "n": [...]}."""
   k = env.u_eval_row_count
+  if pay is not None:
+    split = getattr(env, "u_eval_split", None)
+    if split is None:
+      split = env.u_eval_split = {}
+    if not _split_fits(split.get(family), k):   # none yet, or a checkpoint's of other rows
+      split[family] = _split_new(k)
+    for i, (r, bad) in enumerate(zip(rows, failed)):
+      for m in ("all",) + (() if seen is None else ("seen" if seen[i] else "blind",)):
+        c = split[family][PAY_CLASSES[pay[i]]][m]
+        c["n"][r] += 1
+        c["rate"][r] += max(alpha, 1.0 / c["n"][r]) * (float(bad) - c["rate"][r])
   stat = getattr(env, "u_eval_stat", None)
   if stat is None:
     stat = env.u_eval_stat = {}
@@ -243,7 +338,11 @@ class progress:
            "family_fail": dict(getattr(self._env, "u_family_fail", None) or {}),
            "eval_fail": dict(getattr(self._env, "u_eval_fail", None) or {}),
            "eval_stat": {k: {"rate": list(v["rate"]), "n": list(v["n"])}
-                         for k, v in (getattr(self._env, "u_eval_stat", None) or {}).items()}}
+                         for k, v in (getattr(self._env, "u_eval_stat", None) or {}).items()},
+           # the same split by payload class and scan mode (the light robots': the stairs relaxing, the survival items)
+           "eval_split": {k: {c: {m: {"rate": list(x["rate"]), "n": list(x["n"])} for m, x in cm.items()}
+                              for c, cm in v.items()}
+                          for k, v in (getattr(self._env, "u_eval_split", None) or {}).items()}}
     terrain = getattr(self, "_terrain", None)
     if terrain is not None and getattr(terrain, "terrain_levels", None) is not None:
       out["terrain_levels"] = terrain.terrain_levels.cpu().tolist()
@@ -265,6 +364,10 @@ class progress:
       env.u_eval_fail = dict(state.get("eval_fail") or {})
       env.u_eval_stat = {k: {"rate": [float(x) for x in v["rate"]], "n": [int(x) for x in v["n"]]}
                          for k, v in state["eval_stat"].items()}
+    if state.get("eval_split"):   # (a checkpoint from before the split has none: counted afresh)
+      env.u_eval_split = {k: {c: {m: {"rate": [float(x) for x in s["rate"]], "n": [int(x) for x in s["n"]]}
+                                  for m, s in cm.items()} for c, cm in v.items()}
+                          for k, v in state["eval_split"].items()}
     self.last_step = self.q_last_step = env.common_step_counter
     # a checkpoint from before the quality stage: q 0, the environment back at the M values until the robots climb
     self.q = float(state.get("q") or 0.0)
@@ -447,7 +550,8 @@ def progress_stairs_share(
   the family drawn. An evaluation robot's two stairs rows are fixed instead (eval_rows; its other-ground row follows
   the curriculum as the training robots'). Also keeps and logs the share of episodes that ended in a fall or an
   illegal contact: per family over the training robots at their own rows (env.u_family_fail, <family>_fail), and
-  per stairs family over the evaluation robots on their fixed rows (env.u_eval_fail, eval_<family>_fail).
+  per stairs family over the evaluation robots on their fixed rows (env.u_eval_fail, eval_<family>_fail; split by
+  the payload class and the scan mode in env.u_eval_split, eval_<family>_fail_<class>).
   other_shares ({tile name: share}): an episode on the other ground goes to each tile with its share (the sloped
   tiles' fixed share, teacher_env._add_slopes); None: every other column alike."""
   from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
@@ -475,6 +579,10 @@ def progress_stairs_share(
     counted = env.common_step_counter > 0
     ev_row = None if fixed is None else fixed[env_ids]
     ev_now = torch.zeros_like(bad) if ev_row is None else ev_row >= 0
+    # the finished episodes' payload class and scan mode (both redrawn by reset events, after the curriculum)
+    pay = pay_class(env, env_ids) if ev_row is not None and bool(ev_now.any()) else None
+    scan = getattr(env, "u_scan_on", None)
+    seen = None if scan is None else scan[env_ids] > 0.5
     for k in ROWS:
       own = was[k] if k == "other" else was[k] & ~ev_now   # (an evaluation robot's stairs rows are not the curriculum's)
       rows[k][env_ids] = torch.where(own, lv, rows[k][env_ids])
@@ -486,7 +594,9 @@ def progress_stairs_share(
       if counted and k != "other" and ev_row is not None:
         e = was[k] & ev_now
         if bool(e.any()):
-          _eval_fail(env, k, ev_row[e].tolist(), bad[e].tolist(), eval_fail_alpha)
+          j = e.nonzero().flatten().tolist()
+          _eval_fail(env, k, ev_row[e].tolist(), bad[e].tolist(), eval_fail_alpha,
+                     None if pay is None else [pay[i] for i in j], None if seen is None else seen[e].tolist())
     if ev_row is not None and bool(ev_now.any()):
       # theirs whatever a checkpoint from before the fixed rows restored, or the first reset drew
       for k in ("up", "down"):
@@ -515,6 +625,11 @@ def progress_stairs_share(
     out[f"{k}_fail"] = torch.tensor(v)
   for k, v in (getattr(env, "u_eval_fail", None) or {}).items():
     out[f"eval_{k}_fail"] = torch.tensor(v)
+  for k in (getattr(env, "u_eval_split", None) or {}):
+    for c in PAY_CLASSES:
+      v, _ = eval_light(env, k, cls=c)
+      if v is not None:
+        out[f"eval_{k}_fail_{c}"] = torch.tensor(v)
   return out
 
 

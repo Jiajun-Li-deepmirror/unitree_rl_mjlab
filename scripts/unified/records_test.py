@@ -8,7 +8,8 @@ CPU feed the real `episodes` term and the real Recorder a scripted "training" in
         5%), those with the payload at the front 75%; the "other" grounds' fail rate stays over the limit, so the
         reference schedule's first milestone ("walk") is overdue at its iteration; the action noise climbs from
         iteration 700; one constraint's multiplier reaches its limit while its reading stays short; the "up" family
-        relaxes (the evaluation robots fail half of their climbs on their fixed rows) with no stairs constraint on;
+        relaxes (the evaluation robots fail half of their climbs on their fixed rows, the light ones 0.37 against
+        a reference of 0.15) with no stairs constraint on;
         progress passes 0.5 with the quality stage waiting; the "training" ends in a RuntimeError at iteration 1199.
         The stairs quality stays 0, so the walled_up ground and the relaxed family raise no alert: before the
         quality stage a stairs ground's fail rate is the curriculum's own doing (~0.6 at the rows it promotes to)
@@ -16,6 +17,10 @@ CPU feed the real `episodes` term and the real Recorder a scripted "training" in
         before 1100 are carried over (reached once per training), "walk" is still overdue
   run C (iterations 0-559): the stairs quality stage from the start (q 0.6), the same walled_up ground and relaxed
         "up" family: now both are alerts and problems, judged on the evaluation robots' episodes on their fixed rows
+
+  no run: the real curriculum._eval_fail, constraints._families and constraints.measure on a few hundred made-up
+        evaluation episodes (the stairs families' relaxing against the reference, the survival items' reading),
+        and teacher_gate.py on a made-up TensorBoard file (a gate-only item judged at the bar of the code on disk)
 
 -- and checks that the records hold exactly what was fed in (every episode counted once, per ground / cause / body),
 that the expected events and alerts are there and no part of the records faulted, and that run_report.py names the
@@ -41,6 +46,7 @@ os.environ.setdefault("UNIFIED_TASKS", "1")
 import torch  # noqa: E402
 
 from src.tasks.unified import constraints as ucons  # noqa: E402
+from src.tasks.unified import curriculum as ucur  # noqa: E402
 from src.tasks.unified import diagnostics  # noqa: E402
 from src.tasks.unified.teacher_env import constraint_items  # noqa: E402
 from src.tasks.velocity.blind_env_cfg import MAP3_STAIR_TERRAIN_NAMES  # noqa: E402
@@ -48,6 +54,7 @@ from src.tasks.velocity.blind_env_cfg import MAP3_STAIR_TERRAIN_NAMES  # noqa: E
 N, K_EVAL, STEPS = 256, 32, 24
 GROUNDS = {"stairs_down_narrow": 0.05, "stairs_down_wide": 0.05, "stairs_up_narrow": 0.10, "stairs_up_wide": 0.05,
            "random_rough": 0.10, "flat": 0.15, "walled_down": 0.20, "walled_up": 0.30}
+ROW_STEPS = [0.05 + 0.015 * r for r in range(9)]   # the fixed rows' lowest steps: bands 0 0 1 1 1 2 2 3 3
 BODIES = ["base", "FL_calf", "FR_calf", "RL_calf", "RR_calf"]
 JOINTS = [f"{leg}_{part}_joint" for leg in ("FL", "FR", "RL", "RR") for part in ("hip", "thigh", "calf")]
 
@@ -98,7 +105,7 @@ def fake_env(items: list[dict]):
           NS(base_cfg=NS(target_names_expr=(".*calf_.*",), effort_limit=45.0))]
   twist = torch.zeros(N, 3)
   cons = NS(on=ucons.constraints.on, scale={c["name"]: 1.0 for c in items}, value={}, values={}, count={},
-            relax={"up": False, "down": False, "other": False},
+            relax={"up": False, "down": False, "other": False}, ref={},
             base={t: 1.0 for c in items for t in c["terms"]})
   cons.target = lambda c, p, q=1.0: ucons.constraints.target(cons, c, p, q)
   env = NS(
@@ -119,6 +126,8 @@ def fake_env(items: list[dict]):
     u_constraints=cons, u_family_fail={"up": 0.0, "down": 0.0, "other": 0.0},
     # (the evaluation robots' fixed stairs rows, curriculum.eval_rows: nine rows within the acceptance's steps)
     u_eval_fail={"up": 0.0, "down": 0.0}, u_eval_stat={k: {"rate": [0.0] * 9, "n": [0] * 9} for k in ("up", "down")},
+    # (the same by payload class and scan mode, curriculum._eval_fail; the rows' lowest steps 5 .. 17 cm)
+    u_eval_split={}, u_eval_row_count=9, u_eval_row_step=ROW_STEPS,
     u_rows={k: torch.zeros(N) for k in ("up", "down", "other")},
   )
   env.twist, env.cols, env.loaded, env.front = twist, cols, loaded, loaded & (place == 0)
@@ -247,6 +256,11 @@ def script(items: list[dict]):
     rows = [0.1, 0.2, 0.3] + [0.65 if bad else 0.2] * 6
     env.u_eval_stat["up"] = {"rate": rows, "n": [20] * 9}
     env.u_eval_fail["up"] = sum(rows) / len(rows)   # (0.5 from iteration 300: over the relaxing limit)
+    # of those the light robots' (what relaxes the stairs constraints, against the reference) and the loaded ones'
+    light = [0.04, 0.1, 0.2] + [0.5 if bad else 0.1] * 6
+    cell = lambda rate, n: {m: {"rate": list(rate), "n": [n] * 9} for m in ucur.SPLIT_MODES}   # noqa: E731
+    env.u_eval_split["up"] = {"light": cell(light, 20), "mid": cell(rows, 20), "heavy": cell([0.0] * 9, 0)}
+    cons.ref["up"] = 0.15
     cons.relax["up"] = bad
     for c in items:
       for m in c.get("modes", ucons.MODES):
@@ -272,6 +286,111 @@ def script(items: list[dict]):
 
 def read(path: Path) -> list[dict]:
   return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+
+
+def units(ok, out: Path) -> None:
+  """The stairs families' relaxing and the survival items on the real functions, and the gate on a made-up
+  TensorBoard file (module docstring)."""
+  env = NS(num_envs=6, u_eval_row_count=9, u_eval_row_step=ROW_STEPS, common_step_counter=0, u_payload_full=8.0,
+           payload_kg=torch.tensor([0.0, 2.0, 2.1, 5.3, 5.4, 8.0]).reshape(6, 1), u_family_fail={"other": 0.1},
+           u_progress_term=NS(fail=0.1))
+  ok("unit pay_class: light <= 2 kg, heavy >= 5.33 kg of 8", ucur.pay_class(env, torch.arange(6)) == [0, 0, 1, 1, 2, 2])
+  me = NS(relax={f: False for f in ucons.FAMILIES}, ref={}, light={}, ref_step=None)
+  step = [0]
+
+  def feed(rate, per_row: int, cls: int = 0, its: int = 1) -> float | None:
+    """per_row episodes on every fixed row failing `rate` of them (per row: a list), evenly spread, half in each
+    scan mode; then the families judged `its` iterations later. The light robots' reading."""
+    rate = rate if isinstance(rate, list) else [rate] * 9
+    rows = [r for j in range(per_row) for r in range(9)]
+    failed = [int((j + 1) * rate[r] + 1e-9) > int(j * rate[r] + 1e-9) for j in range(per_row) for r in range(9)]
+    seen = [(j + r) % 2 == 0 for j in range(per_row) for r in range(9)]
+    if per_row:
+      ucur._eval_fail(env, "up", rows, failed, ucur.EVAL_FAIL_ALPHA, [cls] * len(rows), seen)
+    step[0] += its * ucur.STEPS_PER_IT
+    ucons.constraints._families(me, env, step[0])
+    return ucur.eval_light(env, "up")[0]
+
+  ucons.constraints._families(me, env, 0)
+  ok("unit relax: no evaluation episodes, not judged", me.relax == {f: False for f in ucons.FAMILIES} and not me.ref
+     and me.light["up"] == {"fail": None, "n": 0} and ucons.measure(env, "evalfail:up", scan="seen") is None)
+  v = feed(0.2, 20)
+  ok(f"unit relax: 180 light episodes, not judged yet ({v})", abs(v - 0.2) < 1e-6 and "up" not in me.ref)
+  v = feed(0.2, 20)
+  ref0 = me.ref.get("up")
+  ok(f"unit relax: judged from 200 episodes, the reference starts at the reading ({v}, {ref0})",
+     ref0 is not None and abs(ref0 - v) < 1e-9 and abs(v - 0.2) < 0.05 and not me.relax["up"])
+  v = feed(0.6, 20)
+  ok(f"unit relax: the fail rate rises -> up and stairs relax, down does not ({v} vs {me.ref['up']})",
+     v > ref0 + 0.2 and abs(me.ref["up"] - ref0) < 0.001 and me.relax["up"] and me.relax["stairs"]
+     and not me.relax["down"] and not me.relax["other"])
+  feed(1.0, 40, cls=1)
+  feed(1.0, 40, cls=2)
+  ok("unit relax: the loaded robots' falls do not move the light reading",
+     abs(ucur.eval_light(env, "up")[0] - v) < 1e-9 and ucur.eval_light(env, "up", "all", "mid")[0] == 1.0
+     and ucur.eval_light(env, "up", "all", "heavy") == (1.0, 360) and env.u_eval_fail["up"] > v + 0.1)
+  for _ in range(4):
+    v = feed(0.2, 20)
+  ok(f"unit relax: back near the reference -> restored ({v} vs {me.ref['up']})",
+     v < me.ref["up"] + ucons.RELAX_GAP_OFF and not me.relax["up"] and not me.relax["stairs"])
+  for _ in range(5):
+    v = feed(0.0, 20)
+  ref1 = me.ref["up"]
+  for _ in range(50):   # 500 iterations at this reading: the reference follows it down by 1 - 1/e
+    feed(0.0, 0, its=10)
+  ref2 = me.ref["up"]
+  ok(f"unit relax: the reference follows a lower reading in ~500 iterations ({ref1} -> {ref2}, reading {v})",
+     0.55 < (ref1 - ref2) / (ref1 - v) < 0.70)
+  for _ in range(5):
+    v = feed(0.5, 20)
+  for _ in range(50):   # 500 iterations: up by 1 - exp(-1/4) only, and relaxed all along
+    feed(0.5, 0, its=10)
+  ok(f"unit relax: and a higher one in ~2000 ({ref2} -> {me.ref['up']}, reading {v})",
+     0.15 < (me.ref["up"] - ref2) / (v - ref2) < 0.30 and me.relax["up"])
+  feed(0.0, 0, its=100000)
+  ok("unit relax: a jump of the step counter counts as ten iterations", me.ref["up"] - ref2 < 0.3 * (v - ref2))
+  # the survival items' reading: the light robots' worst step-height band, per scan mode
+  env.u_eval_split = {}
+  feed([0.0] * 5 + [0.5] * 2 + [1.0] * 2, 20)
+  feed([1.0] * 9, 20, cls=1)
+  ok(f"unit survive: per band {ucur.eval_bands(env, 'up', 'seen')}", ucur.eval_bands(env, "up", "seen") == [0.0, 0.0, 0.5, 1.0]
+     and ucons.measure(env, "evalfail:up", scan="blind") == 1.0 and ucons.measure(env, "evalfail:down") is None)
+  env.u_eval_split = {}
+  feed([0.0] * 5 + [0.5] * 2 + [None] * 2, 0)
+  ok("unit survive: a split of other rows is counted afresh", not ucur._split_fits({"light": {}}, 9)
+     and ucur._split_fits(ucur._split_new(9), 9) and not ucur._split_fits(ucur._split_new(8), 9))
+
+  # teacher_gate.py: a gate-only item at the bar of the code on disk, the others at the bar the training logged
+  from torch.utils.tensorboard import SummaryWriter
+  from src.tasks.unified.teacher_env import SURVIVE_BAR
+
+  def gate(name: str, survive: float, logged_bar: float) -> str:
+    run = out / "gate" / "go2_u_teacher" / name
+    w = SummaryWriter(str(run))
+    for it in range(0, 601):
+      w.add_scalar("Curriculum/u_progress/p", 1.0, it)
+      w.add_scalar("Curriculum/u_progress/q", 1.0, it)
+      for c in constraint_items("legged"):
+        if not c["enforce"]:
+          continue
+        tag = f"Curriculum/u_constraints/{c['name']}/"
+        good = c["target"] * (1.1 if c["sense"] == "min" else 0.9)
+        for m in c["modes"]:
+          w.add_scalar(tag + f"value_{m}", survive if c["name"] == "survive_up" and m == "blind" else
+                       min(good, survive) if c["name"].startswith("survive") else good, it)
+        w.add_scalar(tag + "bar", logged_bar if c["name"].startswith("survive") else c["target"], it)
+    w.close()
+    r = subprocess.run([sys.executable, str(ROOT / "scripts/unified/teacher_gate.py"), str(run)], capture_output=True,
+                       text=True, cwd=str(ROOT))
+    return r.stdout.strip() + r.stderr.strip()[-300:]
+
+  # (the logged bar is ignored for a gate-only item: 0.99 would pass anything, 0.0 nothing)
+  g = gate("pass", SURVIVE_BAR - 0.02, 0.0)
+  # (the first checkpoint with a full window behind it: 500)
+  ok(f"unit gate: under the bar on disk passes ({g[:40]})", g.startswith("PASS 500 ") and "survive_up_blind" in g)
+  g = gate("miss", SURVIVE_BAR + 0.05, 0.99)
+  ok(f"unit gate: over it does not ({g})", g.startswith("NOT YET 600 ") and "survive_up_blind" in g
+     and "survive_up_seen" not in g and "survive_down" not in g and g.count(" vs ") == 1)
 
 
 def main() -> int:
@@ -318,6 +437,9 @@ def main() -> int:
   relaxed = next((e for e in ev if e["ev"] == "relax" and e["name"] == "up"), {})
   ok("A relax up: the evaluation robots' fixed-row fail rate", abs((relaxed.get("eval_fail") or {}).get("up", 0) - 0.5)
      < 1e-6)
+  lit = (relaxed.get("eval_light") or {}).get("up") or {}
+  ok(f"A relax up: the light robots' rate, its reference and episodes ({lit})",
+     abs(lit.get("fail", 0) - 3.34 / 9) < 1e-4 and lit.get("ref") == 0.15 and lit.get("n") == 180)
   slow = next((e for e in ev if e["ev"] == "alert" and e["name"] == "clock_slow"), {})
   ok("A clock_slow: the other ground's fail rate", slow.get("fail") == 0.4 and "other ground" in slow.get("msg", ""))
   first = next((e for e in ev if e["ev"] == "milestone" and e["name"] == "expect:climb_first"), {})
@@ -372,10 +494,22 @@ def main() -> int:
   ok("A snapshots: the schedule", snaps[-2].get("expect", {}).get("walk", 0) is None
      and snaps[-2]["expect"]["climb_first"] is not None)
   ok("A tensorboard tags", {"Diag/ev", "Diag/fail/walled_up", "Diag/phys/sat_calf", "Diag/alerts",
-                             "Diag/eval_fail/up_row0", "Diag/eval_fail/up_row8"} <= a.logger.writer.tags)
+                             "Diag/eval_fail/up_row0", "Diag/eval_fail/up_row8", "Diag/eval_band/up_seen_b0",
+                             "Diag/eval_band/up_blind_b3", "Diag/eval_class/up_light", "Diag/eval_class/up_mid"}
+     <= a.logger.writer.tags and "Diag/eval_class/up_heavy" not in a.logger.writer.tags)
   cur = snaps[-2]["cur"]
   ok("A cur: the fixed rows", abs(cur["eval_fail"]["up"] - 0.5) < 1e-6 and cur["eval_fail_rows"]["up"][:3] == [0.1, 0.2, 0.3]
      and cur["eval_fail_rows"]["down"] == [None] * 9 and cur["clock_fail"] == 0.4 and cur["family_fail"]["up"] == 0.6)
+  lit = cur.get("eval_light", {}).get("up", {})
+  near = lambda a, b: len(a) == len(b) and all(abs(x - y) < 1e-6 for x, y in zip(a, b))   # noqa: E731
+  ok(f"A cur: the light robots by step-height band ({lit.get('bands')})", cur.get("eval_row_bands") == [0, 0, 1, 1, 1, 2, 2, 3, 3]
+     and near(lit["bands"]["seen"], [0.07, 0.4, 0.5, 0.5]) and near(lit["bands"]["all"], lit["bands"]["blind"])
+     and lit["n_mode"] == {"all": 180, "seen": 180, "blind": 180} and "down" not in cur["eval_light"])
+  ok("A cur: the payload classes", abs(cur["eval_class"]["up"]["mid"]["fail"] - 0.5) < 1e-6
+     and cur["eval_class"]["up"]["heavy"] == {"fail": None, "n": 0})
+  ok("A start: the survival items are gate-only", all(
+    any(i["name"] == n and i["enforce"] and i["terms"] == [] and i["metric"] == f"evalfail:{n[8:]}" for i in ev[0]["items"])
+    for n in ("survive_up", "survive_down")))
   ok("A episodes: the ground's family", snaps[-2]["ep"]["walled_up"]["family"] == "up"
      and snaps[-2]["ep"]["flat"]["family"] == "other" and snaps[-2]["ep"]["walled_down"]["family"] == "down")
 
@@ -425,8 +559,10 @@ def main() -> int:
     ok(f"report A names: {text}", text in rep["A"])
   ok("report A: no stairs problem before the quality stage", "walled_up 地面失败率高" not in rep["A"]
      and "up 地面的约束一直在放松" not in rep["A"])
-  for text in ("walled_up 地面失败率高（评估机器人固定行上", "up 地面的约束一直在放松", "评估机器人固定行失败率 0.5",
-               "评估机器人各固定行的失败率：0:10% 1:20% 2:30% 3:65%", "FL_calf"):
+  for text in ("walled_up 地面失败率高（评估机器人固定行上", "up 地面的约束一直在放松",
+               "轻载评估机器人固定行失败率 上楼 0.371（参考值 0.15，180 回合）", "比参考值高 0.08 以上放松",
+               "可见 7% / 40% / 50% / 50%  遮挡 7% / 40% / 50% / 50%", "轻 0.371（180 回合），中 0.5（180 回合），重 -（0 回合）",
+               "只进门槛", "评估机器人各固定行的失败率：0:10% 1:20% 2:30% 3:65%", "FL_calf"):
     ok(f"report C names: {text}", text in rep["C"])
   ok("report C: the alerts in Chinese", "episodes fail" not in rep["C"] and "constraints relaxed" not in rep["C"])
   ok("report A: the alerts in Chinese", "of the action" not in rep["A"] and "episodes fail" not in rep["A"]
@@ -440,6 +576,7 @@ def main() -> int:
   ok("report --json", js.get("problems") and js.get("eta", {}).get("gate") and js.get("payload")
      and any(x["late"] for x in js.get("expect", [])))
 
+  units(ok, out)
   bad = [name for name, good in checks if not good]
   print(f"\n{len(checks) - len(bad)} / {len(checks)} checks passed" + ("" if not bad else "; FAILED: " + "; ".join(bad)))
   print(f"records in {out}")

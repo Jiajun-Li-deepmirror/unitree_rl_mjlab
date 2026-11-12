@@ -46,14 +46,29 @@ Since the from-zero retrain (2026-11-12, after the peer review; doc/unified_teac
     "tight", TEACHER_MARGIN inside it ("max" items 0.8 x the bar, "min" items a fifth of the way from the bar to 1),
     and the gate judges at the bar. Both are logged (<name>/target: the teacher's target now; <name>/bar);
   - the task first, per terrain family. Each constraint belongs to a family of ground -- "up" (the climbing stairs
-    columns), "down" (the descents), "stairs" (either: the worse of the two) or "other" -- and relaxes while that
-    family's episodes fail: on above RELAX_ON, off again below RELAX_OFF. One global fail rate let the flat ground's
-    falls relax the stairs items and the other way round. The other ground reads its episodes' fail rate over the
-    training robots (curriculum.progress_stairs_share's env.u_family_fail). The stairs families read the evaluation
-    robots' on their fixed rows instead (env.u_eval_fail, curriculum.eval_rows: the rows the acceptance covers, each
-    alike): at the curriculum's own rows a robot is promoted until it fails, ~0.6 of the stairs episodes whatever
-    the policy can climb (the 11-12 Go2 teacher), which would have kept the stairs items relaxed for the whole run.
-    The stairs items' readings come from those rows too: the measurements are the evaluation robots'.
+    columns), "down" (the descents), "stairs" (either: relaxed when one of the two is) or "other" -- and relaxes
+    while that family's episodes fail. One global fail rate let the flat ground's falls relax the stairs items and
+    the other way round. The other ground reads its episodes' fail rate over the training robots
+    (curriculum.progress_stairs_share's env.u_family_fail): on above RELAX_ON, off again below RELAX_OFF. The
+    stairs families read the evaluation robots' on their fixed rows instead (curriculum.eval_rows: the rows the
+    acceptance covers, each alike): at the curriculum's own rows a robot is promoted until it fails, ~0.6 of the
+    stairs episodes whatever the policy can climb (the 11-12 Go2 teacher), which would have kept the stairs items
+    relaxed for the whole run. The stairs items' readings come from those rows too: the measurements are the
+    evaluation robots'.
+    On the stairs the question is whether the fail rate got worse, not whether it is high (2026-11-12, the probe:
+    the old Go2 teacher continued under this code read 0.36 up / 0.40 down on the fixed rows -- its top rows fail
+    as a matter of course, and its loaded robots more than the light ones as the payload grows -- so a fixed
+    RELAX_ON of 0.3 held every stairs constraint relaxed for the whole quality stage, 2000 iterations: no multiplier
+    grew and the gate could not pass). A stairs family now reads the light evaluation robots' fail rate
+    (curriculum.eval_light; <= LIGHT_FRAC of the payload limit) against a reference that follows that same reading
+    slowly -- down with a time constant of RELAX_REF_DOWN_IT iterations, up with RELAX_REF_UP_IT -- and relaxes
+    when the reading is more than RELAX_GAP_ON above the reference, until it is within RELAX_GAP_OFF of it again.
+    Fewer than RELAX_MIN_EPISODES light episodes: not judged, not relaxed. Logged as relax_light_<family>,
+    relax_ref_<family>, relax_n_<family>; the reference goes into the checkpoint.
+  - gate-only items (2026-11-12): an enforced item without reward terms has no multiplier to move; it is measured,
+    logged and judged by the gate like the others. The survival items (teacher_env.constraint_items: survive_up,
+    survive_down) are such: "evalfail:<family>", the light evaluation robots' fail rate on the worst of the
+    acceptance's step-height bands (curriculum.eval_worst_band), per scan mode.
 """
 
 from __future__ import annotations
@@ -66,7 +81,7 @@ import torch
 
 from src.tasks.velocity.mdp.constraints import METRICS
 
-from .curriculum import MAX_FAIL_RATE, Q_IN, ramp, slope_envs
+from .curriculum import MAX_FAIL_RATE, Q_IN, STEPS_PER_IT, eval_light, eval_worst_band, ramp, slope_envs
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -81,6 +96,13 @@ MODES = ("seen", "blind")
 TEACHER_MARGIN = 0.8
 # A family's constraints relax while more than RELAX_ON of its episodes fail, until fewer than RELAX_OFF do.
 RELAX_ON, RELAX_OFF = MAX_FAIL_RATE, 0.25
+# The stairs families (module docstring): the light evaluation robots' fail rate against its own slow reference.
+# The reference's time constants (iterations) toward a lower and toward a higher reading, the gap above it that
+# relaxes and the one that ends it, and the light episodes a family needs before it is judged. (The reading's own
+# noise: ~0.025-0.035, each row's rate remembering its last ~40 light episodes.)
+RELAX_REF_DOWN_IT, RELAX_REF_UP_IT = 500.0, 2000.0
+RELAX_GAP_ON, RELAX_GAP_OFF = 0.08, 0.04
+RELAX_MIN_EPISODES = 200
 FAMILIES = ("up", "down", "stairs", "other")
 # The multipliers' step per update, in log space: full shortfall for one iteration is x exp(LR) (1 -> 3 takes ~370
 # iterations at the least; the additive 0.03 took 67 and overshot: the Go2 teacher's creep / march went 1 -> 3 in a
@@ -371,8 +393,12 @@ class heavy_log:
 
 def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", scan: str | None = None, **params) -> float | None:
   """A constraint's measurement: mdp.constraints.METRICS or CUSTOM (stat "mean" or "pNN" over the robots it applies
-  to now), "rate:<name>" from the meter, or "lib:<name>" from the shared metrics (src/metrics, lib_meter). `scan`
-  ("seen" / "blind"): over the robots in that scan mode only (None where the environment has no scan modes)."""
+  to now), "rate:<name>" from the meter, "lib:<name>" from the shared metrics (src/metrics, lib_meter), or
+  "evalfail:<family>": the light evaluation robots' fail rate on the worst step-height band of their fixed stairs
+  rows (curriculum.eval_worst_band; None in a run without evaluation robots). `scan` ("seen" / "blind"): over the
+  robots in that scan mode only (None where the environment has no scan modes)."""
+  if metric.startswith("evalfail:"):
+    return eval_worst_band(env, metric[9:], scan or "all")
   if metric.startswith("lib:"):
     m = getattr(env, "u_lib_meter", None)
     return None if m is None else m.rate(metric[4:], scan)
@@ -397,7 +423,8 @@ class constraints:
   {"name", "metric", "params", "stat", "sense" ("min": value >= target, "max": value <= target), "target" (the
   students' bar: what the gate judges), "tight" (the teacher's own target, inside the bar; absent: the bar), "loose"
   (the target when it switches on), "activate" (progress), "terms" (reward terms it scales), "lr", "min_scale",
-  "max_scale", "start_scale", "enforce" (False: measured and logged only; "target" may then be None: no bar yet),
+  "max_scale", "start_scale", "enforce" (False: measured and logged only; "target" may then be None: no bar yet;
+  True with no terms: a gate-only item, judged but with no multiplier),
   "family" (the ground whose fail rate relaxes it: FAMILIES), "modes" (the scan modes it applies to: MODES by
   default)}; a stairs-quality item also has "by": "q", "start" and "base" ({term: weight}: the M and the P weight;
   teacher_env.py) and follows env.u_quality instead of the progress (module docstring).
@@ -408,8 +435,9 @@ class constraints:
   / |target| for "max", within [-1, 1]) and the larger of its modes', and clamped to [min_scale, max_scale].
   self.value[name] is the reading that drives the multiplier (the mode further from the target).
 
-  Logged as Curriculum/u_constraints/<name>/{value_seen,value_blind,value,target,bar,scale}, relaxing (any family)
-  and relaxing_<family>."""
+  Logged as Curriculum/u_constraints/<name>/{value_seen,value_blind,value,target,bar,scale}, relaxing (any family),
+  relaxing_<family>, and for the stairs families relax_light_<family> (the light evaluation robots' fail rate),
+  relax_ref_<family> (its reference) and relax_n_<family> (the episodes behind it)."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self.base: dict[str, float] = {}       # term -> configured weight
@@ -418,6 +446,9 @@ class constraints:
     self.values: dict[str, float] = {}     # "<constraint>@<mode>" (no scan modes: "<constraint>") -> smoothed reading
     self.count: dict[str, int] = {}        # the same keys -> measurements so far
     self.relax: dict[str, bool] = {f: False for f in FAMILIES}
+    self.ref: dict[str, float] = {}        # stairs family -> the reference its light fail rate is compared with
+    self.light: dict[str, dict] = {}       # stairs family -> {"fail", "n"}: that fail rate now, its episodes
+    self.ref_step = None
     self.last_update = 0
     self.last_step = None
     env.u_constraints = self
@@ -427,7 +458,7 @@ class constraints:
 
   def state(self) -> dict:
     return {"scale": dict(self.scale), "value": dict(self.value), "values": dict(self.values),
-            "count": dict(self.count), "relax": dict(self.relax)}
+            "count": dict(self.count), "relax": dict(self.relax), "ref": dict(self.ref)}
 
   def load(self, state: dict) -> None:
     """A checkpoint's multipliers and readings. One from before the scan modes' split (no "values") gives the
@@ -437,6 +468,8 @@ class constraints:
     self.values = dict(state.get("values", {}))
     self.count = dict(state["count"]) if "values" in state else {}
     self.relax.update({f: bool(v) for f, v in (state.get("relax") or {}).items() if f in self.relax})
+    # (a checkpoint from before the stairs families' reference has none: it starts at the first judged reading)
+    self.ref = {f: float(v) for f, v in (state.get("ref") or {}).items()}
 
   @staticmethod
   def on(c: dict, p: float, q: float) -> bool:
@@ -485,21 +518,41 @@ class constraints:
       return [c["name"]]
     return [f"{c['name']}@{m}" for m in (MODES if every else c.get("modes", MODES))]
 
-  def _families(self, env: ManagerBasedRlEnv) -> None:
-    """Which families of ground are failing (module docstring): on above RELAX_ON, off below RELAX_OFF. The stairs
-    families read the evaluation robots' fail rate on their fixed rows, the other ground the training robots'. A
-    stairs family without evaluation episodes (yet, or a run without evaluation robots) reads the training robots'
-    at their own rows, and a family with no episodes at all the global fail rate (curriculum.progress)."""
+  def _families(self, env: ManagerBasedRlEnv, step: int | None = None) -> None:
+    """Which families of ground are failing (module docstring). The other ground: the training robots' fail rate
+    (the global one, curriculum.progress, before it has had an episode), on above RELAX_ON, off below RELAX_OFF. The
+    stairs families: the light evaluation robots' fail rate on their fixed rows against its slow reference, on more
+    than RELAX_GAP_ON above it, off within RELAX_GAP_OFF; not judged (not relaxed) with fewer than
+    RELAX_MIN_EPISODES light episodes or in a run without evaluation robots. `step`: the env step counter (the
+    reference's clock)."""
     glob = getattr(getattr(env, "u_progress_term", None), "fail", None) or 0.0
-    fam = getattr(env, "u_family_fail", None) or {}
-    fixed = getattr(env, "u_eval_fail", None) or {}
-    up, down = (fixed.get(k, fam.get(k, glob)) for k in ("up", "down"))
-    other = fam.get("other", glob)
-    for f, v in (("up", up), ("down", down), ("stairs", max(up, down)), ("other", other)):
-      if v > RELAX_ON:
-        self.relax[f] = True
-      elif v < RELAX_OFF:
+    other = (getattr(env, "u_family_fail", None) or {}).get("other", glob)
+    if other > RELAX_ON:
+      self.relax["other"] = True
+    elif other < RELAX_OFF:
+      self.relax["other"] = False
+    step = env.common_step_counter if step is None else step
+    # (a resume restores the step counter: no time passed; a gap is counted as ten iterations at the most)
+    dt = 0.0 if self.ref_step is None else float(min(max(step - self.ref_step, 0), 10 * STEPS_PER_IT))
+    self.ref_step = step
+    for f in ("up", "down"):
+      v, n = eval_light(env, f)
+      self.light[f] = {"fail": v, "n": n}
+      if v is None or n < RELAX_MIN_EPISODES:
         self.relax[f] = False
+        continue
+      ref = self.ref.get(f)
+      if ref is None:
+        ref = v
+      else:
+        tau = (RELAX_REF_DOWN_IT if v < ref else RELAX_REF_UP_IT) * STEPS_PER_IT
+        ref += (1.0 - math.exp(-dt / tau)) * (v - ref)
+      self.ref[f] = ref
+      if v > ref + RELAX_GAP_ON:
+        self.relax[f] = True
+      elif v < ref + RELAX_GAP_OFF:
+        self.relax[f] = False
+    self.relax["stairs"] = self.relax["up"] or self.relax["down"]
 
   def __call__(self, env: ManagerBasedRlEnv, env_ids: torch.Tensor, items: list[dict], ema_steps: float = 1000.0,
                update_steps: int = 24, skip_steps: int = 2400, warmup: int = 240,
@@ -544,13 +597,13 @@ class constraints:
     # Go2W teacher v2 had six at the 3x cap (drift, creep, march, wheels down) while it could not meet them; its action
     # std rose 0.75 -> 1.08, its falls 26% -> 65% and its terrain level 2.5 -> 0.6. Per family since the from-zero
     # retrain (module docstring, _families): the other ground on the training robots' fail rate, the stairs families
-    # on the evaluation robots' on their fixed rows.
-    self._families(env)
+    # on the light evaluation robots' on their fixed rows, against its own reference.
+    self._families(env, step)
     if not frozen and step - self.last_update >= update_steps:   # frozen: the students keep the teacher's final scales
       self.last_update = step
       for c in items:
         name = c["name"]
-        if not c.get("enforce", True) or not self.on(c, p, q):
+        if not c.get("enforce", True) or not c["terms"] or not self.on(c, p, q):   # (no terms: a gate-only item)
           continue
         lr = c.get("lr", LR)
         if self.relax[c.get("family", "other")]:
@@ -573,6 +626,12 @@ class constraints:
            "eval_envs": torch.tensor(0.0 if ev is None else float(ev.sum()))}
     for f in FAMILIES:
       out[f"relaxing_{f}"] = torch.tensor(float(self.relax[f]))
+    for f, d in self.light.items():
+      out[f"relax_n_{f}"] = torch.tensor(float(d["n"]))
+      if d["fail"] is not None:
+        out[f"relax_light_{f}"] = torch.tensor(d["fail"])
+      if f in self.ref:
+        out[f"relax_ref_{f}"] = torch.tensor(self.ref[f])
     for c in items:
       name = c["name"]
       for mode in MODES:

@@ -76,6 +76,18 @@ CORE = {
   ),
 }
 
+# The survival items' bar (constraint_items: survive_up / survive_down): the share of the light evaluation robots'
+# stairs episodes that may end in a fall or an illegal contact on the worst step-height band. Provisional
+# (2026-11-12): to be set from the from-zero teachers' readings in their quality stage. teacher_gate.py judges a
+# gate-only item at the bar in this file, so a change takes effect at the gate's next run, without a restart.
+SURVIVE_BAR = 0.20
+# The sideways command range's start by robot kind (curriculum.progress_commands' lateral_ramp: start m/s, p_from,
+# p_to). A wheeled robot has to step for |vy| above ~0.1 m/s; with the full +-0.4 m/s from the first iteration the
+# from-zero Go2W teachers (2026-11-12) failed 47-56% of their flat episodes until iteration 1300-1550, 86% of those
+# under a sideways command. The test arm from seed 0's model_1300 with this ramp: 52% -> 5-9% in 150 iterations
+# (seed 1 got there unaided at 1500-1550, seed 0 had not by 1550). Not yet run from iteration 0.
+LAT_RAMP = {"wheeled": (0.1, 0.10, 0.25)}
+
 
 def constraint_items(kind: str) -> list[dict]:
   """The acceptance items as constraints (doc/acceptance.md; targets: the earlier constraint sets' calibrated
@@ -122,6 +134,13 @@ def constraint_items(kind: str) -> list[dict]:
     c("climb", "stair_speed", "min", 0.85, 0.5, "q", ["stair_speed_deficit"], {"descend": False}, family="up"),
     c("leg_contact", "leg_contact", "max", 0.015, 0.1, "q", ["leg_ground_contact"], family="stairs"),
     c("stop_feet", "u_stairs_stop_feet", "min", 0.9, 0.6, "q", ["feet_stand_uneven"], family="stairs"),
+    # Staying up on the stairs (2026-11-12): gate-only items -- no reward term, no multiplier (constraints.py). The
+    # share of the light evaluation robots' episodes on their fixed rows that end in a fall or an illegal contact,
+    # on the worst of the acceptance's four step-height bands (curriculum.eval_worst_band), per scan mode. The other
+    # stairs items say how the robot climbs, none whether it stays up: the 11-12 probe's old teacher failed 84-96%
+    # of its climbs on rows 7-8 with p = q = 1. The mid and heavy robots' rates are recorded only.
+    c("survive_up", "evalfail:up", "max", SURVIVE_BAR, 0.5, "q", [], family="up"),
+    c("survive_down", "evalfail:down", "max", SURVIVE_BAR, 0.5, "q", [], family="down"),
     # logged only: the roll bar is not calibrated (the user, 11-11: calibrate first)
     c("roll", "u_stairs_roll", "max", 0.105, 0.3, "q", [], stat="p90", enforce=False, family="stairs"),
   ]
@@ -427,12 +446,15 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
         "initial": {k: first[k] for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z") if first.get(k) is not None},
         "final": {k: last[k] for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z") if last.get(k) is not None},
       })
-      # U_LAT_RAMP="start,p_from,p_to": the lateral range grows with the progress (curriculum.progress_commands); a
-      # test arm's switch until a comparison decides it (unset: the ranges as before; the run's records list it)
+      # the lateral range grows with the progress (curriculum.progress_commands): by robot kind (LAT_RAMP);
+      # U_LAT_RAMP="start,p_from,p_to" or "off" overrides it (the run's records list the variable)
+      lat = LAT_RAMP.get(robot.kind)
       if os.environ.get("U_LAT_RAMP"):
-        lat = tuple(float(s) for s in os.environ["U_LAT_RAMP"].split(","))
-        if len(lat) != 3:
-          raise ValueError(f"U_LAT_RAMP: 3 values (start,p_from,p_to), got {len(lat)}")
+        v = os.environ["U_LAT_RAMP"]
+        lat = None if v == "off" else tuple(float(s) for s in v.split(","))
+        if lat is not None and len(lat) != 3:
+          raise ValueError(f"U_LAT_RAMP: 3 values (start,p_from,p_to) or off, got {v!r}")
+      if lat is not None:
         new["u_commands"].params["lateral_ramp"] = lat
     elif name == "stairs_share":
       new["u_stairs_share"] = CurriculumTermCfg(func=ucur.progress_stairs_share, params={

@@ -63,7 +63,10 @@ import numpy as np
 import torch
 
 from .constraints import HEAVY_FRAC, LIGHT_FRAC, MODES
-from .curriculum import MAX_FAIL_RATE, Q_ROW, Q_SPAN_IT, STEPS_PER_IT, TIME_SPAN_IT, TIME_START_IT, UP_NAMES
+from .curriculum import (
+  MAX_FAIL_RATE, PAY_CLASSES, Q_ROW, Q_SPAN_IT, SPLIT_MODES, STEPS_PER_IT, TIME_SPAN_IT, TIME_START_IT, UP_NAMES,
+  eval_bands, eval_light, row_bands,
+)
 
 STATUS_EVERY, RECORD_EVERY, TAGS_EVERY = 10, 20, 100   # iterations: status + alerts, snapshots, all console tags
 REPEAT_IT, CLEAR_HOLD, FLIP_IT = 1000, 3, 50
@@ -110,12 +113,19 @@ ALERTS = {
   "q_waiting": "progress is past 0.5 and the stairs quality stage has not begun",
   "q_stalled": "the stairs quality stage has not moved for 300 iterations",
   "clock_slow": "the progress clock runs at a quarter pace (too many of the other ground's episodes fail)",
-  "relax": "a ground family's constraints are on and relaxed (it fails too often; the stairs: the evaluation robots "
-           "on their fixed rows)",
+  "relax": "a ground family's constraints are on and relaxed (the other ground: it fails too often; the stairs: the "
+           "light evaluation robots' fail rate on their fixed rows rose above its reference)",
   "cap": "a constraint's multiplier sits at its upper limit",
   "unmeasured": "an enforced constraint that is on has no new readings",
   "torque_sat": "more than 20% of a joint group's torques are at the limit",
 }
+
+
+def _light_brief(cur: dict) -> dict | None:
+  """A record's cur["eval_light"] for an event: per stairs family the light evaluation robots' fail rate, its
+  reference and episodes."""
+  light = cur.get("eval_light")
+  return {k: {x: d.get(x) for x in ("fail", "ref", "n")} for k, d in light.items()} if light else None
 
 
 def low_fail(cur: dict, family: str = "up", below: float = Q_ROW) -> float | None:
@@ -897,6 +907,20 @@ class Recorder:
       out["eval_fail"] = dict(getattr(env, "u_eval_fail", None) or {})
       out["eval_fail_rows"] = {k: [r if n > 0 else None for r, n in zip(v["rate"], v["n"])] for k, v in stat.items()}
       out["eval_fail_n"] = {k: list(v["n"]) for k, v in stat.items()}
+    split = getattr(env, "u_eval_split", None)   # the same by payload class and scan mode (curriculum._eval_fail)
+    if split:
+      # eval_light[family]: the light robots' fail rate (what relaxes the stairs constraints, against "ref"), its
+      # episodes, and per scan mode the rate on each step-height band (the gate's survival items read the worst
+      # band of "seen" and of "blind"); eval_class[family][class]: every class's rate and episodes
+      ref = getattr(getattr(env, "u_constraints", None), "ref", None) or {}
+      light, cls = {}, {}
+      for k in split:
+        v, n = eval_light(env, k)
+        light[k] = {"fail": v, "n": n, "ref": ref.get(k),
+                    "bands": {m: eval_bands(env, k, m) for m in SPLIT_MODES},
+                    "n_mode": {m: eval_light(env, k, m)[1] for m in SPLIT_MODES}}
+        cls[k] = {c: dict(zip(("fail", "n"), eval_light(env, k, "all", c))) for c in PAY_CLASSES}
+      out["eval_light"], out["eval_class"], out["eval_row_bands"] = light, cls, row_bands(env)
     rows = getattr(env, "u_rows", None)
     if rows:   # the training robots' (the evaluation robots' stairs rows are fixed)
       ev = getattr(env, "u_eval_mask", None)
@@ -1073,7 +1097,7 @@ class Recorder:
                  fail=cur.get("clock_fail") if cur.get("clock_fail") is not None else cur.get("fail"))
     for fam, on in (s.get("relax") or {}).items():
       self._flip(it, "relax", fam, bool(on), family_fail=cur.get("family_fail"), eval_fail=cur.get("eval_fail"),
-                 fail=cur.get("fail"))
+                 fail=cur.get("fail"), eval_light=_light_brief(cur))
     for c in self.items:
       d = cons.get(c["name"])
       if not d:
@@ -1233,7 +1257,8 @@ class Recorder:
     live = {c.get("family", "other") for c in self.items if (s["cons"].get(c["name"]) or {}).get("on")}
     for fam, on in (s.get("relax") or {}).items():
       A(it, f"relax:{fam}", bool(on) and fam in live, f"the {fam} constraints relaxed for 500 it", hold=50,
-        family_fail=cur.get("family_fail"), eval_fail=cur.get("eval_fail"), fail=cur.get("fail"))
+        family_fail=cur.get("family_fail"), eval_fail=cur.get("eval_fail"), fail=cur.get("fail"),
+        eval_light=_light_brief(cur))
 
   def _al_constraints(self, it: int, s: dict, args: dict) -> None:
     cons, A = s["cons"], self._alert
@@ -1299,6 +1324,15 @@ class Recorder:
       for r, x in enumerate(v):
         if x is not None:
           out[f"Diag/eval_fail/{k}_row{r}"] = x
+    for k, d in (s["cur"].get("eval_light") or {}).items():
+      for m, v in d["bands"].items():
+        for b, x in enumerate(v):
+          if x is not None:
+            out[f"Diag/eval_band/{k}_{m}_b{b}"] = x
+    for k, d in (s["cur"].get("eval_class") or {}).items():
+      for c, x in d.items():
+        if x["fail"] is not None:
+          out[f"Diag/eval_class/{k}_{c}"] = x["fail"]
     out["Diag/alerts"] = float(sum(1 for a in self.alerts.values() if a["active"]))
     for k, v in out.items():
       if v is not None and math.isfinite(float(v)):

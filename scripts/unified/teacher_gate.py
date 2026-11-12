@@ -12,7 +12,9 @@ value_blind,target,bar,scale}); the acceptance proper is the students' (the user
     <= bar) in every scan mode it applies to (the item's "modes": seen and blind, the tread placement items seen
     only -- the depth student copies the seen mode, the blind student the blind one), each with at least half the
     window measured. The bar is the students' (<name>/bar); the teacher's own target (<name>/target) sits a margin
-    inside it and is not what is judged here.
+    inside it and is not what is judged here. A gate-only item (enforced, no reward terms: the survival items,
+    teacher_env.constraint_items) is judged at the bar in the code on disk, not at the one the training logged:
+    its bar touches nothing in the training, so it can be set by a deploy without a restart.
 Prints one line: "PASS K <items>" or "NOT YET <iteration> <the items that miss, value vs bar>" (an item reads
 <name>_<mode>); --json the details. Which constraints are enforced, their senses and modes come from the teacher
 task's items (registered with UNIFIED_TASKS=1). A run from before the modes or the margin (no value_<mode> / bar
@@ -69,11 +71,12 @@ def main() -> int:
     n = c["name"]
     tag = f"Curriculum/u_constraints/{n}/"
     bar = series(acc, tag + "bar") or series(acc, tag + "target")
+    fixed = None if c["terms"] else c["target"]   # a gate-only item: the bar of the code on disk
     per = {f"{n}_{m}": series(acc, tag + f"value_{m}") for m in c.get("modes", ("seen", "blind"))}
     if not any(per.values()):
       per = {n: series(acc, tag + "value")}
     for key, v in per.items():
-      vals[key], bars[key], sense[key] = v, bar, c["sense"]
+      vals[key], bars[key], sense[key] = v, ({i: fixed for i in v} if fixed is not None else bar), c["sense"]
   steps = sorted(p)
   if not steps:
     print("NOT YET 0 no progress logged")

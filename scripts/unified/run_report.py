@@ -21,7 +21,8 @@ that directory is there; of the older run only what it did up to that checkpoint
                 that fail most; --all: for every ground)
   负载          fail rates by payload class and by where the payload sits (the robot must not fall with a payload)
   约束          every constraint: readings per scan mode and how they moved over the window, the teacher's target,
-                the students' bar, the multiplier, and its state (未开 / 达标 / 未达标 / 到上限 / 放松中 / 无读数)
+                the students' bar, the multiplier, and its state (未开 / 达标 / 未达标 / 到上限 / 放松中 / 无读数 /
+                只进门槛: a gate-only item, judged but without a reward term or a multiplier)
   门槛          teacher_gate.py's rule read from the snapshots of the last 500 iterations (the gate itself reads
                 TensorBoard's every iteration; this is the same rule on every 20th)
   优化与物理    explained variance, gradient norms and clipping, action clipping, torque saturation, joint limits
@@ -221,7 +222,28 @@ def fam_fail(c: dict, fam: str):
   return ev.get(fam, ff.get(fam)) if fam in STAIRS else ff.get(fam, c.get("fail"))
 
 
+def light_zh(c: dict, fam: str) -> str | None:
+  """What relaxes a stairs family's constraints since 2026-11-12 (constraints._families): the light evaluation
+  robots' fail rate on their fixed rows against its slow reference. From a record's "cur" block or an event's data;
+  None for the other ground and for records from before."""
+  light = c.get("eval_light") or {}
+  ks = [k for k in (("up", "down") if fam == "stairs" else (fam,)) if k in light]
+  if fam not in STAIRS or not ks:
+    return None
+  zh = {"up": "上楼", "down": "下楼"}
+  return "轻载评估机器人固定行失败率 " + "，".join(
+    f"{zh[k]} {f(light[k].get('fail'))}（参考值 {f(light[k].get('ref'))}，{light[k].get('n')} 回合）" for k in ks)
+
+
+def bands_zh(d: dict, mode: str) -> str:
+  """A family's eval_light entry: the fail rate per step-height band (5-8 / 8-12 / 12-15 / 15-18 cm) in one mode."""
+  return " / ".join("-" if x is None else format(x, ".0%") for x in (d.get("bands") or {}).get(mode) or [])
+
+
 def fam_fail_zh(c: dict, fam: str) -> str:
+  light = light_zh(c, fam)
+  if light:
+    return light
   fixed = fam in STAIRS and bool(c.get("eval_fail"))
   return f"{'评估机器人固定行失败率' if fixed else '该地面失败率'} {f(fam_fail(c, fam))}"
 
@@ -461,7 +483,19 @@ def main() -> int:
     if efail:
       P("评估机器人在固定楼梯行（验收范围内均匀分布，按均值动作）的失败率："
         + "；".join(f"{k} {f(v)}（按行 {rows_zh(c, k)}）" for k, v in efail.items())
-        + "——楼梯约束的放松和读数看这个")
+        + ("——楼梯约束的读数来自这些行" if c.get("eval_light") else "——楼梯约束的放松和读数看这个"))
+    if c.get("eval_light"):
+      P("其中轻载（不超过满载的 1/4）的评估机器人，按台阶高度 5–8 / 8–12 / 12–15 / 15–18 cm 四档：")
+      for k, d in c["eval_light"].items():
+        P(f"  {k} {f(d.get('fail'))}（参考值 {f(d.get('ref'))}，{d.get('n')} 回合）  可见 {bands_zh(d, 'seen')}  遮挡 "
+          f"{bands_zh(d, 'blind')}")
+      P("  楼梯约束：轻载失败率比参考值高 0.08 以上放松，回到 0.04 以内恢复（不足 200 回合不判）；老师门槛的 survive_up / "
+        "survive_down 读可见、遮挡各自最差的一档")
+      cls = c.get("eval_class") or {}
+      if cls:
+        P("  按负载（只记录）：" + "；".join(
+          f"{k} " + "，".join(f"{NAME_ZH.get(x, x)} {f(v.get('fail'))}（{v.get('n')} 回合）" for x, v in d.items())
+          for k, d in cls.items()))
     P(f"负载上限 {f(c.get('payload_limit'))} / {f(c.get('payload_full'))} kg  指令上限 {c.get('cmd_max')}")
     P(f"动作噪声 {f(pol.get('std'))}（{f((first_win.get('policy') or {}).get('std'))}；各动作 "
       + "，".join(f"{k} {f(v)}" for k, v in (pol.get("std_by_term") or {}).items())
@@ -728,9 +762,12 @@ def main() -> int:
       state.append("达标")
     if capped and d.get("on"):
       state.append("到上限")
-    if relax.get(cdef.get("family", "other")) and d.get("on"):
+    gate_only = bool(cdef.get("enforce", True)) and bar is not None and cdef.get("terms") == []
+    if gate_only:
+      state.append("只进门槛")
+    elif relax.get(cdef.get("family", "other")) and d.get("on"):
       state.append("放松中")
-    table.append({"name": name, "vals": vals, "v0": v0, "v1": v1, "target": d.get("target"), "bar": bar,
+    table.append({"name": name, "gate_only": gate_only, "vals": vals, "v0": v0, "v1": v1, "target": d.get("target"), "bar": bar,
                   "sense": sense, "max_scale": cdef.get("max_scale"),
                   "scale": d.get("scale"), "state": state, "miss": miss, "none": none, "capped": capped,
                   "on": d.get("on"), "enforce": cdef.get("enforce", True), "family": cdef.get("family", "other"),
@@ -750,7 +787,8 @@ def main() -> int:
     for r in table:
       # outside the teacher's current target (by a tenth of it or more) and not getting closer over the window
       t = r["target"]
-      if not (r["on"] and r["enforce"] and num(t) is not None and win_span >= 300) or (r["capped"] and r["miss"]):
+      if not (r["on"] and r["enforce"] and num(t) is not None and win_span >= 300) or (r["capped"] and r["miss"]) \
+         or r["gate_only"]:
         continue
       stuck = []
       for m in r["judged"]:
@@ -772,6 +810,13 @@ def main() -> int:
         problems.append((3, f"约束 {r['name']} 的乘子已到上限，读数仍没到门槛",
                          [f"读数 " + " / ".join(f"{NAME_ZH.get(m, m)} {f(r['vals'][m])}" for m in r["vals"])
                           + f"，门槛 {f(r['bar'])}（{r['sense']}），乘子 {f(r['scale'])}：加大惩罚已经没用，要改奖励或放宽"]))
+      if r["gate_only"] and r["miss"]:
+        fam = r["family"]
+        d = (c.get("eval_light") or {}).get(fam) or {}
+        problems.append((3, f"门槛项 {r['name']} 没达标：轻载机器人在{'上' if fam == 'up' else '下'}楼最差一档台阶上摔得太多",
+                         ["最差一档失败率 " + " / ".join(f"{NAME_ZH.get(m, m)} {f(r['vals'][m])}" for m in r["vals"])
+                          + f"，门槛 {f(r['bar'])}；按档（5–8 / 8–12 / 12–15 / 15–18 cm）可见 {bands_zh(d, 'seen')}，遮挡 "
+                            f"{bands_zh(d, 'blind')}：这一项没有奖励项和乘子，只进老师门槛，要靠课程和其他约束把它降下来"]))
       if r["none"]:
         problems.append((5, f"约束 {r['name']} 已开启但没有读数（{','.join(r['none'])}）",
                          ["没有读数的约束不会调乘子，门槛检查也会判未测到：看对应地面有没有机器人、对应指令有没有发"]))
@@ -788,7 +833,9 @@ def main() -> int:
       rows = "；".join(f"{k} 按行 {rows_zh(c, k)}" for k in (("up", "down") if fam == "stairs" else (fam,))
                       if fam in STAIRS and rows_zh(c, k))
       problems.append((3, f"{fam} 地面的约束一直在放松（最近 {a.last} 迭代里 {pct(sum(held), len(held))}）",
-                       [f"{fam_fail_zh(c, fam)}（放松线 0.3，恢复线 0.25）：任务本身还没学会，约束乘子不往上加"
+                       [f"{fam_fail_zh(c, fam)}"
+                        + ("（比参考值高 0.08 以上放松，回到 0.04 以内恢复）：约束收紧后摔得比之前多，约束乘子不往上加"
+                           if light_zh(c, fam) else "（放松线 0.3，恢复线 0.25）：任务本身还没学会，约束乘子不往上加")
                         + (f"；{rows}" if rows else "")]))
 
   # ---- 门槛 ----
@@ -810,6 +857,8 @@ def main() -> int:
         if not (v >= r["bar"] if r["sense"] == "min" else v <= r["bar"]):
           miss.append(f"{r['name']}_{m} {f(v)} vs {f(r['bar'])}")
     P("\n== 门槛（teacher_gate.py 的规则，按最近 500 迭代的快照估算；正式结论以 teacher_gate.py 为准）==")
+    if any(r["gate_only"] for r in table):
+      P("  （只进门槛的项：这里按开训时记录的门槛算，teacher_gate.py 按部署代码里现在的门槛判）")
     P(f"  课程走完 p=1：{f(p_ok)}  质量阶段走完 q=1：{f(q_ok)}")
     P("  未达标：" + ("；".join(miss) if miss else "无"))
     if unmeasured:
