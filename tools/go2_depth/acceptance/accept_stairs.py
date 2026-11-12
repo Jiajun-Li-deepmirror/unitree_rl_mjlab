@@ -134,8 +134,7 @@ def run(sc, seed, grid):
            roll=0.0, w2=0.0, wn=0, clean=0, edged=0, hd_max=0.0, hd_sum=0.0, r_sum=0.0, hn=0)
   # the flight's start level (under the base at the spawn) and end level (the highest / lowest level ahead)
   hz0 = grid.h(float(data.qpos[root]), float(data.qpos[root + 1]))
-  start_L = grid.level(hz0) if hz0 is not None else -1
-  wheels = WheeledStairs(grid, 1, len(fl), [start_L]) if WHEELED else None   # the shared wheeled counters
+  wheels = WheeledStairs(grid, 1, len(fl), [hz0]) if WHEELED else None   # the shared wheeled counters (start height)
   t_now = 0.0
   for step in range(int(round(secs / DT))):
     t_now = step * DT

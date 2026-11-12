@@ -103,29 +103,54 @@ SLIDE_REPEAT_S = 0.5   # s: a wheel bumping the same riser again within this is 
 IDLE_AIR_S = 0.06      # s: a wheel in the air longer than this ...
 IDLE_APEX = 0.03       # m: ... with an apex this far over its take-off is a visible (idle) step
 IDLE_AHEAD = 0.3       # m: taken off with no height change this far ahead along the heading (flat ground)
+STEP_MAX = 0.25        # m: a tread at most this far above a wheel's stand is the next one (the steps are <= 0.2 m)
+
+
+def _same(a: float | None, b: float | None) -> bool:
+  """Two heights of one tread."""
+  return a is not None and b is not None and abs(a - b) <= JUMP
 
 
 class WheeledStairs:
-  """Wheeled stairs metrics (accept_stairs.py's since 2026-11-05, unchanged), per robot and wheel:
-    ups / slips  climbing: a wheel's flat contact one level above its stand is a step-up ("clean", or "edged" when it
+  """Wheeled stairs metrics (accept_stairs.py's since 2026-11-05), per robot and wheel:
+    ups / slips  climbing: a wheel's flat contact on the tread above its stand is a step-up ("clean", or "edged" when it
                  touched that riser's nose first); a flat contact back on its stand after touching the riser above is a
                  slide-back (counted as a step-up too; repeats within 0.5 s are one); slide-back % = slips / ups
     idle steps   a wheel airborne > 0.06 s with an apex > 3 cm over its take-off, taken off from flat ground (no
                  height change within 0.3 m ahead) while the base is near stairs; after the run split into "start"
                  (taken off the start level, not the end level: idle_rear) and "end" (taken off the end level: idle_front)
-  Scalar per wheel (a few robots in tinynav-sim, a few hundred in mjlab checks)."""
+  Scalar per wheel (a few robots in tinynav-sim, a few hundred in mjlab checks).
+
+  Treads are told apart by their heights at the wheel (Grid.tread) since 2026-11-12: "the tread above its stand" is a
+  walkable height JUMP .. STEP_MAX above the stand. Until then by the index in Grid.levels, the distinct heights of the
+  whole grid -- the same thing on a grid over one flight (tinynav), but on an mjlab terrain of 100 stairs tiles of
+  5-20 cm steps the list held 21 levels about 14 cm apart, almost no tile's next tread was "the next level", and the
+  counter saw a few percent of the step-ups (Go2W teacher: 0.03 per robot step in training; 100 over 288 robots x
+  6 m of stairs in the checks), slide-backs / step-ups read 0.3-0.6 whatever the wheels did.
+  start_levels: each robot's start height (None: the first stand of its episode)."""
 
   def __init__(self, grid: Grid, n: int, wheels: int = 4, start_levels=None):
     self.grid, self.n, self.w = grid, n, wheels
-    self.st = [[dict(on=0, stand=None, nosed=False, last_slide=None, air=0.0, flat_off=False, off_L=-1, t_off=0.0,
-                     z0=0.0, apex=0.0, z_last=0.0) for _ in range(wheels)] for _ in range(n)]
+    self.st = [[self._fresh() for _ in range(wheels)] for _ in range(n)]
     self.ups = np.zeros(n, np.int64)
     self.slips = np.zeros(n, np.int64)
     self.clean = np.zeros(n, np.int64)
     self.edged = np.zeros(n, np.int64)
-    self.idle = [[] for _ in range(n)]       # (take-off level, wheel, time, apex cm, landing level)
-    self.reached = [[] for _ in range(n)]    # wheel stand levels
-    self.start_L = list(start_levels) if start_levels is not None else [-1] * n
+    self.idle = [[] for _ in range(n)]       # (take-off height, wheel, time, apex cm, landing height)
+    self.reached = [[] for _ in range(n)]    # the heights the wheels have stood on, in order
+    self.start_L = list(start_levels) if start_levels is not None else [None] * n
+
+  @staticmethod
+  def _fresh() -> dict:
+    return dict(on=0, stand=None, nosed=False, last_slide=None, air=0.0, flat_off=False, off_L=None, t_off=0.0,
+                z0=0.0, apex=0.0, z_last=0.0)
+
+  def reset(self, idx) -> None:
+    """Forget the per-wheel state and the idle steps of robots idx (a robot reset in training); the counts stay."""
+    for r in idx:
+      self.st[r] = [self._fresh() for _ in range(self.w)]
+      self.reached[r] = []
+      self.idle[r] = []
 
   def step(self, t: float, dt: float, contacts, wheel_pos: np.ndarray, heading: np.ndarray, near_stairs: np.ndarray,
            up: np.ndarray, active: np.ndarray | None = None) -> None:
@@ -144,44 +169,49 @@ class WheeledStairs:
           s["on"] += 1
           s["z_last"] = z
           if up[r]:
-            best = None
+            best = None   # the highest tread touched; at one height a flat contact before a nose
             for cpos, nz in c:
-              L = g.level(float(cpos[2]))
-              if L < 0:
+              top = g.tread(float(cpos[0]), float(cpos[1]), float(cpos[2]))
+              if top is None:
                 continue
-              key = (L, abs(nz) > 0.9)
+              key = (top, abs(nz) > 0.9)
               if best is None or key > best:
                 best = key
             if best is not None:
-              L, flat = best
-              if s["stand"] is not None and L == s["stand"] + 1 and not flat and not s["nosed"]:
+              top, flat = best
+              stand = s["stand"]
+              same = _same(top, stand)
+              above = stand is not None and JUMP < top - stand <= STEP_MAX   # the tread above its stand
+              if above and not flat and not s["nosed"]:
                 s["nosed"] = True
               elif flat:
-                if s["stand"] is not None and L == s["stand"] + 1:
+                if above:
                   self.ups[r] += 1
                   if s["nosed"]:
                     self.edged[r] += 1
                   else:
                     self.clean[r] += 1
-                elif s["stand"] is not None and L == s["stand"] and s["nosed"] and not (
-                    s["last_slide"] is not None and s["last_slide"][0] == L and t - s["last_slide"][1] < SLIDE_REPEAT_S):
+                elif same and s["nosed"] and not (
+                    s["last_slide"] is not None and _same(s["last_slide"][0], top)
+                    and t - s["last_slide"][1] < SLIDE_REPEAT_S):
                   self.ups[r] += 1
                   self.slips[r] += 1
-                  s["last_slide"] = (L, t)
-                if L != s["stand"] or s["nosed"]:
-                  s["stand"], s["nosed"] = L, False
-                self.reached[r].append(L)
+                  s["last_slide"] = (top, t)
+                if not same or s["nosed"]:
+                  s["stand"], s["nosed"] = top, False
+                  self.reached[r].append(top)
           if s["air"] > 0.0:   # landing after a flight: an idle step?
             if s["flat_off"] and s["air"] > IDLE_AIR_S + 1e-6 and s["apex"] - s["z0"] > IDLE_APEX:
+              p = c[0][0]
               self.idle[r].append((s["off_L"], w, round(s["t_off"], 2), round(100 * (s["apex"] - s["z0"]), 1),
-                                   g.level(float(c[0][0][2]))))
+                                   g.tread(float(p[0]), float(p[1]), float(p[2]))))
             s["air"] = 0.0
         else:
           if s["on"] > 0:   # take-off
             lv = g.h(x, y)
             ahead = g.along(x, y, hx, hy, lv, IDLE_AHEAD) if lv is not None else 0.0
             s["flat_off"] = bool(near_stairs[r]) and np.isinf(ahead) and s["on"] >= 3
-            s["off_L"] = g.level(lv) if lv is not None else -1
+            s["off_L"] = lv
             s["t_off"] = t
             s["z0"] = s["z_last"]
             s["apex"] = z
@@ -194,12 +224,15 @@ class WheeledStairs:
     front = np.zeros(self.n, np.int64)
     rear = np.zeros(self.n, np.int64)
     for r in range(self.n):
+      if not self.idle[r]:
+        continue
       reached = self.reached[r]
-      end_L = (max(reached) if up[r] else min(reached)) if reached else -1
-      for L, _w, _t, _a, _ll in self.idle[r]:
-        if L == self.start_L[r] and L != end_L:
+      end = (max(reached) if up[r] else min(reached)) if reached else None
+      start = self.start_L[r] if self.start_L[r] is not None else (reached[0] if reached else None)
+      for h, _w, _t, _a, _ll in self.idle[r]:
+        if _same(h, start) and not _same(h, end):
           rear[r] += 1
-        elif L == end_L:
+        elif _same(h, end):
           front[r] += 1
     return {"ups": self.ups, "slips": self.slips, "clean": self.clean, "edged": self.edged, "idle_front": front,
             "idle_rear": rear}

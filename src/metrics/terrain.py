@@ -108,9 +108,23 @@ class Grid:
 
   # ---- scalar (the original queries) ----
   def level(self, z: float) -> int:
-    """Index of the level within 3 cm of z (a contact height), or -1."""
+    """Index of the level within 3 cm of z (a contact height), or -1. The levels are those of the whole grid: neighbours
+    in the list are neighbouring treads only on a grid over one flight (tinynav's routes). Over a terrain of many
+    flights use tread() and compare heights (stairs.WheeledStairs since 2026-11-12)."""
     i = int(np.argmin(np.abs(self.levels - z)))
     return i if abs(self.levels[i] - z) < 0.03 else -1
+
+  def tread(self, x: float, y: float, z: float, reach: float = 0.04) -> float | None:
+    """The walkable height a contact at (x, y, z) lies on: the cell height nearest to z among the cells within `reach`
+    of (x, y) -- a contact on a step's nose sits on the border between two treads --, None when none is within 3 cm
+    (a riser's face). level()'s test, with the heights of this place instead of the whole grid's."""
+    c = self.ij(x, y)
+    if c is None:
+      return None
+    n = max(1, int(round(reach / self.res)))
+    sub = self.H[max(c[0] - n, 0):c[0] + n + 1, max(c[1] - n, 0):c[1] + n + 1]
+    v = float(sub.flat[int(np.argmin(np.abs(sub - z)))])
+    return v if abs(v - z) < 0.03 else None
 
   def ij(self, x: float, y: float):
     i, j = int((x - self.x0) / self.res), int((y - self.y0) / self.res)

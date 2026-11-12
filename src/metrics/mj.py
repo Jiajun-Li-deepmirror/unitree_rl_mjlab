@@ -145,14 +145,7 @@ class StairsMeter:
     if self.last_len is not None:
       fresh = np.nonzero(ep < self.last_len)[0]
       if len(fresh):
-        if self.wheeled:
-          for r in fresh:
-            self.counter.st[r] = [dict(on=0, stand=None, nosed=False, last_slide=None, air=0.0, flat_off=False,
-                                       off_L=-1, t_off=0.0, z0=0.0, apex=0.0, z_last=0.0) for _ in range(self.feet)]
-            self.counter.reached[r] = []
-            self.counter.idle[r] = []
-        else:
-          self.counter.reset(fresh)
+        self.counter.reset(fresh)
     self.last_len = ep
     found, pos, nz, valid, base, heading, up, active = self._state(env)
     contact = found > 0

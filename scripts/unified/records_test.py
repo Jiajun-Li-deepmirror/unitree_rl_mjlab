@@ -559,6 +559,50 @@ def units(ok, out: Path) -> None:
   g = gate("miss", SURVIVE_BAR + 0.05, 0.99)
   ok(f"unit gate: over it does not ({g})", g.startswith("NOT YET 600 ") and "survive_up_blind" in g
      and "survive_up_seen" not in g and "survive_down" not in g and g.count(" vs ") == 1)
+  wheel_counter(ok)
+
+
+def wheel_counter(ok) -> None:
+  """The shared wheeled stairs counter (src/metrics/stairs.py) on a grid of several flights with different steps: one
+  wheel climbs the 15 cm flight -- riser 1 clean, 2 after one slide-back, 3 after touching the nose, the others clean --
+  and every step-up counts. (Until 2026-11-12 treads were neighbours by their index among the whole grid's heights:
+  on a training terrain the counter saw a few percent of the step-ups.)"""
+  import numpy as np
+  from src.metrics.stairs import WheeledStairs
+  from src.metrics.terrain import JUMP, Grid
+
+  res, n, steps = 0.02, 9, (0.15, 0.052, 0.078, 0.093, 0.118, 0.135, 0.177, 0.187)
+  H = np.zeros((int(5.0 / res), int(2.0 * len(steps) / res)))
+  for f, sh in enumerate(steps):   # flight f: y in [2 f, 2 f + 2), climbing along +x from x = 1, treads 0.3 m
+    for i in range(H.shape[0]):
+      k = 0 if (i + 0.5) * res < 1.0 else min(int(((i + 0.5) * res - 1.0) / 0.3) + 1, n)
+      H[i, int(2.0 * f / res):int(2.0 * (f + 1) / res)] = round(k * sh, 3)
+  g = object.__new__(Grid)
+  g.H, g.x0, g.y0, g.res, g._steps = H, 0.0, 0.0, res, {}
+  lv = np.unique(np.round(H, 3))
+  g.levels = lv[np.concatenate([[True], np.diff(lv) > JUMP])]
+  c, sh, y, t = WheeledStairs(g, 1, 1), steps[0], 1.0, [0.0]
+
+  def put(*contacts):
+    c.step(t[0], 0.02, [[list(contacts)]], np.array([[[1.0, y, 0.09]]]), np.array([[1.0, 0.0]]), np.array([False]),
+           np.array([True]))
+    t[0] += 0.02
+
+  flat = lambda k, dx=0.15: ((1.0 + 0.3 * (k - 1) + dx if k else 0.8, y, k * sh), 1.0)   # noqa: E731
+  nose = lambda k: ((1.0 + 0.3 * (k - 1) + 0.001, y, k * sh), 0.6)                         # noqa: E731
+  put(flat(0))
+  for k in range(1, n + 1):
+    if k in (2, 3):
+      put(flat(k - 1, 0.28), nose(k))
+      put(nose(k))
+    if k == 2:   # back on its stand, the riser's face at axle height; then over the nose
+      put(flat(1, 0.2), ((1.0 + 0.3 - 0.001, y, sh + 0.09), 0.0))
+      put(flat(1, 0.28), nose(2))
+    put(flat(k))
+    put(flat(k))
+  got = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
+  ok(f"unit wheeled counter among {len(steps)} flights ({len(g.levels)} grid levels): every step-up counts ({got})",
+     got["ups"] == n + 1 and got["slips"] == 1 and got["edged"] == 2 and got["clean"] == n - 2)
 
 
 def main() -> int:
