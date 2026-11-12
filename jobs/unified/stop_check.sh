@@ -39,12 +39,16 @@ for m in on off; do
   rows="$rows$r1"$'\n'
   parts+=("scan $m: $(awk -F'|' '$NF ~ /^ *[0-9]+\/[0-9]+ *$/ { g = $1; gsub(/^ +| +$/, "", g); split($NF, x, "/"); split($3, c, " ")
       printf "%s%s %d/%d %.2fcm", (n++ ? ", " : ""), g, x[1], x[2], c[1] }' $f)")
+  # the largest creep mean of a group (the acceptance's stop bar: <= 1 cm; reported, not judged here)
+  cr=$(awk -F'|' -v m=$m '$NF ~ /^ *[0-9]+\/[0-9]+ *$/ { g = $1; gsub(/^ +| +$/, "", g); split($3, c, " ")
+      if (!seen++ || c[1] + 0 > best) { best = c[1] + 0; bg = g } } END { printf "%.2f %s (scan %s)", best, bg, m }' $f)
+  if [ -z "${creep_worst:-}" ] || awk -v a=${cr%% *} -v b=${creep_worst%% *} 'BEGIN { exit !(a > b) }'; then creep_worst=$cr; fi
 done
 # each group's falls pooled over the two modes; the verdict on the worst pooled share
 out=$(printf '%s' "$rows" | awk -F';' -v max=$MAX 'NF == 3 { a[$1] += $2; b[$1] += $3; if (!($1 in o)) { o[$1] = ++k; nm[k] = $1 } }
   END { for (i = 1; i <= k; i++) { g = nm[i]; s = a[g] / b[g]; if (s > worst || i == 1) { worst = s; wg = g } }
         v = (worst > max ? "FAIL" : (worst > 0 ? "WARN" : "PASS")); printf "%s|%s %d/%d (%.2f%%)\n", v, wg, a[wg], b[wg], 100 * worst }')
 verdict=${out%%|*}
-say "STOPCHECK $verdict $CK (a group's falls over ${MAX} of both modes pooled fail): pooled worst ${out#*|}; ${parts[0]}; ${parts[1]}"
+say "STOPCHECK $verdict $CK (a group's falls over ${MAX} of both modes pooled fail): pooled worst ${out#*|}; creep worst ${creep_worst%% *}cm ${creep_worst#* }; ${parts[0]}; ${parts[1]}"
 [ $verdict = FAIL ] && exit 1
 exit 0
