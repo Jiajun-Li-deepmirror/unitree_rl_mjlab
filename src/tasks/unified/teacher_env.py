@@ -167,6 +167,12 @@ def constraint_items(kind: str) -> list[dict]:
     # (constraints._stairs_heading); the acceptance judges the wheeled robots' heading off the flight in tinynav
     # (mean <= 3 deg = 0.052 rad); the two readings are not calibrated against each other
     c("heading", "u_stairs_heading", "max", 0.052, 0.3, "q", [], enforce=False, family="stairs"),
+    # logged only (2026-11-13): the robots that stand on the level ground of a climbing column under a forward
+    # command -- before the flight -- up to the common payload and in the heavy class (constraints._stairs_park:
+    # the Go2W package teacher learnt to stand before the tall flights, tier 2 read 19% stalled, and no training
+    # reading showed it). The acceptance: at most 5% stalled per band, unloaded and at the common payload.
+    c("park", "u_stairs_park", "max", 0.05, 0.3, "q", [], enforce=False, family="up"),
+    c("park_heavy", "u_stairs_park_heavy", "max", 0.05, 0.3, "q", [], enforce=False, family="up"),
     # logged only (2026-11-13): the same on even ground under a straight command, p90 (constraints._flat_heading;
     # the acceptance's lines: heading p10 / p90 within 8 deg = 0.14 rad 10 s in, from each line's own start)
     c("heading_flat", "u_flat_heading", "max", 0.14, 0.3, 0.15, [], stat="p90", enforce=False),
@@ -220,6 +226,16 @@ def constraint_items(kind: str) -> list[dict]:
     for item in items:
       if item["name"] in ("descent", "climb"):
         item["metric"] = "u_stair_speed_h"   # (a resume keeps the multipliers: constraints.CARRY_SCALE)
+  v = os.environ.get("U_ITEM_CAP")   # a probe's switch (_probe_switches): "<item>:<cap>,..."
+  if v:
+    # the named stairs-quality items' multipliers go up to their own cap, whatever U_Q_SCALE_MAX says ("own_cap").
+    # A name this kind of robot has no item of is skipped: every robot's tasks are registered at import.
+    caps = {k.strip(): float(x) for k, x in (kv.split(":") for kv in v.split(","))}
+    assert all(1.0 <= x <= 10.0 for x in caps.values()), f"U_ITEM_CAP {v}: caps 1-10"
+    for item in items:
+      if item["name"] in caps:
+        assert item["by"] == "q" and item["terms"], f"U_ITEM_CAP: {item['name']} is not a stairs-quality item with costs"
+        item["max_scale"], item["own_cap"] = caps[item["name"]], True
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -852,6 +868,18 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          body's x is 15% more than the ground covered, which is what the acceptance measures: the
                          descent / climb items read constraints._stair_speed_h (read in constraint_items) and the
                          cost term stair_speed_deficit becomes constraints.stair_speed_deficit_h.
+    U_ITEM_CAP=<item>:<cap>,...  the named stairs-quality items' multipliers may rise to their own cap, whatever
+                         U_Q_SCALE_MAX says (read in constraint_items). 2026-11-13, the Go2 candidate with the
+                         heading observation and the ground-speed climb (uprobe_s47): the climb item read 0.74 /
+                         0.71 against its target 0.85 with its multiplier at the cap 1 for the whole probe, and
+                         tier 2's blind climbs were 0.77x of the command (the bar: 0.8x);
+    U_STAIR_APPROACH=<x> with U_STAIR_SPEED_H=1: the stairs speed cost also holds on the level ground of a climbing
+                         column under a forward command (before the flight, on its landing) -- in full up to the
+                         common payload, <x> times it from 2/3 of the limit up, linear in between (0.0: a heavy
+                         robot may wait on the level; 1: every payload alike). Without it the cost starts within
+                         0.45 m of a step, and standing before the flight costs the flat speed cost alone: the
+                         Go2W package teacher learnt to stand there (constraints.stair_speed_deficit_h; the logged
+                         items park / park_heavy read it);
     U_STAIR_SPEED_LOADED=<x>  going slowly on the stairs costs a heavily loaded robot less: the cost as it is up to
                          the common payload (half the limit), <x> times it from 2/3 of the limit up, linear in
                          between (constraints.stair_speed_loaded, read in _rewards); the descent / climb items read
@@ -910,6 +938,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     assert getattr(term.func, "__name__", "") == "stair_speed_deficit" and not {*term.params} - {
       "command_name", "sensor_name", "ratio", "min_speed", "ratio_high", "axis_min", "max_payload"}, term
     term.func = ucons.stair_speed_deficit_h
+  v = os.environ.get("U_STAIR_APPROACH")
+  if v:
+    assert os.environ.get("U_STAIR_SPEED_H") == "1" and 0.0 <= float(v) <= 1.0, \
+      f"U_STAIR_APPROACH {v}: the heavy class's share 0-1, with U_STAIR_SPEED_H=1 (the cost that has it)"
+    cfg.rewards["stair_speed_deficit"].params["approach_heavy"] = float(v)
   v = os.environ.get("U_TERMINATED_X")
   if v:
     cfg.rewards["is_terminated"].weight *= float(v)

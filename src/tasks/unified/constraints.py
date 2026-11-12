@@ -450,15 +450,65 @@ def _stair_speed_h(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torc
   return vx / torch.where(mask, command[:, 0], torch.ones_like(vx)), mask
 
 
+def up_column(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Per robot: it is on a stairs column that climbs (curriculum.UP_NAMES); all False without such columns."""
+  cols = getattr(env, "_u_up_columns", None)
+  if cols is None:
+    from src.tasks.unified.curriculum import UP_NAMES
+    from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
+
+    cols = sub_terrain_column_mask(env, UP_NAMES)
+    if cols is None:
+      return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    env._u_up_columns = cols
+  return cols[env.scene.terrain.terrain_types]
+
+
+def _stairs_park(env: ManagerBasedRlEnv, command_name: str = "twist", sensor_name: str = "terrain_scan",
+                 min_vx: float = 0.2, slow: float = 0.3) -> tuple[torch.Tensor, torch.Tensor]:
+  """1 for a robot that stands where it is told to walk on (its speed over the ground along x below `slow` x the
+  command), over the robots on the level ground of a climbing column -- before the flight, or on its landing --
+  under a forward command (vx >= min_vx, |vy| <= 0.1). A robot that has just been told to walk reads 1 until it is
+  up to speed, so a healthy policy does not read 0.
+
+  2026-11-13, the Go2W package teachers (uprobe_s32 -> s34 -> s37, iterations 4997 -> 5995): tier 2's seen mode went
+  from no robot stalled to 19% (the 12-15 cm climbs 54%, the 15-18 cm ones 92%; reach 0.96 / 0.76 m: before the
+  first riser), with no fall -- and no reading of the training said so. The climb item reads the robots pitched on
+  the steps (0.82-0.91, at its target), the survival item counts the fails (0.25 -> 0.06: a robot that does not climb
+  does not fall), and a robot that walks less than half its commanded distance goes down a row, so the rows' own
+  readings stayed good while up_level sank (6.56 -> 6.19). scripts/unified/up_stall_probe.py on s37: 74% of the
+  steps under a forward command before the first riser at |v| < 0.1 m/s, 90% of them within 0.5 m of the spawn."""
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  command = env.command_manager.get_command(command_name)
+  vx = _yaw_frame_velocity(env)[:, 0]
+  mask = (command[:, 0] >= min_vx) & (command[:, 1].abs() <= 0.1) & up_column(env)
+  mask &= ~uneven_terrain_mask(env, sensor_name)
+  return (vx < slow * command[:, 0]).float(), mask
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
-                          max_payload: float | None = None) -> torch.Tensor:
+                          max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
   """Reward term: mdp.stair_speed_deficit on uneven ground (its docstring: how far the speed along the commanded
   direction falls short of `ratio` x the command, or exceeds `ratio_high` x, as a fraction of the command; per axis
   for diagonals with `axis_min`; the robots carrying at most `max_payload`), with the speed over the ground
   (_yaw_frame_velocity) instead of the body frame's. With the body frame's, the free band 0.9-1.1x is 0.78-0.95x
   of ground speed on a base pitched 30 deg: where tier 2 read the candidate teachers' descents (2026-11-13,
-  0.73-0.81x; the acceptance wants 0.8-1.2x)."""
+  0.73-0.81x; the acceptance wants 0.8-1.2x).
+
+  `approach_heavy` (U_STAIR_APPROACH=<x>, 2026-11-13): the cost also holds on the level ground of a climbing column
+  (up_column: before the flight and on its landing) under a forward command -- in full up to the common payload
+  (COMMON_FRAC of the limit), `approach_heavy` times it from the heavy class (HEAVY_FRAC) up, linear in between.
+  Without it the cost starts within 0.45 m of a step (uneven_terrain_mask), and a robot that stands before the
+  flight pays the flat speed cost alone -- a third of this one. The Go2W package teacher learnt to stand there
+  (_stairs_park's docstring); its rewards on rows 7-9 (up_stall_probe.py on uprobe_s37, per second): standing before
+  the riser +1.46 (the flat speed cost -3.5, the turn / pose / gait rewards a standing robot still earns), climbing
+  -1.91 (slide-backs -1.4, nosing -1.1, line drift -1.2, leg tilt -1.0, this cost -1.6 even at 0.92x, ...), standing
+  on the flight -17.5. The acceptance wants every climb unloaded and at the common payload (reach, speed, at most 5%
+  stalled) and judges the full payload on its falls alone, and the user (2026-11-12): with payload the robot must
+  never fall, what is physically out of reach with it is not required -- so a heavy robot may wait on the level
+  (`approach_heavy` 0), where it stands on its four feet; on the steps the cost holds for every payload."""
   from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
 
   command = env.command_manager.get_command(command_name)
@@ -477,10 +527,20 @@ def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name
     if ratio_high is not None:
       axes = axes + ((moved - ratio_high * part) / part.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
     deficit = torch.where((part >= axis_min).all(dim=1), axes.sum(dim=1), deficit)
-  active = (speed >= min_speed) & uneven_terrain_mask(env, sensor_name)
-  if max_payload is not None and getattr(env, "payload_kg", None) is not None:
-    active &= env.payload_kg <= max_payload
-  return torch.where(active, deficit, torch.zeros_like(deficit))
+  uneven = uneven_terrain_mask(env, sensor_name)
+  moving = speed >= min_speed
+  kg = getattr(env, "payload_kg", None)
+  if max_payload is not None and kg is not None:
+    moving = moving & (kg <= max_payload)
+  out = torch.where(moving & uneven, deficit, torch.zeros_like(deficit))
+  if approach_heavy is not None:
+    level = moving & ~uneven & (cmd[:, 0] >= min_speed) & up_column(env)
+    share = torch.ones_like(deficit)
+    if kg is not None:
+      frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
+      share = 1.0 - (1.0 - approach_heavy) * frac.clamp(0.0, 1.0)
+    out = torch.where(level, deficit * share, out)
+  return out
 
 
 def _stairs_roll(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
@@ -612,9 +672,19 @@ def upto_common(metric):
   return f
 
 
+def over_heavy(metric):
+  """`metric` (a function like METRICS') over the robots of the heavy class (HEAVY_FRAC of the limit and more)."""
+  def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
+    value, mask = metric(env, **params)
+    pm = payload_mask(env, lo=HEAVY_FRAC)
+    return value, (mask if pm is None else mask & pm)
+  return f
+
+
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stairs_heading": _stairs_heading,
           "u_flat_heading": _flat_heading,
           "u_stair_speed_h": _stair_speed_h,
+          "u_stairs_park": upto_common(_stairs_park), "u_stairs_park_heavy": over_heavy(_stairs_park),
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
