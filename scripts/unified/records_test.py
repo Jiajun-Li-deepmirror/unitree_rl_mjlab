@@ -685,6 +685,97 @@ def flat_units(ok, out: Path) -> None:
      f"({cons_off.redefined})", sorted(cons_off.redefined) == sorted(moved) and not cons_off.remeasured
      and not set(moved) & set(cons_off.scale) and cons_off.scale["spin"] == 2.0)
 
+  # -- the descent switches (2026-11-13): stop_feet by the direction faced, the stairs speed over the ground
+  def descent_unit() -> None:
+    def items_env(kind: str = "legged", **env: str) -> dict:
+      keys = ("U_STOP_FEET_DIR", "U_STAIR_SPEED_H", "U_Q_SCALE_MAX")
+      old = {k: os.environ.pop(k, None) for k in keys}
+      os.environ.update(env)
+      try:
+        found = constraint_items(kind)
+        if "U_Q_SCALE_MAX" in env:
+          from src.tasks.unified import teacher_env as te
+          te._probe_switches(NS(rewards={}, events={}), found)
+        return {c["name"]: c for c in found}
+      finally:
+        for k in keys:
+          os.environ.pop(k, None)
+          if old[k] is not None:
+            os.environ[k] = old[k]
+
+    for kind in ("legged", "wheeled"):
+      base, split = items_env(kind), items_env(kind, U_STOP_FEET_DIR="3", U_Q_SCALE_MAX="1")
+      two = [split.get(f"stop_feet_{d}", {}) for d in ("up", "down")]
+      ok(f"unit descent ({kind}): U_STOP_FEET_DIR=3 -- stop_feet becomes stop_feet_up / stop_feet_down in its place "
+         f"(the same measure by `facing`, the same cost term, each on its direction's fail rate), they start at 3 with "
+         f"their own cap under U_Q_SCALE_MAX=1; every other item as without the switch but for that cap",
+         [n for n in split if not n.startswith("stop_feet")] == [n for n in base if n != "stop_feet"]
+         and list(split).index("stop_feet_up") == list(base).index("stop_feet") and "stop_feet" not in split
+         and all(c.get("metric") == "u_stairs_stop_feet" and c["params"] == {"facing": d} and c["family"] == d
+                 and c["terms"] == ["feet_stand_uneven"] and c["init_scale"] == 3.0 and c["max_scale"] == 3.0
+                 and c["target"] == 0.9 and c["by"] == "q" for c, d in zip(two, ("up", "down")))
+         and all(split[n]["max_scale"] == 1.0 for n in split if split[n]["by"] == "q" and not n.startswith("stop_feet"))
+         and {n: {k: v for k, v in c.items() if k not in ("max_scale", "start_scale")} for n, c in split.items()
+              if not n.startswith("stop_feet")}
+         == {n: {k: v for k, v in c.items() if k not in ("max_scale", "start_scale")} for n, c in base.items()
+             if n != "stop_feet"})
+      speed = items_env(kind, U_STAIR_SPEED_H="1")
+      ok(f"unit descent ({kind}): U_STAIR_SPEED_H=1 -- descent and climb read u_stair_speed_h, their old measure is "
+         f"the one constraints.CARRY_SCALE lists, every other item is the same",
+         all(speed[n]["metric"] == "u_stair_speed_h" and ucons.item_sig(base[n]) in ucons.CARRY_SCALE[n]
+             and {**speed[n], "metric": base[n]["metric"]} == base[n] for n in ("descent", "climb"))
+         and {n: c for n, c in speed.items() if n not in ("descent", "climb")}
+         == {n: c for n, c in base.items() if n not in ("descent", "climb")})
+    base = items_env()
+    state = {"scale": {n: 2.0 for n in base} | {"stop_feet": 0.5}, "value": {n: 0.5 for n in base},
+             "values": {f"{n}@{m}": 0.5 for n in base for m in ucons.MODES},
+             "count": {f"{n}@{m}": 900 for n in base for m in ucons.MODES}, "relax": {}, "ref": {},
+             "sig": {n: ucons.item_sig(c) for n, c in base.items()}}
+    cons = ucons.constraints(NS(params={"items": list(items_env(U_STOP_FEET_DIR="3").values())}), NS())
+    cons.load(dict(state))
+    ok(f"unit descent load: a checkpoint from before the split -- nothing starts over ({cons.redefined}, "
+       f"{cons.remeasured}), the two new items have no multiplier yet (the first update gives them init_scale)",
+       not cons.redefined and not cons.remeasured and not {"stop_feet_up", "stop_feet_down"} & set(cons.scale)
+       and cons.scale["kicks"] == 2.0 and cons.count["descent@seen"] == 900)
+    cons = ucons.constraints(NS(params={"items": list(items_env(U_STAIR_SPEED_H="1").values())}), NS())
+    cons.load(dict(state))
+    ok(f"unit descent load: a checkpoint measured in the body frame under U_STAIR_SPEED_H=1 -- descent and climb keep "
+       f"their multipliers and read afresh ({cons.remeasured}), nothing else starts over ({cons.redefined})",
+       sorted(cons.remeasured) == ["climb", "descent"] and not cons.redefined and cons.scale["descent"] == 2.0
+       and cons.scale["climb"] == 2.0 and "descent" not in cons.value and "descent@seen" not in cons.count
+       and cons.count["kicks@seen"] == 900)
+    # the measures on a stand-in: 8 robots, each stopped on a stairs column -- nose up / level / nose down / moving
+    gx = torch.tensor([-0.4, -0.4, 0.0, 0.0, 0.4, 0.4, 0.4, 0.4])
+    found = torch.ones(8, 4)
+    found[1, 0] = found[5, 2] = found[6, 3] = 0.0
+    vel = torch.zeros(8, 3)
+    vel[7, 0] = 0.5
+    robot = NS(data=NS(projected_gravity_b=torch.stack([gx, torch.zeros(8), -torch.ones(8)], dim=1),
+                       root_link_lin_vel_b=vel))
+    env = NS(scene={"feet_ground_contact": NS(data=NS(found=found)), "robot": robot},
+             command_manager=NS(get_command=lambda name: torch.zeros(8, 3),
+                                get_term=lambda name: NS(is_stair_env=torch.ones(8, dtype=torch.bool))))
+    read = {f: ucons._stairs_stop_feet(env, facing=f) for f in (None, "up", "down")}
+    share = {f: float(v[m].mean()) for f, (v, m) in read.items()}
+    ok(f"unit descent measure: stop_feet over the stopped robots -- pooled {share[None]:.3f} (7 robots), nose up "
+       f"{share['up']:.2f} (2), nose down {share['down']:.3f} (3; the moving one is not counted)",
+       [int(m.sum()) for _, m in read.values()] == [7, 2, 3] and abs(share[None] - 4 / 7) < 1e-6
+       and share["up"] == 0.5 and abs(share["down"] - 1 / 3) < 1e-6)
+    half = math.radians(30.0) / 2   # pitched 30 deg nose down and turned 90 deg, 1 m/s along the body's x
+    qp = torch.tensor([math.cos(half), 0.0, math.sin(half), 0.0])
+    qy = torch.tensor([math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4)])
+    from mjlab.utils.lab_api.math import quat_apply, quat_mul
+    q = quat_mul(qy, qp).reshape(1, 4)
+    v_w = quat_apply(q, torch.tensor([[1.0, 0.0, 0.0]]))
+    env = NS(scene={"robot": NS(data=NS(root_link_quat_w=q, root_link_lin_vel_w=v_w))})
+    v_h = ucons._yaw_frame_velocity(env)[0]
+    ok(f"unit descent measure: 1 m/s along a body pitched 30 deg nose down is {float(v_h[0]):.3f} m/s over the ground "
+       f"ahead and {float(v_h[2]):.3f} m/s up, whatever the heading",
+       abs(float(v_h[0]) - math.cos(math.radians(30.0))) < 1e-5 and abs(float(v_h[1])) < 1e-5
+       and abs(float(v_h[2]) + 0.5) < 1e-5)
+
+  descent_unit()
+
   # -- the tracker on the kinematic stand-in
   n, k_eval, dt = 256, 192, 0.02
   i = torch.arange(n)

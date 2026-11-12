@@ -403,17 +403,84 @@ def _march_hip_light(env: ManagerBasedRlEnv, max_frac: float | None = None) -> t
   return _light(*_march_hip(env), env, max_frac)
 
 
-def _stairs_stop_feet(env: ManagerBasedRlEnv, sensor_name: str = "feet_ground_contact",
-                      max_speed: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
+def _stairs_stop_feet(env: ManagerBasedRlEnv, sensor_name: str = "feet_ground_contact", max_speed: float = 0.1,
+                      facing: str | None = None, min_pitch: float = 0.05) -> tuple[torch.Tensor, torch.Tensor]:
   """All four feet / wheels down (the acceptance's stairs stop-feet, bar 0.9 of the robots), over the robots on a
-  stairs column at the zero command that have come to rest (base speed below max_speed)."""
+  stairs column at the zero command that have come to rest (base speed below max_speed).
+
+  `facing` "down" / "up": only the robots stopped on the flight nose down / nose up (the body pitched by min_pitch
+  or more, as mdp.constraints' stair_speed tells a descent from a climb). Without it the reading pools both
+  directions and the robots stopped on the level ground of a stairs column, which always stand on four feet: the Go2
+  candidate teacher (2026-11-13, s29 model_5598) read 0.93 in training -- above the bar, its multiplier relaxed to
+  0.5 -- while tier 2 found four feet down in 0.97 / 0.75 / 0.66 / 0.57 of the stops going down the four step-height
+  bands (0.99-1.00 going up)."""
   from mjlab.sensor import ContactSensor
 
+  assert facing in (None, "up", "down"), facing
   sensor: ContactSensor = env.scene[sensor_name]
   value = (sensor.data.found > 0).all(dim=1).float()
   command = env.command_manager.get_command("twist")
-  still = (command.abs().sum(dim=1) == 0.0) & (torch.norm(env.scene["robot"].data.root_link_lin_vel_b[:, :2], dim=1) < max_speed)
-  return value, env.command_manager.get_term("twist").is_stair_env & still
+  data = env.scene["robot"].data
+  still = (command.abs().sum(dim=1) == 0.0) & (torch.norm(data.root_link_lin_vel_b[:, :2], dim=1) < max_speed)
+  mask = env.command_manager.get_term("twist").is_stair_env & still
+  if facing is not None:
+    gx = data.projected_gravity_b[:, 0]
+    mask = mask & (gx >= min_pitch if facing == "down" else gx <= -min_pitch)
+  return value, mask
+
+
+def _yaw_frame_velocity(env: ManagerBasedRlEnv, asset_name: str = "robot") -> torch.Tensor:
+  """The base's velocity in the frame that turns with its heading only (x ahead, y to the left, z up): the ground it
+  covers. The body frame's x of a base pitched along a flight is the distance along the slope -- at 30 deg 15% more
+  than the ground covered, which is what the acceptance's flight speed (0.8-1.2x the command) is measured in."""
+  from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
+
+  data = env.scene[asset_name].data
+  return quat_apply_inverse(yaw_quat(data.root_link_quat_w), data.root_link_lin_vel_w)
+
+
+def _stair_speed_h(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
+  """mdp.constraints' stair_speed (forward speed / command over the robots pitched on uneven ground under a forward
+  command) with the speed over the ground instead of the body frame's (_yaw_frame_velocity); the same robots.
+  2026-11-13: the candidate teachers read 0.9 and more in training and 0.73-0.81x (down) / 0.82-0.91x (up) on tier
+  2's flights."""
+  _, mask = METRICS["stair_speed"](env, **params)
+  command = env.command_manager.get_command(params.get("command_name", "twist"))
+  vx = _yaw_frame_velocity(env)[:, 0]
+  return vx / torch.where(mask, command[:, 0], torch.ones_like(vx)), mask
+
+
+def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
+                          min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
+                          max_payload: float | None = None) -> torch.Tensor:
+  """Reward term: mdp.stair_speed_deficit on uneven ground (its docstring: how far the speed along the commanded
+  direction falls short of `ratio` x the command, or exceeds `ratio_high` x, as a fraction of the command; per axis
+  for diagonals with `axis_min`; the robots carrying at most `max_payload`), with the speed over the ground
+  (_yaw_frame_velocity) instead of the body frame's. With the body frame's, the free band 0.9-1.1x is 0.78-0.95x
+  of ground speed on a base pitched 30 deg: where tier 2 read the candidate teachers' descents (2026-11-13,
+  0.73-0.81x; the acceptance wants 0.8-1.2x)."""
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  command = env.command_manager.get_command(command_name)
+  cmd = command[:, :2]
+  vel = _yaw_frame_velocity(env)[:, :2]
+  speed = torch.norm(cmd, dim=1)
+  safe = speed.clamp(min=1e-6)
+  along = (vel * (cmd / safe.unsqueeze(1))).sum(dim=1)
+  deficit = ((ratio * speed - along) / safe).clamp(min=0.0, max=1.0)
+  if ratio_high is not None:
+    deficit = deficit + ((along - ratio_high * speed) / safe).clamp(min=0.0, max=1.0)
+  if axis_min is not None:
+    part = cmd.abs()
+    moved = vel * torch.sign(cmd)
+    axes = ((ratio * part - moved) / part.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+    if ratio_high is not None:
+      axes = axes + ((moved - ratio_high * part) / part.clamp(min=1e-6)).clamp(min=0.0, max=1.0)
+    deficit = torch.where((part >= axis_min).all(dim=1), axes.sum(dim=1), deficit)
+  active = (speed >= min_speed) & uneven_terrain_mask(env, sensor_name)
+  if max_payload is not None and getattr(env, "payload_kg", None) is not None:
+    active &= env.payload_kg <= max_payload
+  return torch.where(active, deficit, torch.zeros_like(deficit))
 
 
 def _stairs_roll(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
@@ -504,6 +571,7 @@ def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
 
 
 CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll, "u_stairs_heading": _stairs_heading,
+          "u_stair_speed_h": _stair_speed_h,
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
           "u_march_drift": _march_drift, "u_march_drift_light": _march_drift_light,
@@ -717,7 +785,9 @@ LEGACY_SIG = {"creep": "u_stand_hold_light|p90", "march": "u_stand_hold_light|p9
 # take e.g. the hips' cost from 3x to 1x on a policy that needs more of it, not less.
 CARRY_SCALE = {"clock": {"gait_match|mean"}, "side_drift": {"u_drift_light|p90"},
                "straight_drift": {"u_drift_light|p90"}, "creep": {"u_stop_creep_light|mean"},
-               "march_hip": {"u_march_hip_light|mean"}}
+               "march_hip": {"u_march_hip_light|mean"},
+               # (2026-11-13, U_STAIR_SPEED_H: the stairs speed over the ground instead of the body frame's)
+               "descent": {"stair_speed|mean"}, "climb": {"stair_speed|mean"}}
 
 # An item split off another one: {new item: (the item its terms hung on, that item's signature then)}. A checkpoint
 # from before the split gives the new item the multiplier its terms had (2026-11-12: march_hip_default was scaled
@@ -926,7 +996,9 @@ class constraints:
     p = getattr(env, "u_progress", 0.0)
     q = getattr(env, "u_quality", 0.0)
     for c in items:
-      self.scale.setdefault(c["name"], 1.0)
+      # ("init_scale": where an item new to a checkpoint that is already in the quality stage starts -- a probe's
+      # item, teacher_env U_STOP_FEET_DIR; from zero a stairs-quality item starts its stage at 1 like the others)
+      self.scale.setdefault(c["name"], c.get("init_scale", 1.0))
       if c.get("by") == "q" and q <= 0.0:
         # a stairs-quality constraint starts its stage at 1 (a checkpoint from before the stage carries the
         # multipliers of constraints that were on from progress 0.5)

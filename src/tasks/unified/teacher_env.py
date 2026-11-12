@@ -199,6 +199,24 @@ def constraint_items(kind: str) -> list[dict]:
       c("idle_start", "lib:idle_start", "max", None, None, "q", [], enforce=False, family="stairs"),
       c("idle_end", "lib:idle_end", "max", None, None, "q", [], enforce=False, family="stairs"),
     ]
+  # -- the descent switches (probes, _probe_switches; read here: the items' terms and signatures are set up from them)
+  v = os.environ.get("U_STOP_FEET_DIR")
+  if v:
+    # stop_feet by the direction the robot faces on the flight, each on that direction's fail rate, both on the one
+    # cost term (constraints._apply: the stronger weight). "init_scale": on a checkpoint in the quality stage the
+    # new items start at <x> (constraints.__call__) -- at the step of 0.003 a multiplier takes ~1300 iterations from
+    # 1 to 3 at a shortfall of 0.3, longer than a probe; "own_cap": their cap is theirs, not U_Q_SCALE_MAX's.
+    x = float(v)
+    assert 0.5 <= x <= 10.0, f"U_STOP_FEET_DIR {v}: the start multiplier, 0.5-10"
+    at = next(i for i, item in enumerate(items) if item["name"] == "stop_feet")
+    items[at:at + 1] = [
+      {**c(f"stop_feet_{d}", "u_stairs_stop_feet", "min", 0.9, 0.6, "q", ["feet_stand_uneven"], {"facing": d},
+           max_scale=max(3.0, x), family=d), "init_scale": x, "own_cap": True}
+      for d in ("up", "down")]
+  if os.environ.get("U_STAIR_SPEED_H") == "1":
+    for item in items:
+      if item["name"] in ("descent", "climb"):
+        item["metric"] = "u_stair_speed_h"   # (a resume keeps the multipliers: constraints.CARRY_SCALE)
   if uflat.scripts_on():
     items = _flat_script_items(items, c)
   return items
@@ -713,6 +731,16 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_ONLY=1        a flat item's multiplier presses on flat ground only: over uneven ground its terms stay at
                          the configured weight or below (constraints.flat_only, set up in _rewards: the flat line
                          item at its 3x cap cost the climbing Go2 1.5 a second, as much as its quality costs).
+  The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
+  going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
+    U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
+                         nose up / nose down (constraints._stairs_stop_feet `facing`; the pooled item counts both
+                         and the robots stopped on a stairs column's level ground). Both start at the multiplier
+                         <x> with the cap max(3, x), whatever U_Q_SCALE_MAX says (read in constraint_items);
+    U_STAIR_SPEED_H=1    the stairs speed over the ground instead of the body frame's -- along a 30 deg flight the
+                         body's x is 15% more than the ground covered, which is what the acceptance measures: the
+                         descent / climb items read constraints._stair_speed_h (read in constraint_items) and the
+                         cost term stair_speed_deficit becomes constraints.stair_speed_deficit_h.
   The flat protocols (flat.py; U_FLAT_SCRIPTS=0 -- no scripts, the flat items as before -- is read where the items
   and the tracker are set up, not here):
     U_FLAT_SHARE=<l>[,<h>] the shares of the light / heavy evaluation robots on the flat column under a script
@@ -723,9 +751,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
-      if c["by"] == "q":
+      if c["by"] == "q" and not c.get("own_cap"):
         c["max_scale"] = max(c["min_scale"], min(c["max_scale"], float(v)))
         c["start_scale"] = min(c["start_scale"], c["max_scale"])
+  if os.environ.get("U_STAIR_SPEED_H") == "1":
+    term = cfg.rewards["stair_speed_deficit"]
+    assert getattr(term.func, "__name__", "") == "stair_speed_deficit" and not {*term.params} - {
+      "command_name", "sensor_name", "ratio", "min_speed", "ratio_high", "axis_min", "max_payload"}, term
+    term.func = ucons.stair_speed_deficit_h
   v = os.environ.get("U_TERMINATED_X")
   if v:
     cfg.rewards["is_terminated"].weight *= float(v)
