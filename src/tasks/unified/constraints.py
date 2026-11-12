@@ -17,11 +17,21 @@ mdp.adaptive_constraints (still used by the blind chains, unchanged):
     zero-reward term that reads the event terms every step.
 
 The acceptance-calibrated measurements are mdp.constraints.METRICS (unchanged); `rate:<name>` are the meter's.
+
+Since 2026-11-12 every measurement is taken over the evaluation robots only (env.u_eval_mask, set by the teacher's
+runner: the first eval_count(num_envs) robots act with the policy's mean action and take no part in the update). The
+acceptance judges the policy without exploration noise, and the targets were calibrated on the blind chains' late
+stages (noise ~0.3); the teacher explores at 0.5-0.7 while it learns the stairs, and under that noise its readings
+missed targets it met: the Go2 teacher at 6400, mean action / sampled action: creep 0.021 / 0.042 m (target 0.008),
+march 0.036 / 0.060 (0.04), straight drift 0.059 / 0.068 (0.06), clock 0.87 / 0.77 (0.85), stairs stop-feet 0.86 /
+0.49 (0.6). Four multipliers went to the 3x cap on readings no cost weight could bring down, and the policy paid for
+it (reward 28 -> -3, noise 0.48 -> 0.69, falls 8% -> 17%). Without the mask (any other runner) they read every robot.
 """
 
 from __future__ import annotations
 
 import math
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -35,6 +45,21 @@ if TYPE_CHECKING:
 
 # Mean riser height of the training stairs (m): converts metres climbed into step-ups for the stairs rates.
 RISER_M = 0.15
+# The evaluation robots' share of the environments (module docstring); U_EVAL_ENVS overrides the count, 0: none.
+EVAL_SHARE = 0.125
+
+
+def eval_count(num_envs: int) -> int:
+  """How many robots (the first ones) evaluate the mean action instead of training."""
+  v = os.environ.get("U_EVAL_ENVS")
+  n = int(v) if v not in (None, "") else int(num_envs * EVAL_SHARE)
+  return max(0, min(n, num_envs // 2))
+
+
+def on_eval(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
+  """`mask` over the evaluation robots only, when the run has them."""
+  ev = getattr(env, "u_eval_mask", None)
+  return mask if ev is None else mask & ev
 
 
 class meter:
@@ -52,16 +77,19 @@ class meter:
     self.climb = 0.0
     self.n = 0
     self.min_n = 1000
+    self.eval = False   # True: only the evaluation robots count (the teacher's runner sets it with env.u_eval_mask)
     env.u_meter = self
 
   def reset(self, env_ids=None) -> None:
     pass
 
   def state(self) -> dict:
-    return {"sums": dict(self.sums), "climb": self.climb, "n": self.n}
+    return {"sums": dict(self.sums), "climb": self.climb, "n": self.n, "eval": self.eval}
 
   def load(self, state: dict) -> None:
-    self.sums, self.climb, self.n = dict(state["sums"]), state["climb"], state["n"]
+    """A checkpoint's sums taken over the same robots (the evaluation robots or all of them); others start afresh."""
+    if bool(state.get("eval", False)) == self.eval:
+      self.sums, self.climb, self.n = dict(state["sums"]), state["climb"], state["n"]
 
   def rate(self, name: str) -> float | None:
     if self.n < self.min_n or self.climb < 1e-6 or name not in self.sums:
@@ -80,7 +108,7 @@ class meter:
   def __call__(self, env: ManagerBasedRlEnv, events: dict, climb_term: str = "foothold_height_gain",
                feet: int = 4, ema_steps: float = 20000.0, min_n: int = 1000) -> torch.Tensor:
     self.min_n = min_n
-    stairs = env.command_manager.get_term("twist").is_stair_env
+    stairs = on_eval(env, env.command_manager.get_term("twist").is_stair_env)
     decay = math.exp(-1.0 / ema_steps)
     climb = self._raw(env, climb_term)
     if climb is not None:
@@ -248,7 +276,7 @@ class heavy_log:
         pm = payload_mask(env, lo, hi)
         if pm is None:
           continue
-        mask = mask & pm
+        mask = on_eval(env, mask & pm)
         if not mask.any():
           continue
         v = value[mask]
@@ -271,6 +299,7 @@ def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", **params) -
     m = getattr(env, "u_meter", None)
     return None if m is None else m.rate(metric[5:])
   value, mask = (CUSTOM.get(metric) or METRICS[metric])(env, **params)
+  mask = on_eval(env, mask)
   if not mask.any():
     return None
   v = value[mask]
@@ -369,7 +398,8 @@ class constraints:
         short = max(-1.0, min(1.0, short))
         self.scale[name] = min(max(self.scale[name] + c["lr"] * short, c.get("min_scale", 0.5)), c["max_scale"])
     self._apply(env, items, p)
-    out = {"relaxing": torch.tensor(float(failing))}
+    ev = getattr(env, "u_eval_mask", None)
+    out = {"relaxing": torch.tensor(float(failing)), "eval_envs": torch.tensor(0.0 if ev is None else float(ev.sum()))}
     for c in items:
       name = c["name"]
       if name in self.value:

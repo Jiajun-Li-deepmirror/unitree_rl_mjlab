@@ -4,7 +4,10 @@ episodes fail. Builds the training env of TASK (e.g. Unitree-Go2W-U-Teacher), re
 does (policy, progress, constraints, terrain levels), runs the policy for S control steps with the training's
 curriculum and commands, and prints per sub-terrain: the share of robot-steps, episodes ended, falls (fell_over),
 illegal contacts and which bodies made them, the fail rate and the mean terrain level; plus the fail rate by payload
-(light / heavy) and by command (standing, straight, turning, sideways). Run with UNIFIED_TASKS=1 from the repo root."""
+(light / heavy) and by command (standing, straight, turning, sideways); then the constraints' measurements over the
+run beside the checkpoint's (the training's own reading). --sample acts with the training's exploration noise (the
+sampled action) instead of the policy's mean: the two runs show how much of a reading is the noise's. Run with
+UNIFIED_TASKS=1 from the repo root."""
 
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("UNIFIED_TASKS", "1")
 os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ["U_EVAL_ENVS"] = "0"   # every robot acts alike here (--sample or not) and all of them are measured
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -39,6 +43,7 @@ def main() -> int:
   ap.add_argument("checkpoint")
   ap.add_argument("--num-envs", type=int, default=512)
   ap.add_argument("--steps", type=int, default=1500)
+  ap.add_argument("--sample", action="store_true", help="act with the exploration noise, as the training does")
   a = ap.parse_args()
 
   from mjlab.envs import ManagerBasedRlEnv
@@ -84,6 +89,11 @@ def main() -> int:
   runner = load_runner_cls(a.task)(venv, asdict(agent), log_dir=None, device="cuda:0")
   runner.load(a.checkpoint, map_location="cuda:0")
   policy = runner.get_inference_policy(device="cuda:0")
+  if a.sample:
+    actor = runner.alg.actor
+    policy = lambda o: actor(o, stochastic_output=True)   # noqa: E731
+  cons = getattr(env, "u_constraints", None)
+  trained = dict(cons.value) if cons is not None else {}   # the checkpoint's measurements (the training's reading)
   cols = column_names(env)
   from src.tasks.velocity.blind_env_cfg import MAP3_STAIR_TERRAIN_NAMES
   stairs_col = [c in MAP3_STAIR_TERRAIN_NAMES for c in cols]
@@ -150,7 +160,7 @@ def main() -> int:
         pay_fail[heavy, where] += 1
         cmd_fail[cmd_class(cmd[i])] += 1
   tot = sum(steps_on.values())
-  print(f"{a.task} {a.checkpoint}: {a.num_envs} robots x {a.steps} steps, progress {getattr(env, 'u_progress', 0.0):.3f}, "
+  print(f"{a.task} {a.checkpoint}: {a.num_envs} robots x {a.steps} steps, {'sampled' if a.sample else 'mean'} actions, progress {getattr(env, 'u_progress', 0.0):.3f}, "
         f"stairs share {float(twist.is_stair_env.float().mean()):.2f}")
   print(f"{'sub-terrain':22s} {'steps%':>7s} {'ended':>6s} {'fails':>6s} {'fail%':>6s} {'fell':>5s} {'illegal':>7s} {'level':>6s}")
   for c in sorted(steps_on, key=lambda c: -fails[c]):
@@ -170,6 +180,16 @@ def main() -> int:
                                                    f"({pay_end[k, w]})" for k in ("light", "mid", "heavy")))
   print("fail% by command: " + ", ".join(f"{k} {100 * cmd_fail[k] / max(cmd_end[k], 1):.1f} ({cmd_end[k]})"
                                          for k in ("stand", "straight", "turning", "sideways")))
+  if cons is not None and cons.value:
+    cur = env.curriculum_manager.get_term_cfg("u_constraints").params["items"]
+    p = getattr(env, "u_progress", 0.0)
+    print(f"constraints ({'sampled' if a.sample else 'mean'} actions here; the checkpoint's reading is the training's):")
+    print(f"  {'name':16s} {'here':>8s} {'training':>9s} {'target':>8s} {'sense':>5s} {'scale':>6s}")
+    for c in cur:
+      n = c["name"]
+      if n in cons.value:
+        print(f"  {n:16s} {cons.value[n]:8.4f} {trained.get(n, float('nan')):9.4f} {cons.target(c, p):8.4f} "
+              f"{c['sense']:>5s} {cons.scale.get(n, 1.0):6.2f}")
   env.close()
   return 0
 

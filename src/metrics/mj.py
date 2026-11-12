@@ -112,6 +112,9 @@ class StairsMeter:
     self.last_len = None
     self.prev = {}
     self.sums: dict[str, float] = {}
+    # True when only the env's evaluation robots count (env.u_eval_mask; the teacher's runner sets both): a
+    # checkpoint's counts taken over every robot, exploration noise included, are not carried on then
+    self.eval = False
 
   def _state(self, env):
     ids = self.ids
@@ -129,7 +132,11 @@ class StairsMeter:
     h_here = self.grid.h_v(base)
     h_ahead = self.grid.h_v(base + 0.5 * heading)
     up = np.nan_to_num(h_ahead, nan=-np.inf) > np.nan_to_num(h_here, nan=np.inf) + JUMP
-    on_stairs = env.command_manager.get_term("twist").is_stair_env[ids].cpu().numpy()
+    on_stairs = env.command_manager.get_term("twist").is_stair_env[ids]
+    ev = getattr(env, "u_eval_mask", None)   # the teacher's evaluation robots (tasks/unified/constraints.py): only they count
+    if ev is not None:
+      on_stairs = on_stairs & ev[ids]
+    on_stairs = on_stairs.cpu().numpy()
     if self.straight:
       c = env.command_manager.get_command("twist")[ids]
       on_stairs = on_stairs & ((c[:, 0].abs() >= 0.25) & (c[:, 1].abs() <= 0.15) & (c[:, 2].abs() <= 0.3)).cpu().numpy()
@@ -195,9 +202,10 @@ class StairsMeter:
             "edge": s.get("edge", 0.0) / placed if placed else None}.get(name)
 
   def state(self) -> dict:
-    return {"sums": dict(self.sums), "straight": self.straight}
+    return {"sums": dict(self.sums), "straight": self.straight, "eval": self.eval}
 
   def load(self, state: dict) -> None:
-    """The counts of a checkpoint taken with the same counting (straight or not); others start afresh."""
-    if bool(state.get("straight", False)) == self.straight:
+    """The counts of a checkpoint taken with the same counting (straight or not, the evaluation robots or every
+    robot); others start afresh."""
+    if bool(state.get("straight", False)) == self.straight and bool(state.get("eval", False)) == self.eval:
       self.sums = dict(state.get("sums", {}))

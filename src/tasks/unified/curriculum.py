@@ -153,8 +153,14 @@ class progress:
     # the gated clock: the resets now, how many ended in a fall or illegal contact (not a time-out)
     if env_ids is not None and len(env_ids) > 0:
       tm = env.termination_manager
-      failed = float((tm.terminated[env_ids] & ~tm.time_outs[env_ids]).float().mean())
+      bad = tm.terminated[env_ids] & ~tm.time_outs[env_ids]
+      failed = float(bad.float().mean())
       self.fail = failed if self.fail is None else self.fail + 0.01 * (failed - self.fail)
+      # the same over the evaluation robots (constraints.py: the mean action, no exploration noise); logged only
+      ev = getattr(env, "u_eval_mask", None)
+      if ev is not None and bool(ev[env_ids].any()):
+        f = float(bad[ev[env_ids]].float().mean())
+        self.fail_eval = f if getattr(self, "fail_eval", None) is None else self.fail_eval + 0.05 * (f - self.fail_eval)
     if self.clock is None or self.last_step is None:
       self.clock = float(step)
     else:
@@ -177,8 +183,11 @@ class progress:
     if fixed_p is not None:   # the students (2026-11-12): the teacher's final curriculum, all the way
       self.p = float(fixed_p)
     env.u_progress = self.p
-    return {"p": torch.tensor(self.p), "level": torch.tensor(mean), "p_time": torch.tensor(p_time),
-            "fail_rate": torch.tensor(self.fail or 0.0)}
+    out = {"p": torch.tensor(self.p), "level": torch.tensor(mean), "p_time": torch.tensor(p_time),
+           "fail_rate": torch.tensor(self.fail or 0.0)}
+    if getattr(self, "fail_eval", None) is not None:
+      out["fail_rate_eval"] = torch.tensor(self.fail_eval)
+    return out
 
 
 def progress_stairs_share(
