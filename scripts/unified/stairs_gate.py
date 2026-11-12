@@ -20,11 +20,13 @@ Judged, in each scan mode (the students' bars unless said):
 falls only (traverse + stop <= N); its speed, four feet and counts reported.
 --typ: also PREFIX_typ_on.txt / PREFIX_typ_off.txt (both scan modes with the typical payload, jobs/accept_payload.sh R
 typical), judged as the students' typical condition judges its stairs (accept_judge.typical()) at the teacher's
-tolerances: falls <= FALLS_MAX, stop ok, four feet and the counts as unloaded, and the flight speed at least
-accept_judge.STAIRS_SPEED_REL of the same mode's unloaded reading in every band and direction. Why (11-13): Go2 s38
+tolerances: falls <= FALLS_MAX, stop ok, four feet and the counts as unloaded, the flight speed at least
+accept_judge.STAIRS_SPEED_REL of the same mode's unloaded reading in every band and direction, and at most
+accept_judge.TYPICAL_STALL_MAX % stalled in every band and direction (11-13: Go2W s33 4997 stalled 40% at 15-18 cm up
+with 4 kg, which the speed -- read on the robots that got past -- let through). Why (11-13): Go2 s38
 6097 fell 43 / 27 and Go2W s28 4997 (every unloaded stairs item passed) 11 / 24 at the typical 4 kg, 10-36% on the
 15-18 cm climbs; the students' acceptance takes no fall there, so such a teacher's students fail 7000 iterations later.
-Reported only: the stalled share, the heading on the flight.
+Reported only: the unloaded runs' stalled share, the heading on the flight.
 First line: "PASS ...", "FAIL (gap G): <reasons>" (G: the summed relative shortfall, for picking the best judged at the
 cap) or "FAULT: <what could not be read>". Exit 0 / 1 / 4.
 """
@@ -175,6 +177,15 @@ def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) 
         detail.append(f"{tag}: speed (typical / unloaded, m/s) " + " ".join(
           f"{k[0]} {k[1]} {st_.get(k, float('nan')):.2f}/{b:.2f}" for k, b in su.items()))
       gap += mode_checks(r, path, t, tag, bars, bad, missing, detail)
+      ss = aj.stairs_stalled(path)
+      if not ss:
+        missing.append(f"{tag}: no stalled line")
+      else:
+        over = [(b, d, v) for (b, d), v in ss.items() if v > aj.TYPICAL_STALL_MAX]
+        if over:
+          bad.append(f"{tag} 停住超过 {aj.TYPICAL_STALL_MAX:g}%：" + "、".join(f"{b} {'上' if d == 'up' else '下'} {v:g}%"
+                                                                     for b, d, v in over))
+          gap += sum((v - aj.TYPICAL_STALL_MAX) / 100.0 for _b, _d, v in over)
       lr = aj.stairs_reach(path)
       if lr:
         detail.append(f"{tag} per band (reported): {lr}")

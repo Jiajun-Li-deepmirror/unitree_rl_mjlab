@@ -127,9 +127,24 @@ def stairs_reach(path: str) -> str | None:
   rows = re.findall(r"^\s*(\d+-\d+cm)\s+(up|down) \|\s+(\d+)%\s+(\d+)%", t, re.M)
   if not rows:
     return None
-  st = dict(((b, d), v) for b, d, v in re.findall(r"(\d+-\d+cm) (up|down) (\d+)%", (re.search(r"^stalled on the traverse.*$", t, re.M) or re.match("", "")).group(0)))
-  return "，".join(f"{b} {'上' if d == 'up' else '下'} 到达 {ok}% 停住 {st.get((b, d), '-')}{'%' if (b, d) in st else ''} 摔 {fl}%"
+  st = stairs_stalled(path) or {}
+  return "，".join(f"{b} {'上' if d == 'up' else '下'} 到达 {ok}% 停住 {f'{st[(b, d)]:g}%' if (b, d) in st else '-'} 摔 {fl}%"
                   for b, d, ok, fl in rows)
+
+
+def stairs_stalled(path: str) -> dict[tuple[str, str], float] | None:
+  """eval_stairs' "stalled on the traverse" line per (band, direction): % of that band-direction's robots that neither
+  fell nor got past the last step in time; None without the line."""
+  m = re.search(r"^stalled on the traverse.*$", txt(path), re.M)
+  if m is None:
+    return None
+  return {(b, d): float(v) for b, d, v in re.findall(r"(\d+-\d+cm) (up|down) ([\d.]+)%", m.group(0))}
+
+
+# The typical payload's stairs: at most this % of a band-direction's robots stalled (go2-depth 11-13: "常用负载每项按空载
+# 门槛" for the reach -- the unloaded stop ok's 95%; typical() read only the flight speed of the robots that got past, so a
+# 40% stall at 15-18 cm up (Go2W s33 4997) passed). Also the teacher gate's --typ (scripts/unified/stairs_gate.py).
+TYPICAL_STALL_MAX = 5.0
 
 
 HEADING_WARN_DEG = 3.0   # tinynav's stairs heading bar (judged there, tier 3); tier 2 only warns
@@ -193,8 +208,9 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
   """The typical payload (doc/redesign.md 2.2, 2026-11-12): the loaded condition's tests (wheeled: also the wheels
   down) with the typical payload, every item at the unloaded bar, and no fall in any of them. Not run: the 44 flat
   commands, the gait clock and the map3 flights, so map3's stairs reach is not judged here; the stairs items are
-  eval_stairs' own: stop ok, all feet down when stopped, the counts, no fall, and the speed on the flight at least
-  STAIRS_SPEED_REL of the same test's unloaded reading in every band and direction."""
+  eval_stairs' own: stop ok, all feet down when stopped, the counts, no fall, the speed on the flight at least
+  STAIRS_SPEED_REL of the same test's unloaded reading in every band and direction, and at most TYPICAL_STALL_MAX %
+  stalled in every band and direction (11-13)."""
   p = {k: f"{prefix}_{k}_typ.txt" for k in at.KINDS}
   cells = at.goal_cells(r, 1, "", p, [])
   bad, detail = [], []
@@ -247,6 +263,15 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
       f"{k[0]} {'上' if k[1] == 'up' else '下'} {st_.get(k, float('nan')):.2f}/{v:.2f}" for k, v in su.items()))
     if slow:
       bad.append(f"常用负载 楼梯速度低于空载的 {STAIRS_SPEED_REL:.0%}：" + "、".join(slow))
+  # stairs reach: the stalled share per band and direction (the speed above reads only the robots that got past)
+  ss = stairs_stalled(p["stairs"])
+  if not ss:
+    bad.append("常用负载 楼梯停住：未测")
+  else:
+    detail.append("常用负载 楼梯每档停住：" + "，".join(f"{b} {'上' if d == 'up' else '下'} {v:g}%" for (b, d), v in ss.items()))
+    over = [f"{b} {'上' if d == 'up' else '下'} {v:g}%" for (b, d), v in ss.items() if v > TYPICAL_STALL_MAX]
+    if over:
+      bad.append(f"常用负载 楼梯停住超过 {TYPICAL_STALL_MAX:g}%：" + "、".join(over))
   line, why = stairs_count_verdict(stairs_metrics(p["stairs"]), wheeled, "常用负载 ")
   detail.append(line)
   if why:
