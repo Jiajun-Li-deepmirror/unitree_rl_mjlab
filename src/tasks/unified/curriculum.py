@@ -525,15 +525,31 @@ def progress_commands(
   initial: dict,
   final: dict,
   p_switch: float = 0.25,
+  lateral_ramp: tuple[float, float, float] | None = None,
 ) -> dict[str, torch.Tensor]:
   """The command ranges: `initial` until env.u_progress reaches p_switch, `final` from then on (both
-  {"lin_vel_x": (lo, hi), "lin_vel_y": ..., "ang_vel_z": ...}, as mdp.commands_vel's stages)."""
+  {"lin_vel_x": (lo, hi), "lin_vel_y": ..., "ang_vel_z": ...}, as mdp.commands_vel's stages).
+
+  lateral_ramp (start, p_from, p_to), off by default: before p_switch the lateral range is the initial one scaled so
+  that its half-width is `start` m/s until p_from and the initial one from p_to on (2026-11-12, the from-zero Go2W
+  teacher: at 300-1000 it 47-56% of its episodes on the other ground failed, 86% of those under a sideways command
+  -- a wheeled robot has to step for |vy| above 0.1 m/s, and three quarters of the +-0.4 m/s range ask for that from
+  the first iteration, before it can drive)."""
   del env_ids
   ranges = env.command_manager.get_term(command_name).cfg.ranges
-  stage = final if getattr(env, "u_progress", 0.0) >= p_switch else initial
+  p = getattr(env, "u_progress", 0.0)
+  stage = final if p >= p_switch else initial
   for key, value in stage.items():
     setattr(ranges, key, tuple(value))
-  return {"final": torch.tensor(float(stage is final)), "vx_max": torch.tensor(float(ranges.lin_vel_x[1]))}
+  if lateral_ramp is not None and stage is initial and initial.get("lin_vel_y") is not None:
+    start, p_from, p_to = lateral_ramp
+    lo, hi = initial["lin_vel_y"]
+    full = max(abs(lo), abs(hi))
+    if full > start:
+      k = (start + (full - start) * ramp(p, p_from, p_to)) / full
+      ranges.lin_vel_y = (lo * k, hi * k)
+  return {"final": torch.tensor(float(stage is final)), "vx_max": torch.tensor(float(ranges.lin_vel_x[1])),
+          "vy_max": torch.tensor(float(ranges.lin_vel_y[1]))}
 
 
 def progress_payload(

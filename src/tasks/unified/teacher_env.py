@@ -427,6 +427,13 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
         "initial": {k: first[k] for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z") if first.get(k) is not None},
         "final": {k: last[k] for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z") if last.get(k) is not None},
       })
+      # U_LAT_RAMP="start,p_from,p_to": the lateral range grows with the progress (curriculum.progress_commands); a
+      # test arm's switch until a comparison decides it (unset: the ranges as before; the run's records list it)
+      if os.environ.get("U_LAT_RAMP"):
+        lat = tuple(float(s) for s in os.environ["U_LAT_RAMP"].split(","))
+        if len(lat) != 3:
+          raise ValueError(f"U_LAT_RAMP: 3 values (start,p_from,p_to), got {len(lat)}")
+        new["u_commands"].params["lateral_ramp"] = lat
     elif name == "stairs_share":
       new["u_stairs_share"] = CurriculumTermCfg(func=ucur.progress_stairs_share, params={
         "stair_terrain_names": MAP3_STAIR_TERRAIN_NAMES, "start": TEACHER_STAIRS_SHARE, "end": final_share,
