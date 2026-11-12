@@ -682,6 +682,8 @@ def progress_payload(
   del env_ids
   env.u_payload_full = full_max   # the robot's payload limit: the light / heavy shares (constraints.payload_mask)
   q = getattr(env, "u_quality", 0.0)
+  if os.environ.get("U_PAYLOAD_Q") == "0":   # a probe's switch (teacher_env._probe_switches): half the limit, no more
+    q = 0.0
   limit = full_max * min(ramp(getattr(env, "u_progress", 0.0), 0.0, p_full), 0.5 + 0.5 * q)
   env.event_manager.get_term_cfg(event_name).params["heavy_max"] = limit
   return {"heavy_max": torch.tensor(limit)}

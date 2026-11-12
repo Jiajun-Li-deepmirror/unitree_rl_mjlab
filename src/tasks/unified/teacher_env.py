@@ -519,6 +519,25 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   cfg.curriculum = new
 
 
+def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
+  """Switches for the probes (2026-11-12: the Go2W teachers' returns went from +28 to -29 within 400 iterations of the
+  stairs quality stage -- the slide and idle multipliers at 2.7 and 1.6, the episodes ended by an illegal contact
+  0.26 -> 0.93 -- and each probe asks about one cause). All off unless set; a run's records list every U_* variable
+  (diagnostics.py):
+    U_Q_SCALE_MAX=<x>    the stairs-quality constraints' multipliers stay at or below x (1: the recipe's P weights);
+    U_TERMINATED_X=<k>   an episode ended by a fall or an illegal contact costs k times as much (is_terminated);
+    U_PAYLOAD_Q=0        the payload limit does not follow the stairs quality (curriculum.progress_payload)."""
+  v = os.environ.get("U_Q_SCALE_MAX")
+  if v:
+    for c in items:
+      if c["by"] == "q":
+        c["max_scale"] = max(c["min_scale"], min(c["max_scale"], float(v)))
+        c["start_scale"] = min(c["start_scale"], c["max_scale"])
+  v = os.environ.get("U_TERMINATED_X")
+  if v:
+    cfg.rewards["is_terminated"].weight *= float(v)
+
+
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
   """The checks' payload (2026-11-12, doc/redesign.md 2.1): a fixed point mass from U_PAYLOAD ("kg,x,y,z", default
   0 kg -- the unloaded condition; the acceptance sets the walking payload for the loaded one) instead of the training
@@ -568,6 +587,7 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
         if c["by"] == "q":
           c["start"] = {t: start[t] for t in c["terms"]}
           c["base"] = {t: cfg.rewards[t].weight for t in c["terms"]}
+      _probe_switches(cfg, items)
       _curriculum(cfg, robot, items, constrained, other if lean else [], (weights, params), other_shares)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
