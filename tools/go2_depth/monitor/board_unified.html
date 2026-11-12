@@ -1,0 +1,352 @@
+<meta name="dash-one-writer">
+<style>
+  .bt { font-family: var(--font-anthropic-sans); color: var(--color-fg); display: flex; flex-direction: column; gap: var(--cds-gap-lg); }
+  .bt-title { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; }
+  .bt-lead { margin: 0; font-size: var(--cds-font-size-body); line-height: 1.6; }
+  .bt-lead b { font-variant-numeric: tabular-nums; }
+  .bt-sub { margin: 0; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); line-height: 1.6; }
+  .bt-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--cds-gap-md); }
+  .bt-tile { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); }
+  .bt-tile-label { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+  .bt-tile-num { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); font-variant-numeric: tabular-nums; }
+  .bt-tile-num.bt-warn { color: var(--color-warn); }
+  .bt-tile-num.bt-bad { color: var(--color-bad); }
+  .bt-h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0; }
+  .bt-scroll { overflow-x: auto; }
+  .bt-table { border-collapse: collapse; width: 100%; font-size: var(--cds-font-size-caption); }
+  .bt-table th { text-align: left; color: var(--color-fg-muted); font-weight: var(--cds-font-weight-medium); padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+  .bt-table td { padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); vertical-align: top; }
+  .bt-table td.bt-num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .bt-table td.bt-nowrap { white-space: nowrap; }
+  .bt-table td.bt-wide { min-width: 220px; }
+  .bt-chip { display: inline-block; padding: 0 var(--cds-pad-sm); border-radius: 999px; border: 1px solid var(--color-border-line); white-space: nowrap; }
+  .bt-chip.ok { color: var(--color-ok); border-color: var(--color-ok); }
+  .bt-chip.warn { color: var(--color-warn); border-color: var(--color-warn); }
+  .bt-chip.bad { color: var(--color-bad); border-color: var(--color-bad); }
+  .bt-alarm { color: var(--color-warn); }
+  .bt-notes { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); line-height: 1.6; }
+  .bt-notes ul { margin: var(--cds-pad-xs) 0 0; padding-left: 1.2em; }
+  .bt-legend { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs) var(--cds-gap-lg); font-size: var(--cds-font-size-caption); min-height: 1.4em; }
+  .bt-key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .bt-sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+  .bt-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: var(--cds-gap-lg); }
+  .bt-fig { margin: 0; min-width: 0; }
+  .bt-fig figcaption { font-size: var(--cds-font-size-caption); font-weight: var(--cds-font-weight-medium); margin-bottom: var(--cds-pad-xs); }
+  .bt-chart { position: relative; min-height: 200px; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+  .bt-chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .bt-chart text { font-family: var(--font-anthropic-sans); font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; }
+  .bt-tick, .bt-ref { fill: var(--cds-text-secondary); }
+  .bt-end { fill: var(--color-fg); }
+  .bt-grid { stroke: var(--cds-chart-grid); stroke-width: 1; }
+  .bt-axis, .bt-cross { stroke: var(--cds-chart-axis); stroke-width: 1; }
+  .bt-refmark { fill: var(--cds-chart-reference); }
+  .bt-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .bt-dot { stroke: var(--color-bg); stroke-width: 2; }
+  .bt-tip { position: absolute; top: 4px; pointer-events: none; z-index: 2; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); box-shadow: var(--cds-shadow-popover); border-radius: var(--cds-radius); padding: var(--cds-pad-xs) var(--cds-pad-sm); color: var(--color-fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .bt-tip-h { color: var(--cds-text-secondary); }
+  .bt-tip-r { display: flex; align-items: center; gap: 6px; }
+  .bt-tip-v { margin-left: auto; padding-left: var(--cds-pad-sm); font-weight: var(--cds-font-weight-medium); }
+  [data-dash-source-state=refreshing] { opacity: .5; }
+</style>
+<div class="bt">
+  <h1 class="bt-title" id="title">统一流程训练进度 · Go2 / Go2W</h1>
+  <p class="bt-lead" id="lead">正式训练在跑 <b data-draw="c-training" data-source="counts" data-field="training" data-row="0">—</b> 个；老师已通过的机型 <b data-draw="c-teachers" data-source="counts" data-field="teachers" data-row="0">—</b> 个，已通过验收的学生 <b data-draw="c-students" data-source="counts" data-field="students" data-row="0">—</b> 个；正式运行的告警 <b data-draw="c-alerts" data-source="counts" data-field="alerts" data-row="0">—</b> 个，迟到的时间点 <b data-draw="c-late" data-source="counts" data-field="late" data-row="0">—</b> 个，卡住、中断或记录故障 <b data-draw="c-bad" data-source="counts" data-field="bad" data-row="0">—</b> 个。</p>
+  <p class="bt-sub" id="updated">数据更新于 <span data-draw="updated">—</span>（北京时间），大约每 30 分钟更新一次。只记录 11-12 16:15 从零开训之后的统一流程：每个机型先训练一个带特权信息的老师，老师通过后训练盲走、深度两个学生，学生通过三层验收后交付。t1 训练 Go2，t2 训练 Go2W。</p>
+  <div class="bt-tiles" id="tiles">
+    <div class="bt-tile" id="tile-training"><div class="bt-tile-label">正式训练在跑</div><div class="bt-tile-num" data-draw="t-training" data-source="counts" data-field="training" data-row="0">—</div></div>
+    <div class="bt-tile" id="tile-teachers"><div class="bt-tile-label">老师已通过（机型）</div><div class="bt-tile-num" data-draw="t-teachers" data-source="counts" data-field="teachers" data-row="0">—</div></div>
+    <div class="bt-tile" id="tile-students"><div class="bt-tile-label">学生已通过验收</div><div class="bt-tile-num" data-draw="t-students" data-source="counts" data-field="students" data-row="0">—</div></div>
+    <div class="bt-tile" id="tile-alerts"><div class="bt-tile-label">告警（正式运行）</div><div class="bt-tile-num" data-draw="t-alerts" data-source="counts" data-field="alerts" data-row="0">—</div></div>
+    <div class="bt-tile" id="tile-late"><div class="bt-tile-label">迟到的时间点</div><div class="bt-tile-num" data-draw="t-late" data-source="counts" data-field="late" data-row="0">—</div></div>
+    <div class="bt-tile" id="tile-bad"><div class="bt-tile-label">卡住 / 中断 / 故障</div><div class="bt-tile-num" data-draw="t-bad" data-source="counts" data-field="bad" data-row="0">—</div></div>
+  </div>
+  <h2 class="bt-h2" id="robots-h">各机型的流程</h2>
+  <div class="bt-scroll" id="robots-wrap">
+    <table class="bt-table" id="robots" data-source="robots" data-row-key="robot">
+      <thead><tr><th data-field="robot">机型</th><th data-field="machine">机器</th><th data-field="teacher">老师</th><th data-field="blind">盲走学生</th><th data-field="depth">深度学生</th><th data-field="accept">验收</th><th data-field="delivery">交付</th><th data-field="gpu">GPU</th></tr></thead>
+      <tbody data-draw="robots"></tbody>
+    </table>
+  </div>
+  <h2 class="bt-h2" id="runs-h">训练运行</h2>
+  <p class="bt-sub" id="runs-sub">失败率都是回合失败的比例。「低三行」和「全部行」是评估机器人（不加探索噪声、固定在各难度行上）的上楼、下楼失败率，反映真实水平；「全部回合」是训练机器人的。</p>
+  <div class="bt-scroll" id="runs-wrap">
+    <table class="bt-table" id="runs" data-source="runs" data-row-key="key">
+      <thead><tr><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="status">状态</th><th data-field="iter">步数</th><th data-field="max">上限</th><th data-field="p">进度 p</th><th data-field="q">质量 q</th><th data-field="up">上楼行</th><th data-field="low_fail">低三行上楼失败</th><th data-field="up_fail">全部行上楼失败</th><th data-field="down_fail">全部行下楼失败</th><th data-field="fail">全部回合失败</th><th data-field="std">动作噪声</th><th data-field="speed">速度（步/时）</th><th data-field="n_alerts">告警数</th></tr></thead>
+      <tbody data-draw="runs"></tbody>
+    </table>
+  </div>
+  <div class="bt-scroll" id="ahead-wrap">
+    <table class="bt-table" id="ahead" data-source="runs" data-row-key="key">
+      <thead><tr><th data-field="robot">机型</th><th data-field="machine">机器</th><th data-field="run">运行</th><th data-field="next">下一个时间点</th><th data-field="cap_eta">按现在速度到上限</th><th data-field="gate">通过条件</th><th data-field="at">记录时间</th></tr></thead>
+      <tbody data-draw="ahead"></tbody>
+    </table>
+  </div>
+  <h2 class="bt-h2" id="alerts-h">当前告警</h2>
+  <p class="bt-sub" id="alerts-sub">训练记录自己发出的告警，解除后从这里消失（最近事件里留有记录）。探针的告警只作参考，不计入上面的数字。</p>
+  <div class="bt-scroll" id="alerts-wrap">
+    <table class="bt-table" id="alerts" data-source="alerts" data-row-key="key">
+      <thead><tr><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="counted">计入</th><th data-field="name">告警</th><th data-field="text">内容</th><th data-field="since">从第几步起</th><th data-field="at">最近一次时间</th></tr></thead>
+      <tbody data-draw="alerts"></tbody>
+    </table>
+  </div>
+  <h2 class="bt-h2" id="curves-h">训练曲线和参考进度</h2>
+  <p class="bt-sub" id="curves-sub">横轴是迭代步数，画到前面最近的一个参考时间点为止；每条线是一个正式的老师训练（探针不画）。菱形是参考进度：到那一步应该达到的值，线从菱形的达标一侧经过就算跟上。失败率从第 50 步起画，之前结束的回合太少。</p>
+  <div class="bt-legend" id="legend" data-draw="legend" data-source="curves">—</div>
+  <div class="bt-charts" id="charts">
+    <figure class="bt-fig" id="fig-p"><figcaption>进度 p</figcaption><div class="bt-chart" data-draw="chart-p" data-source="curves">—</div></figure>
+    <figure class="bt-fig" id="fig-q"><figcaption>楼梯质量 q</figcaption><div class="bt-chart" data-draw="chart-q" data-source="curves">—</div></figure>
+    <figure class="bt-fig" id="fig-up"><figcaption>上楼行（训练机器人平均爬到的难度行）</figcaption><div class="bt-chart" data-draw="chart-up" data-source="curves">—</div></figure>
+    <figure class="bt-fig" id="fig-flat"><figcaption>平地等地面的回合失败率</figcaption><div class="bt-chart" data-draw="chart-flat" data-source="curves">—</div></figure>
+    <figure class="bt-fig" id="fig-low"><figcaption>低三行台阶的上楼失败率（评估机器人）</figcaption><div class="bt-chart" data-draw="chart-low" data-source="curves">—</div></figure>
+    <figure class="bt-fig" id="fig-upfail"><figcaption>全部难度行的上楼失败率（评估机器人）</figcaption><div class="bt-chart" data-draw="chart-upfail" data-source="curves">—</div></figure>
+  </div>
+  <h2 class="bt-h2" id="miles-h">参考进度的时间点</h2>
+  <p class="bt-sub" id="miles-sub">每个时间点有一个期限步数；到了期限还没达到就是「迟到」，会告警并排查。「到期限的时间」按最近半小时的训练速度推算。</p>
+  <div class="bt-scroll" id="miles-wrap">
+    <table class="bt-table" id="miles" data-source="milestones" data-row-key="key">
+      <thead><tr><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="name">时间点</th><th data-field="by">期限（步）</th><th data-field="due">到期限的时间</th><th data-field="state">状态</th><th data-field="reached_it">达到于（步）</th><th data-field="reached_at">达到时间</th><th data-field="now">现在的读数</th></tr></thead>
+      <tbody data-draw="miles"></tbody>
+    </table>
+  </div>
+  <h2 class="bt-h2" id="events-h">最近事件</h2>
+  <div class="bt-scroll" id="events-wrap">
+    <table class="bt-table" id="events" data-source="events" data-row-key="id">
+      <thead><tr><th data-field="at">时间</th><th data-field="machine">机器</th><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="text">事件</th></tr></thead>
+      <tbody data-draw="events"></tbody>
+    </table>
+  </div>
+  <details class="bt-notes" id="notes">
+    <summary>名词说明</summary>
+    <ul>
+      <li>老师：训练时能看到真实地形和机器人状态的策略，先训练它。学生：只用真机上有的信息（盲走只用本体感觉，深度再加深度相机），跟老师学；交付的是学生。</li>
+      <li>进度 p：课程进度，从 0 到 1。指令范围、地形难度和负载随它放开；失败的回合太多时它走得慢。</li>
+      <li>楼梯质量 q：楼梯质量阶段的进度，从 0 到 1。上楼行够高、上楼失败率降下来之后才开始走；随它收紧落脚位置、踢台阶、滑动、停下时四脚着地等要求。</li>
+      <li>上楼行：上楼地形按难度分行，数字越大台阶越高；课程把机器人往上提，直到它失败。</li>
+      <li>通过条件：p 和 q 都到 1，并且全部约束连续达标一段步数，老师就通过，学生自动开始。到步数上限还没通过就停下分析。</li>
+      <li>探针：把旧检查点接到新代码上只跑楼梯质量阶段，提前看这一段有没有问题；不参与选定和交付。</li>
+      <li>时间点里的楼梯项只从「平地会走」之后算：刚开始时上楼行是起始值，不是爬上去的。</li>
+      <li>验收三层：训练中的指标、mjlab 里合并统计的测试、tinynav 仿真；空载和负载都测，负载不允许摔倒。</li>
+    </ul>
+  </details>
+</div>
+<script>
+  const RUN_STATUS = { training: ['训练中', 'ok'], stalled: ['卡住', 'bad'], dead: ['进程不在', 'bad'], ended: ['跑完', ''], stopped: ['已停', ''], crashed: ['异常退出', 'bad'] };
+  const MILE_STATE = { reached: ['已达到', 'ok'], open: ['未到', ''], late: ['迟到', 'bad'] };
+  const ok = (d) => d.status === 'ok' && Array.isArray(d.data);
+  const list = (key) => ({ answer }) => answer[key];
+  dash.loader('robots', { description: '取出文件里的 robots 列表：每个机型一行，流程走到哪一步。', fn: list('robots') });
+  dash.loader('runs', { description: '取出文件里的 runs 列表：每个训练运行一行。', fn: list('runs') });
+  dash.loader('milestones', { description: '取出文件里的 milestones 列表：每个正式老师训练的参考进度时间点。', fn: list('milestones') });
+  dash.loader('curves', { description: '取出文件里的 curves 列表：每个正式老师训练随步数的曲线点。', fn: list('curves') });
+  dash.loader('alerts', { description: '取出文件里的 alerts 列表：现在还没解除的告警，每个一行。', fn: list('alerts') });
+  dash.loader('events', { description: '取出文件里的 events 列表：训练记录和流程日志里的事件，新的在前。', fn: list('events') });
+  dash.calc('counts', {
+    title: '计数',
+    description: '把各机型那一行里的计数加起来；探针只做诊断，不计入。',
+    inputs: ['robots'],
+    fn: (robots) => {
+      const sum = (k) => robots.reduce((n, r) => n + (Number(r[k]) || 0), 0);
+      return [{ training: sum('n_training'), teachers: sum('teacher_ok'), students: sum('students_ok'), alerts: sum('n_alerts'), late: sum('n_late'), bad: sum('n_bad') }];
+    },
+  });
+  for (const k of ['training', 'teachers', 'students', 'alerts', 'late', 'bad']) {
+    for (const pre of ['c-', 't-']) {
+      dash.draw(pre + k, (el) => {
+        const c = dash.data('counts');
+        if (!ok(c) || !c.data.length) { el.textContent = '—'; return; }
+        const v = c.data[0][k];
+        el.textContent = String(v);
+        if (pre === 't-') {
+          el.classList.toggle('bt-warn', k === 'alerts' && v > 0);
+          el.classList.toggle('bt-bad', (k === 'late' || k === 'bad') && v > 0);
+        }
+      });
+    }
+  }
+  dash.draw('updated', (el) => {
+    const d = dash.data('robots');
+    if (!ok(d) || !d.data.length || !d.data[0].updated) { el.textContent = '—'; return; }
+    const t = new Date(d.data[0].updated);
+    el.textContent = isNaN(t) ? String(d.data[0].updated) : t.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+  });
+
+  // ---- tables ----
+  const td = (tr, text, cls) => { const c = document.createElement('td'); c.textContent = text == null ? '' : String(text); if (cls) c.className = cls; tr.appendChild(c); return c; };
+  const chip = (tr, pair) => { const c = td(tr, ''); const s = document.createElement('span'); s.className = 'bt-chip ' + pair[1]; s.textContent = pair[0]; c.appendChild(s); return c; };
+  const pct = (v) => (typeof v === 'number' ? Math.round(v * 100) + '%' : '');
+  const num = (v, n) => (typeof v === 'number' ? v.toFixed(n) : '');
+  const table = (name, source, cols, empty, row) => dash.draw(name, (tb) => {
+    const d = dash.data(source);
+    tb.replaceChildren();
+    const one = (text) => { const tr = document.createElement('tr'); td(tr, text).colSpan = cols; tb.appendChild(tr); };
+    if (!ok(d)) { one(d.status === 'error' ? '加载失败' : '—'); return; }
+    if (!d.data.length) { one(empty); return; }
+    for (const r of d.data) { const tr = document.createElement('tr'); row(tr, r); tb.appendChild(tr); }
+  });
+  table('robots', 'robots', 8, '还没有机型', (tr, r) => {
+    tr.dataset.key = encodeURIComponent(r.robot);
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.machine, 'bt-nowrap'); td(tr, r.teacher, 'bt-wide'); td(tr, r.blind); td(tr, r.depth);
+    td(tr, r.accept); td(tr, r.delivery); td(tr, r.gpu, 'bt-nowrap');
+  });
+  table('runs', 'runs', 15, '还没有训练运行', (tr, r) => {
+    tr.dataset.key = encodeURIComponent(r.key);
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap');
+    chip(tr, RUN_STATUS[r.status] || [r.status || '', '']);
+    td(tr, r.iter, 'bt-num'); td(tr, r.max, 'bt-num'); td(tr, num(r.p, 3), 'bt-num'); td(tr, num(r.q, 3), 'bt-num'); td(tr, num(r.up, 2), 'bt-num');
+    td(tr, pct(r.low_fail), 'bt-num'); td(tr, pct(r.up_fail), 'bt-num'); td(tr, pct(r.down_fail), 'bt-num'); td(tr, pct(r.fail), 'bt-num');
+    td(tr, num(r.std, 2), 'bt-num'); td(tr, r.speed, 'bt-num');
+    td(tr, r.faults ? r.n_alerts + '，记录故障：' + r.faults : r.n_alerts, 'bt-num' + (r.n_alerts || r.faults ? ' bt-alarm' : ''));
+  });
+  table('ahead', 'runs', 7, '还没有训练运行', (tr, r) => {
+    tr.dataset.key = encodeURIComponent(r.key);
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.machine, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.next || '—', 'bt-wide');
+    td(tr, r.cap_eta, 'bt-nowrap'); td(tr, r.gate, 'bt-wide'); td(tr, r.at, 'bt-nowrap');
+  });
+  table('alerts', 'alerts', 7, '现在没有告警', (tr, r) => {
+    tr.dataset.key = encodeURIComponent(r.key);
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.counted, 'bt-nowrap'); td(tr, r.name, 'bt-nowrap'); td(tr, r.text, 'bt-wide');
+    td(tr, r.since, 'bt-num'); td(tr, r.at, 'bt-nowrap');
+  });
+  table('miles', 'milestones', 9, '还没有时间点', (tr, r) => {
+    tr.dataset.key = encodeURIComponent(r.key);
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.name, 'bt-nowrap'); td(tr, r.by, 'bt-num'); td(tr, r.due, 'bt-nowrap');
+    chip(tr, MILE_STATE[r.state] || [r.state || '', '']);
+    td(tr, r.reached_it, 'bt-num'); td(tr, r.reached_at, 'bt-nowrap'); td(tr, r.now, 'bt-wide');
+  });
+  table('events', 'events', 5, '这一轮还没有事件', (tr, e) => {
+    tr.dataset.key = encodeURIComponent(e.id);
+    td(tr, e.at, 'bt-nowrap'); td(tr, e.machine, 'bt-nowrap'); td(tr, e.robot, 'bt-nowrap'); td(tr, e.run, 'bt-nowrap'); td(tr, e.text, 'bt-wide');
+  });
+
+  // ---- charts: one measure each, the runs as lines over the iterations, the reference schedule as diamonds ----
+  const SVG = 'http://www.w3.org/2000/svg';
+  const svgEl = (tag, attrs, parent) => { const e = document.createElementNS(SVG, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  const colour = (slot) => dash.colors[(slot || 0) % dash.colors.length];
+  const ticks = (max, n) => {
+    const raw = max / n, pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].find((m) => m * pow >= raw - 1e-12) * pow;
+    const out = [];
+    for (let v = 0; v <= max + 1e-9; v += step) out.push(+v.toFixed(6));
+    return out;
+  };
+  const width = (t) => t.getComputedTextLength() || t.textContent.length * 7;
+  const CHARTS = {
+    'chart-p': { f: 'p', max: 1, label: '各个老师训练的进度 p 随迭代步数的变化' },
+    'chart-q': { f: 'q', max: 1, label: '各个老师训练的楼梯质量 q 随迭代步数的变化' },
+    'chart-up': { f: 'up', max: null, label: '各个老师训练的上楼行随迭代步数的变化' },
+    'chart-flat': { f: 'flat', max: 1, pct: true, label: '各个老师训练在平地等地面的回合失败率随迭代步数的变化' },
+    'chart-low': { f: 'low', max: 1, pct: true, label: '各个老师训练的评估机器人在低三行台阶的上楼失败率随迭代步数的变化' },
+    'chart-upfail': { f: 'up_fail', max: 1, pct: true, label: '各个老师训练的评估机器人在全部难度行的上楼失败率随迭代步数的变化' },
+  };
+  const drawChart = (el, spec) => {
+    const c = dash.data('curves'), ms = dash.data('milestones');
+    el.replaceChildren();
+    if (!ok(c)) { el.textContent = c.status === 'error' ? '加载失败' : '—'; return; }
+    const all = c.data.filter((r) => typeof r.iter === 'number');
+    const rows = all.filter((r) => typeof r[spec.f] === 'number');
+    if (!rows.length) { el.textContent = '还没有数据'; return; }
+    const marks = ok(ms) ? ms.data.filter((r) => typeof r.value === 'number' && typeof r.by === 'number') : [];
+    const refs = [];
+    for (const r of marks) if (r.measure === spec.f && !refs.some((x) => x.by === r.by && x.value === r.value)) refs.push(r);
+    const shown = (r) => r.by <= xMax;
+    const byRun = new Map();
+    for (const r of rows) { if (!byRun.has(r.run)) byRun.set(r.run, { run: r.run, slot: r.slot || 0, pts: [] }); byRun.get(r.run).pts.push(r); }
+    const series = [...byRun.values()].sort((a, b) => a.slot - b.slot);
+    for (const s of series) s.pts.sort((a, b) => a.iter - b.iter);
+    const fmtTick = spec.pct ? pct : (v) => String(v);
+    const fmtVal = spec.pct ? pct : (v) => v.toFixed(spec.f === 'up' ? 2 : 3);
+    // every chart shares the iterations' axis: up to the first reference point clearly ahead of the runs
+    const last = Math.max(...all.map((r) => r.iter));
+    const ahead = marks.map((r) => r.by).filter((by) => by >= last * 1.25).sort((a, b) => a - b)[0];
+    const xMax = Math.max(1000, ahead || Math.ceil(last * 1.05 / 500) * 500);
+    const yMax = spec.max != null ? spec.max : Math.max(4, Math.ceil(Math.max(...rows.map((r) => r[spec.f]), ...refs.filter((r) => r.by <= xMax).map((r) => r.value))));
+    const W = Math.max(240, Math.floor(el.clientWidth)), H = 200, mt = 12, mb = 24;
+    const svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': spec.label }, el);
+    const yt = ticks(yMax, 4);
+    const yLab = yt.map((v) => { const t = svgEl('text', { class: 'bt-tick', 'text-anchor': 'end' }, svg); t.textContent = fmtTick(v); return t; });
+    const ends = series.map((s) => { const t = svgEl('text', { class: 'bt-end' }, svg); t.textContent = s.run; return { s, t }; });
+    const ml = Math.ceil(Math.max(...yLab.map(width))) + 8;
+    const mr = Math.ceil(Math.max(...ends.map((e) => width(e.t)))) + 30;
+    const x = (v) => ml + (v / xMax) * (W - ml - mr), y = (v) => mt + (1 - v / yMax) * (H - mt - mb);
+    yt.forEach((v, i) => {
+      svg.insertBefore(svgEl('line', { class: v === 0 ? 'bt-axis' : 'bt-grid', x1: ml, x2: W - mr, y1: y(v), y2: y(v) }), svg.firstChild);
+      yLab[i].setAttribute('x', ml - 6); yLab[i].setAttribute('y', y(v) + 4);
+    });
+    for (const v of ticks(xMax, W - ml - mr < 260 ? 3 : 5)) {
+      const t = svgEl('text', { class: 'bt-tick', 'text-anchor': 'middle', x: x(v), y: H - 6 }, svg); t.textContent = String(v);
+    }
+    for (const r of refs.filter(shown)) {
+      const px = x(r.by), py = y(r.value);
+      svgEl('path', { class: 'bt-refmark', d: 'M' + px + ',' + (py - 5) + 'l5,5l-5,5l-5,-5z' }, svg);
+      const t = svgEl('text', { class: 'bt-ref', y: py - 9 < mt + 4 ? py + 17 : py - 9 }, svg);
+      t.textContent = r.by + ' 步 ' + (r.cmp === '<=' ? '≤ ' : '≥ ') + fmtTick(r.value);
+      const right = px + 8 + width(t) > W - mr;
+      t.setAttribute('x', right ? px - 8 : px + 8); t.setAttribute('text-anchor', right ? 'end' : 'start');
+    }
+    for (const s of series) {
+      const line = svgEl('path', { class: 'bt-line', d: 'M' + s.pts.map((p) => x(p.iter).toFixed(1) + ',' + y(p[spec.f]).toFixed(1)).join('L') }, svg);
+      line.style.stroke = colour(s.slot);
+    }
+    // each line's name in the right margin at its last value's height, moved apart where they would meet
+    for (const e of ends) { const p = e.s.pts[e.s.pts.length - 1]; e.x = W - mr + 10; e.y = y(p[spec.f]) + 4; }
+    ends.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 14) ends[i].y = ends[i - 1].y + 14;
+    let lim = H - mb;
+    for (let i = ends.length - 1; i >= 0; i--) { if (ends[i].y > lim) ends[i].y = lim; lim = ends[i].y - 14; }
+    for (const s of series) {   // where each line stops, so the name in the margin has a point to belong to
+      const p = s.pts[s.pts.length - 1];
+      svgEl('circle', { class: 'bt-dot', r: 3.5, cx: x(p.iter), cy: y(p[spec.f]) }, svg).style.fill = colour(s.slot);
+    }
+    for (const e of ends) {
+      svgEl('rect', { x: e.x, y: e.y - 9, width: 9, height: 9, rx: 2 }, svg).style.fill = colour(e.s.slot);
+      e.t.setAttribute('x', e.x + 13); e.t.setAttribute('y', e.y); svg.appendChild(e.t);
+    }
+    // hover: a line at the pointer, a dot on each run's nearest point, their values in a box
+    const cross = svgEl('line', { class: 'bt-cross', y1: mt, y2: H - mb, visibility: 'hidden' }, svg);
+    const dots = series.map((s) => { const d = svgEl('circle', { class: 'bt-dot', r: 4, visibility: 'hidden' }, svg); d.style.fill = colour(s.slot); return d; });
+    const tip = document.createElement('div'); tip.className = 'bt-tip'; tip.hidden = true; el.appendChild(tip);
+    const hide = () => { cross.setAttribute('visibility', 'hidden'); for (const d of dots) d.setAttribute('visibility', 'hidden'); tip.hidden = true; };
+    const move = (ev) => {
+      const box = svg.getBoundingClientRect();
+      const px = (ev.clientX - box.left) * (W / box.width);
+      const it = Math.max(0, Math.min(xMax, (px - ml) / (W - ml - mr) * xMax));
+      const near = series.map((s) => s.pts.reduce((a, b) => (Math.abs(b.iter - it) < Math.abs(a.iter - it) ? b : a)));
+      const reach = Math.max(100, xMax * 0.03);
+      const on = near.map((p) => Math.abs(p.iter - it) <= reach);
+      if (!on.some(Boolean)) { hide(); return; }
+      cross.setAttribute('x1', x(it)); cross.setAttribute('x2', x(it)); cross.setAttribute('visibility', 'visible');
+      tip.replaceChildren();
+      const h = document.createElement('div'); h.className = 'bt-tip-h'; h.textContent = '第 ' + Math.round(it / 10) * 10 + ' 步附近'; tip.appendChild(h);
+      series.forEach((s, i) => {
+        dots[i].setAttribute('visibility', on[i] ? 'visible' : 'hidden');
+        if (!on[i]) return;
+        dots[i].setAttribute('cx', x(near[i].iter)); dots[i].setAttribute('cy', y(near[i][spec.f]));
+        const r = document.createElement('div'); r.className = 'bt-tip-r';
+        const sw = document.createElement('span'); sw.className = 'bt-sw'; sw.style.background = colour(s.slot);
+        const n = document.createElement('span'); n.textContent = s.run;
+        const v = document.createElement('span'); v.className = 'bt-tip-v'; v.textContent = fmtVal(near[i][spec.f]);
+        r.append(sw, n, v); tip.appendChild(r);
+      });
+      tip.hidden = false;
+      const at = (ev.clientX - box.left) + 14;
+      tip.style.left = (at + tip.offsetWidth > el.clientWidth ? Math.max(0, at - 28 - tip.offsetWidth) : at) + 'px';
+    };
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerdown', move);
+    svg.addEventListener('pointerleave', hide);
+  };
+  for (const name in CHARTS) dash.draw(name, (el) => drawChart(el, CHARTS[name]));
+  dash.draw('legend', (el) => {
+    const c = dash.data('curves');
+    el.replaceChildren();
+    if (!ok(c) || !c.data.length) { el.textContent = '—'; return; }
+    const seen = new Map();
+    for (const r of c.data) if (!seen.has(r.run)) seen.set(r.run, r.slot || 0);
+    for (const [run, slot] of [...seen].sort((a, b) => a[1] - b[1])) {
+      const k = document.createElement('span'); k.className = 'bt-key';
+      const sw = document.createElement('span'); sw.className = 'bt-sw'; sw.style.background = colour(slot);
+      const n = document.createElement('span'); n.textContent = run;
+      k.append(sw, n); el.appendChild(k);
+    }
+  });
+</script>
