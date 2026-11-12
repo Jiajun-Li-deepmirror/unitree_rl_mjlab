@@ -880,7 +880,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          (flat.FLAT_SHARE; 0: none of that class);
     U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
                          (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
-    U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2)."""
+    U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2);
+    U_FLAT_DIAG_AXIS=<m> the flat speed deficit judges a diagonal command (both parts >= <m> m/s) per axis, as the
+                         acceptance does (mdp.stair_speed_deficit axis_min; the wheeled have it at 0.2 from the old
+                         flow's "diagaxis", nothing changes for them). Go2 uprobe_s42 / s43 6596: the diagonal's
+                         sideways part at 72-77 % in training and (0.6, +-0.4) y 74-76 % in tier 2 (bar 80 %),
+                         the speed along the command inside the 0.9-1.1 band, so nothing was charged."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -925,6 +930,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["name"] in FLAT_NEW:
         c["max_scale"] = max(c["min_scale"], float(v))
+  v = os.environ.get("U_FLAT_DIAG_AXIS")
+  if v and "flat_speed_deficit" in cfg.rewards:
+    assert 0.05 <= float(v) <= 0.5, f"U_FLAT_DIAG_AXIS {v}: the smallest part of a diagonal command, m/s"
+    term = cfg.rewards["flat_speed_deficit"]
+    if "axis_min" not in term.params:   # the wheeled group's own (0.2) stays
+      term.params = {**term.params, "axis_min": float(v)}
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
