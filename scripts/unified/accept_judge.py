@@ -36,6 +36,31 @@ POSTURE_BAR = 0.15
 STAND_SETTLE = 3.0
 LEGGED_BARS = {"kicks": 0.245, "slips": 0.0245, "mid": 0.80, "edge": 0.10}
 WHEELED_SLIDE_BAR = 0.05
+# The stairs counts are judged only on enough events (2026-11-12, the user: fewer luck passes): at 0.05 a rate from
+# ~100 step-ups has a 95% interval of about +-0.044 -- it cannot tell 0.05 from 0.10. Fewer: "未测" (a tool fault,
+# not a fail). Go2W P4 11-12 read 103 / 121 step-ups of 576 robots (the counter's level bug, go2-depth's fix).
+MIN_STAIR_EVENTS = 400   # wheeled step-ups / legged foot placements on the steps
+
+
+def stairs_count_verdict(sm: dict, wheeled: bool, label: str) -> tuple[str, str | None]:
+  """(detail line, the reason it does not pass or None) for eval_stairs' counts (label: "" or "常用负载 ")."""
+  if wheeled:
+    sb, n = sm.get("slide_back"), sm.get("ups")
+    detail = f"{label}楼梯计数：上台阶 {n}，滑回 {sb}"
+    if sb is None or n is None:
+      return detail, f"{label}楼梯计数：未测"
+    if n < MIN_STAIR_EVENTS:
+      return detail, f"{label}楼梯计数：未测（上台阶 {n:.0f} 次，少于 {MIN_STAIR_EVENTS}）"
+    return detail, (f"{label}楼梯计数：滑回 {sb:.3f}" if sb > WHEELED_SLIDE_BAR else None)
+  detail = f"{label}楼梯计数：" + "，".join(f"{k} {sm.get(k)}" for k in ("steps", "kicks", "slips", "mid", "edge"))
+  if "kicks" not in sm:
+    return detail, f"{label}楼梯计数：未测"
+  if sm.get("steps", 0) < MIN_STAIR_EVENTS:
+    return detail, f"{label}楼梯计数：未测（落脚 {sm.get('steps', 0):.0f} 次，少于 {MIN_STAIR_EVENTS}）"
+  tags = [f"{k} {sm[k]:.3f}" for k in ("kicks", "slips", "edge") if sm[k] > LEGGED_BARS[k]]
+  if sm["mid"] < LEGGED_BARS["mid"]:
+    tags.append(f"mid {sm['mid']:.3f}")
+  return detail, (f"{label}楼梯计数：" + "、".join(tags) if tags else None)
 GOALS = {"g_speed": "平地速度", "g_drift": "跑偏", "g_spin": "原地旋转", "g_spinalt": "交替原地转", "g_stop": "停车",
          "g_march": "原地踏步", "g_clock": "步态节奏", "g_stairs": "楼梯", "g_falls": "摔倒"}
 
@@ -200,24 +225,10 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
       f"{k[0]} {'上' if k[1] == 'up' else '下'} {st_.get(k, float('nan')):.2f}/{v:.2f}" for k, v in su.items()))
     if slow:
       bad.append(f"常用负载 楼梯速度低于空载的 {STAIRS_SPEED_REL:.0%}：" + "、".join(slow))
-  sm = stairs_metrics(p["stairs"])
-  if wheeled:
-    sb = sm.get("slide_back")
-    detail.append(f"常用负载 楼梯计数：上台阶 {sm.get('ups')}，滑回 {sb}")
-    if sb is None:
-      bad.append("常用负载 楼梯计数：未测")
-    elif sb > WHEELED_SLIDE_BAR:
-      bad.append(f"常用负载 楼梯计数：滑回 {sb:.3f}")
-  else:
-    detail.append("常用负载 楼梯计数：" + "，".join(f"{k} {sm.get(k)}" for k in ("steps", "kicks", "slips", "mid", "edge")))
-    if "kicks" not in sm:
-      bad.append("常用负载 楼梯计数：未测")
-    else:
-      tags = [f"{k} {sm[k]:.3f}" for k in ("kicks", "slips", "edge") if sm[k] > LEGGED_BARS[k]]
-      if sm["mid"] < LEGGED_BARS["mid"]:
-        tags.append(f"mid {sm['mid']:.3f}")
-      if tags:
-        bad.append("常用负载 楼梯计数：" + "、".join(tags))
+  line, why = stairs_count_verdict(stairs_metrics(p["stairs"]), wheeled, "常用负载 ")
+  detail.append(line)
+  if why:
+    bad.append(why)
   # no fall in any test run (goal_cells' own fall item reads the 44 flat commands, not run here: per test instead)
   cf = comparison_falls(p)
   if any(v is None for v in cf.values()):
@@ -274,24 +285,10 @@ def judge(argv: list[str]) -> int:
     if tags:
       bad.append(f"零指令站姿（{cond}）：" + "、".join(tags))
   # stairs counts (unloaded)
-  sm = stairs_metrics(p["stairs"])
-  if wheeled:
-    sb = sm.get("slide_back")
-    detail.append(f"楼梯计数：上台阶 {sm.get('ups')}，滑回 {sb}")
-    if sb is None:
-      bad.append("楼梯计数：未测")
-    elif sb > WHEELED_SLIDE_BAR:
-      bad.append(f"楼梯计数：滑回 {sb:.3f}")
-  else:
-    detail.append("楼梯计数：" + "，".join(f"{k} {sm.get(k)}" for k in ("steps", "kicks", "slips", "mid", "edge")))
-    if "kicks" not in sm:
-      bad.append("楼梯计数：未测")
-    else:
-      tags = [f"{k} {sm[k]:.3f}" for k in ("kicks", "slips", "edge") if sm[k] > LEGGED_BARS[k]]
-      if sm["mid"] < LEGGED_BARS["mid"]:
-        tags.append(f"mid {sm['mid']:.3f}")
-      if tags:
-        bad.append("楼梯计数：" + "、".join(tags))
+  line, why = stairs_count_verdict(stairs_metrics(p["stairs"]), wheeled, "")
+  detail.append(line)
+  if why:
+    bad.append(why)
   # unloaded stairs: 0 falls, counted exactly (traverse and stop; accept_tables' fall item reads the traverse's whole
   # percent only -- doc/redesign.md 2.2 "空载测试全部 0 摔", go2-depth's review 11-12 item 15)
   uf = stairs_falls(p["stairs"])
