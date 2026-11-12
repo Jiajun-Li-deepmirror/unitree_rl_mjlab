@@ -467,14 +467,23 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
   """The checks' payload (2026-11-12, doc/redesign.md 2.1): a fixed point mass from U_PAYLOAD ("kg,x,y,z", default
   0 kg -- the unloaded condition; the acceptance sets the walking payload for the loaded one) instead of the training
-  draw. The other randomization (CoM offset, friction, gains, ...) stays, the same in both conditions."""
-  m, x, y, z = (float(v) for v in os.environ.get("U_PAYLOAD", "0,0,0,0").split(","))
+  draw. The other randomization (CoM offset, friction, gains, ...) stays, the same in every condition.
+
+  "kg,x,y,z,dx,dy,dz" (the typical payload, the user 2026-11-12 "加一档「常用负载」"; jobs/accept_payload.sh R typical):
+  the mass is fixed, the mount point is drawn for each robot at its reset, uniform in x +- dx, y +- dy, z +- dz --
+  where the payload will sit on the finished robot is not known."""
+  v = [float(s) for s in os.environ.get("U_PAYLOAD", "0,0,0,0").split(",")]
+  if len(v) not in (4, 7):
+    raise ValueError(f"U_PAYLOAD: 4 values (kg,x,y,z) or 7 (kg,x,y,z,dx,dy,dz), got {len(v)}")
+  m, x, y, z = v[:4]
+  dx, dy, dz = v[4:] if len(v) == 7 else (0.0, 0.0, 0.0)
   # the whole event replaced: on the check terrains the blind builder keeps mjlab's base-mass draw (-1..+2 kg), not
   # the training's payload point (2026-11-12)
   cfg.events["base_payload"] = EventTermCfg(
     mode="reset", func=mdp.base_payload_point,
     params={"asset_cfg": SceneEntityCfg("robot"), "light_range": (m, m), "heavy_max": 0.0, "heavy_share": 0.0,
-            "pos_ranges": ((x, x), (y, y), (z, z)), "base_com_range": 0.0, "ramp_steps": 0},
+            "pos_ranges": ((x - dx, x + dx), (y - dy, y + dy), (z - dz, z + dz)), "base_com_range": 0.0,
+            "ramp_steps": 0},
   )
 
 

@@ -6,6 +6,7 @@ point's range) and the one the acceptance tests at, the end-wall stop distance, 
 and the robot parameters the blind environment reads (BLIND_PARAMS). Read by
   jobs/fe_robot.sh           BLIND_PAYLOAD / BLIND_WALL_STOP / BLIND_FOOT_R          (--fe-sh)
   jobs/accept_payload.sh     the acceptance payload kg,x,y,z                          (--accept-payload)
+                             the typical payload kg,x,y,z,dx,dy,dz                    (--typical-payload)
   jobs/recipes/unified.py    the robot parameters (BLIND_PARAMS) and the documented values
   src/tasks/unified/robots.py the unified teacher's robots
 (Which delivered package a robot's next round starts from is not here: that is lineage, jobs/v2_robot.sh.)
@@ -13,6 +14,7 @@ Plain Python, no imports from the project: the boxes' shell scripts run it with 
 
   python3 src/robot_table.py Go2W --fe-sh          export lines (BLIND_PAYLOAD keeps ${PAYLOAD_RAMP:+,ramp=...} for eval)
   python3 src/robot_table.py Go2W --accept-payload 8,0.15,0,0.20
+  python3 src/robot_table.py Go2W --typical-payload 4,0,0,0.10,0.20,0.08,0.10
   python3 src/robot_table.py Go2W --params         BLIND_PARAMS (k=v,...)
   python3 src/robot_table.py --list                every robot, one line each
 """
@@ -32,14 +34,20 @@ import sys
 # (z lo, hi)). The user: "负载的重心偏移可以尽可能的大一些，因为我也不知道之后整机上会装在哪里". Go2 / Go2W: past the hips
 # (+-0.19 m) to the nose and the tail, the full body width, from under the back plate to a 0.30 m mast; 8 kg at
 # x 0.25 is the moment (2.0 kg m) of the earlier 12 kg at 0.15. The acceptance's point (accept_payload) is unchanged.
+# typical_payload (2026-11-12, the user: "加一档「常用负载」"; doc/redesign.md 2.1; the unified acceptance only): the third
+# acceptance condition, "kg,x,y,z,dx,dy,dz" -- half the walking payload, each evaluation robot's mount point drawn
+# uniform in x +- dx, y +- dy, z +- dz (Go2 / Go2W: +-0.20 fore-aft, +-0.08 sideways, 0 to 0.20 up; inside
+# payload_point's box). A robot without the key has no typical condition yet (set when it trains on this flow).
 ROBOTS: dict[str, dict] = {
   "Go2": dict(kind="legged", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
               payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
+              typical_payload="4,0,0,0.10,0.20,0.08,0.10",
               wall_stop=0.85, foot_r=0.022, params={"model": "uros"},
               notes="payload: Unitree's walking figure ~8 kg (max ~12 standing; 2026-11-12 doc/redesign.md: the walking "
                     "payload for training and acceptance); foot sphere 2.2 cm"),
   "Go2W": dict(kind="wheeled", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
                payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
+               typical_payload="4,0,0,0.10,0.20,0.08,0.10",
                wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
                notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
@@ -98,6 +106,11 @@ def main(argv: list[str]) -> int:
     print(fe_sh(name))
   elif what == "--accept-payload":
     print(r["accept_payload"])
+  elif what == "--typical-payload":
+    if "typical_payload" not in r:
+      print(f"robot_table: {name} has no typical payload yet (doc/redesign.md 2.1)", file=sys.stderr)
+      return 2
+    print(r["typical_payload"])
   elif what == "--params":
     print(params_str(name))
   elif what == "--kind":
