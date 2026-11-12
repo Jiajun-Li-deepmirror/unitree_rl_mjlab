@@ -90,6 +90,19 @@ def stairs_falls(path: str) -> int | None:
   return sum(int(a) + int(b) for a, b in rows)
 
 
+# The typical payload's stairs speed: at least this share of the same test's unloaded reading, per band and direction
+# (2026-11-12, go2-depth's value in doc/redesign.md 2.2, the user may change it); eval_stairs.py's "speed" lines.
+STAIRS_SPEED_REL = 0.8
+
+
+def flight_speeds(path: str) -> dict[tuple[str, str], float]:
+  """eval_stairs.py's speed on the flight per (band, direction), m/s (nan: no robot got past the last step)."""
+  out = {}
+  for m in re.finditer(r"^speed\s+(\d+-\d+cm)\s+(up|down)\s*\|\s*([\d.]+|nan) m/s", txt(path), re.M):
+    out[(m.group(1), m.group(2))] = float(m.group(3))
+  return out
+
+
 def comparison_falls(p: dict) -> dict[str, int | None]:
   """Falls in the tests whose readings are only compared under the walking payload (2026-11-12, doc/redesign.md 2.5
   item 10: they count toward the loaded condition's 0 falls); also the typical payload's falls in the same tests."""
@@ -138,6 +151,20 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
       bad.append("常用负载 楼梯：停住缺脚")
     if stairs_falls(p["stairs"]):
       bad.append("常用负载 楼梯：摔倒")
+  # stairs speed: against the unloaded reading of the same test, band by band
+  su, st_ = flight_speeds(f"{prefix}_stairs.txt"), flight_speeds(p["stairs"])
+  if not su or not st_:
+    bad.append("常用负载 楼梯速度：未测")
+  else:
+    slow = []
+    for key, base in su.items():
+      v = st_.get(key, float("nan"))
+      if math.isfinite(base) and not (math.isfinite(v) and v >= STAIRS_SPEED_REL * base):
+        slow.append(f"{key[0]} {'上' if key[1] == 'up' else '下'} {v:.2f}/{base:.2f}")
+    detail.append("常用负载 楼梯速度（常用 / 空载，m/s）：" + "，".join(
+      f"{k[0]} {'上' if k[1] == 'up' else '下'} {st_.get(k, float('nan')):.2f}/{v:.2f}" for k, v in su.items()))
+    if slow:
+      bad.append(f"常用负载 楼梯速度低于空载的 {STAIRS_SPEED_REL:.0%}：" + "、".join(slow))
   sm = stairs_metrics(p["stairs"])
   if wheeled:
     sb = sm.get("slide_back")
