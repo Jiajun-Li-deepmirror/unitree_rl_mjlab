@@ -7,6 +7,12 @@
 #            side on this GPU at NUM_ENVS / seeds robots each (NUM_ENVS default F_TEACHER_ENVS_PER_SEED x seeds), else
 #            one after the other at NUM_ENVS
 #   ITERS    the cap (F_TEACHER_ITERS: 12000); a seed stops at its cap or when another seed has passed
+# STAIRS_GATE (F_STAIRS_GATE, 1; 2026-11-13, go2-depth's design): the gate in two parts -- teacher_gate.py --pre (the
+# curriculum done and the flat items, by the training's readings) gives "PRE-PASS K"; then tier-2's own stairs test on
+# model_K (jobs/unified/stairs_gate.sh: both scan modes, unloaded, ~5 min) passes or not (scripts/unified/stairs_gate.py:
+# the students' bars, the stairs counts no worse than the delivered model); a seed's stairs again only
+# F_STAIRS_GATE_GAP (500) iterations on; every judged candidate in <pick>.judged; none passed by the cap -> "STOP: needs
+# a human" with the best judged (exit 3). STAIRS_GATE=0: the gate below on every item.
 # Every GATE_EVERY s (default 900) scripts/unified/teacher_gate.py judges each running seed on its constraints in
 # training; the first to pass is the pick: logs/jobs/unified_<r>_<variant>.pick (checkpoint path), the other seeds
 # are stopped (KEEP_OTHERS=1 lets them run on). Smoke: U_SMOKE=1 (few iterations, every switch-on forced).
@@ -37,7 +43,8 @@ log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; 
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
 log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null), formal.env $(md5sum jobs/unified/formal.env | cut -c1-8)"
-declare -A PID RUN BEFORE
+declare -A PID RUN BEFORE LASTK
+STAIRS_GATE=${STAIRS_GATE:-$F_STAIRS_GATE}
 start() {   # SEED
   local s=$1 name=u${VARIANT}_s$1
   local res="" before from=0
@@ -85,6 +92,30 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
     if [ -z "$d" ] || [ "$d" = "${BEFORE[$s]:-}" ]; then log "seed $s: its new run dir is not there yet"; return 1; fi
     RUN[$s]=$d
   fi
+  if [ "$STAIRS_GATE" = 1 ]; then
+    # the curriculum and the flat items by the training's readings (--pre), the stairs by tier-2's own test
+    # (jobs/unified/stairs_gate.sh) on that checkpoint, at most once per F_STAIRS_GATE_GAP iterations per seed
+    v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT --pre 2> /dev/null | head -n 1)
+    log "seed $s: ${v:-no verdict}"
+    [[ "$v" == PRE-PASS* ]] || return 1
+    local k=$(echo $v | cut -d' ' -f2) last=${LASTK[$s]:--1000000} sv rc
+    [ -f ${RUN[$s]}/model_$k.pt ] || { log "seed $s: PRE-PASS at $k, but model_$k.pt is not saved yet (next gate)"; return 1; }
+    if [ $k -lt $(( last + F_STAIRS_GATE_GAP )) ]; then
+      log "seed $s: PRE-PASS at $k; the tier-2 stairs judged model_$last last (again from $(( last + F_STAIRS_GATE_GAP )))"
+      return 1
+    fi
+    sv=$(bash jobs/unified/stairs_gate.sh $R ${RUN[$s]}/model_$k.pt); rc=$?
+    log "seed $s: model_$k tier-2 stairs: $(echo "$sv" | head -n 1 | cut -c1-400)"
+    case $rc in
+      0) echo "${RUN[$s]}/model_$k.pt seed $s" > $PICK
+         log "TEACHER PICK ${RUN[$s]}/model_$k.pt (seed $s; curriculum + flat by the training's readings, the stairs by tier 2)"
+         return 0 ;;
+      1) LASTK[$s]=$k
+         echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
+         return 1 ;;
+      *) log "seed $s: TOOL FAULT in the tier-2 stairs gate (exit $rc; judged again at the next gate)"; return 1 ;;
+    esac
+  fi
   v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT 2> /dev/null | head -n 1)
   log "seed $s: ${v:-no verdict}"
   if [[ "$v" == PASS* ]]; then
@@ -110,7 +141,7 @@ stop() {   # PID...: all at once. SIGTERM (a background job of a non-interactive
   done
   [ -z "$alive" ] || kill -KILL $alive 2> /dev/null
 }
-rm -f $PICK $PICK.others   # (a previous run's kept seeds are not this run's)
+rm -f $PICK $PICK.others $PICK.judged   # (a previous run's kept seeds and judged candidates are not this run's)
 passed=""
 if [ "${PARALLEL:-0}" = 1 ]; then
   for s in $SEEDS; do start $s; done
@@ -150,5 +181,11 @@ if [ -n "$passed" ]; then
   echo "envs=$ENVS seeds=${others% }" > $PICK.others
   log "PASS (seed $passed: $(cat $PICK)); kept for a fallback: seeds ${others:-none} ($PICK.others)"
   exit 0
+fi
+if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.judged ]; then
+  # no automatic pick of the best below the bars (go2-depth 11-13: a student from a teacher worse than delivered would
+  # fail its acceptance anyway): a human decides, with the best judged candidate and its shortfalls
+  log "STOP: needs a human -- no seed passed the tier-2 stairs gate by the cap; the best judged: $(sort -g $PICK.judged | head -n 1 | cut -c1-400) (all in $PICK.judged)"
+  exit 3
 fi
 log "no seed passed"; exit 1
