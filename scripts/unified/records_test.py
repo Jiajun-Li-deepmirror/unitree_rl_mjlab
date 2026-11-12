@@ -602,28 +602,64 @@ def wheel_counter(ok) -> None:
   g.H, g.x0, g.y0, g.res, g._steps = H, 0.0, 0.0, res, {}
   lv = np.unique(np.round(H, 3))
   g.levels = lv[np.concatenate([[True], np.diff(lv) > JUMP])]
+  R = 0.09   # the wheel's radius: its axle's height over what it stands on
   c, sh, y, t = WheeledStairs(g, 1, 1), steps[0], 1.0, [0.0]
 
-  def put(*contacts):
-    c.step(t[0], 0.02, [[list(contacts)]], np.array([[[1.0, y, 0.09]]]), np.array([[1.0, 0.0]]), np.array([False]),
+  def put(z, *contacts):
+    c.step(t[0], 0.02, [[list(contacts)]], np.array([[[1.0, y, z]]]), np.array([[1.0, 0.0]]), np.array([False]),
            np.array([True]))
     t[0] += 0.02
 
   flat = lambda k, dx=0.15: ((1.0 + 0.3 * (k - 1) + dx if k else 0.8, y, k * sh), 1.0)   # noqa: E731
   nose = lambda k: ((1.0 + 0.3 * (k - 1) + 0.001, y, k * sh), 0.6)                         # noqa: E731
-  put(flat(0))
+  put(R, flat(0))
   for k in range(1, n + 1):
-    if k in (2, 3):
-      put(flat(k - 1, 0.28), nose(k))
-      put(nose(k))
+    low = (k - 1) * sh + R
+    if k in (2, 3):   # off its stand, on the nose, the axle 6 cm up
+      put(low, flat(k - 1, 0.28))
+      put(low + 0.06, nose(k))
     if k == 2:   # back on its stand, the riser's face at axle height; then over the nose
-      put(flat(1, 0.2), ((1.0 + 0.3 - 0.001, y, sh + 0.09), 0.0))
-      put(flat(1, 0.28), nose(2))
-    put(flat(k))
-    put(flat(k))
+      put(low, flat(1, 0.2), ((1.0 + 0.3 - 0.001, y, sh + R), 0.0))
+      put(low + 0.06, nose(2))
+    put(k * sh + R, flat(k))
+    put(k * sh + R, flat(k))
   got = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
   ok(f"unit wheeled counter among {len(steps)} flights ({len(g.levels)} grid levels): every step-up counts ({got})",
      got["ups"] == n + 1 and got["slips"] == 1 and got["edged"] == 2 and got["clean"] == n - 2)
+
+  # a step lower than the wheel's radius (7.8 cm): standing at the riser the wheel touches its nose without leaving
+  # the ground. The nose contact coming and going, a contact flicker and a 1 cm hop are no slide-backs (until
+  # 2026-11-12 each of them was one); off the stand on the nose with the axle 4 cm up and back down is one.
+  c, sh, y, t = WheeledStairs(g, 1, 1), steps[2], 5.0, [0.0]
+  put(R, flat(0))
+  for _ in range(5):
+    put(R, flat(0), nose(1))
+    put(R, flat(0))
+  put(R + 0.002, nose(1))   # the ground contact drops out for a step
+  put(R, flat(0), nose(1))
+  put(R + 0.01, nose(1))
+  put(R, flat(0))
+  touch = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
+  put(R + 0.02, nose(1))
+  put(R + 0.04, nose(1))
+  put(R, flat(0), nose(1))
+  slid = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
+  put(R + 0.04, nose(1))
+  put(sh + R, flat(1))
+  got = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
+  ok(f"unit wheeled counter on a 7.8 cm step: touching the riser from the ground is no slide-back ({touch}), leaving "
+     f"the stand and coming back is one ({slid}), then over the nose ({got})",
+     touch["ups"] == 0 and touch["slips"] == 0 and slid["ups"] == 1 and slid["slips"] == 1
+     and got["ups"] == 2 and got["slips"] == 1 and got["edged"] == 1)
+
+  # a hop on flat-topped ground next to the riser, never touching it, is no slide-back either
+  c, t = WheeledStairs(g, 1, 1), [0.0]
+  put(R, flat(0))
+  put(R, flat(0), nose(1))
+  put(R + 0.05)
+  put(R, flat(0))
+  got = {k: int(v[0]) for k, v in c.counts(np.array([True])).items()}
+  ok(f"unit wheeled counter: a hop beside the riser is no slide-back ({got})", got["ups"] == 0 and got["slips"] == 0)
 
 
 def main() -> int:

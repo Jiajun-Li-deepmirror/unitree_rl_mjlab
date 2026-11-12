@@ -100,6 +100,7 @@ class LeggedStairs:
 
 
 SLIDE_REPEAT_S = 0.5   # s: a wheel bumping the same riser again within this is one slide-back
+SLIDE_RISE = 0.02      # m: the axle this far over where the wheel stood, off its stand: it had left the stand
 IDLE_AIR_S = 0.06      # s: a wheel in the air longer than this ...
 IDLE_APEX = 0.03       # m: ... with an apex this far over its take-off is a visible (idle) step
 IDLE_AHEAD = 0.3       # m: taken off with no height change this far ahead along the heading (flat ground)
@@ -114,8 +115,10 @@ def _same(a: float | None, b: float | None) -> bool:
 class WheeledStairs:
   """Wheeled stairs metrics (accept_stairs.py's since 2026-11-05), per robot and wheel:
     ups / slips  climbing: a wheel's flat contact on the tread above its stand is a step-up ("clean", or "edged" when it
-                 touched that riser's nose first); a flat contact back on its stand after touching the riser above is a
-                 slide-back (counted as a step-up too; repeats within 0.5 s are one); slide-back % = slips / ups
+                 touched that riser's nose first); a flat contact back on its stand after it left the stand at the
+                 riser above -- between two flat contacts on the stand it touched that riser and its axle was 2 cm
+                 or more over where it stood -- is a slide-back (counted as a step-up too; repeats within 0.5 s are
+                 one); slide-back % = slips / ups
     idle steps   a wheel airborne > 0.06 s with an apex > 3 cm over its take-off, taken off from flat ground (no
                  height change within 0.3 m ahead) while the base is near stairs; after the run split into "start"
                  (taken off the start level, not the end level: idle_rear) and "end" (taken off the end level: idle_front)
@@ -127,6 +130,13 @@ class WheeledStairs:
   5-20 cm steps the list held 21 levels about 14 cm apart, almost no tile's next tread was "the next level", and the
   counter saw a few percent of the step-ups (Go2W teacher: 0.03 per robot step in training; 100 over 288 robots x
   6 m of stairs in the checks), slide-backs / step-ups read 0.3-0.6 whatever the wheels did.
+
+  "Left the stand" since 2026-11-12 too. Until then any flat contact on the stand after a touch of the riser above
+  was a slide-back. A wheel of radius R standing at a riser lower than R + 3 cm touches "the tread above" (its nose,
+  or its face within Grid.tread's 3 cm of the top) without leaving the ground, so on those steps every touch and
+  release of the riser counted: the delivered Go2W read 0.12-0.31 slide-backs per step-up on 5-12 cm steps against
+  0.01-0.06 on 12-18 cm ones (0.141 over all; tinynav's 14-18 cm flights 0.032). On the taller steps a wheel touching
+  the tread above has risen already and the readings stay.
   start_levels: each robot's start height (None: the first stand of its episode)."""
 
   def __init__(self, grid: Grid, n: int, wheels: int = 4, start_levels=None):
@@ -143,7 +153,7 @@ class WheeledStairs:
   @staticmethod
   def _fresh() -> dict:
     return dict(on=0, stand=None, nosed=False, last_slide=None, air=0.0, flat_off=False, off_L=None, t_off=0.0,
-                z0=0.0, apex=0.0, z_last=0.0)
+                z0=0.0, apex=0.0, z_last=0.0, off_nosed=False, z_stand=None, rise=0.0)
 
   def reset(self, idx) -> None:
     """Forget the per-wheel state and the idle steps of robots idx (a robot reset in training); the counts stay."""
@@ -165,41 +175,52 @@ class WheeledStairs:
         s = self.st[r][w]
         c = contacts[r][w]
         x, y, z = (float(v) for v in wheel_pos[r, w])
+        if not up[r]:   # not climbing: no excursion off a stand carries over
+          s["z_stand"], s["rise"], s["off_nosed"] = None, 0.0, False
         if c:
           s["on"] += 1
           s["z_last"] = z
           if up[r]:
             best = None   # the highest tread touched; at one height a flat contact before a nose
+            on_stand = False   # a flat contact on its stand among them
             for cpos, nz in c:
               top = g.tread(float(cpos[0]), float(cpos[1]), float(cpos[2]))
               if top is None:
                 continue
               key = (top, abs(nz) > 0.9)
+              on_stand = on_stand or (key[1] and _same(top, s["stand"]))
               if best is None or key > best:
                 best = key
+            if on_stand:
+              # back on its stand. A slide-back when, since its last flat contact here, it touched the riser above
+              # and its axle was SLIDE_RISE over where it stood: it had left the stand, not just touched the riser
+              if s["off_nosed"] and s["rise"] >= SLIDE_RISE:
+                if not (s["last_slide"] is not None and _same(s["last_slide"][0], s["stand"])
+                        and t - s["last_slide"][1] < SLIDE_REPEAT_S):
+                  self.ups[r] += 1
+                  self.slips[r] += 1
+                  s["last_slide"] = (s["stand"], t)
+                s["nosed"] = False
+              s["z_stand"], s["rise"], s["off_nosed"] = z, 0.0, False
+            elif s["z_stand"] is not None:
+              s["rise"] = max(s["rise"], z - s["z_stand"])
             if best is not None:
               top, flat = best
               stand = s["stand"]
-              same = _same(top, stand)
               above = stand is not None and JUMP < top - stand <= STEP_MAX   # the tread above its stand
-              if above and not flat and not s["nosed"]:
+              if above and not flat:
                 s["nosed"] = True
-              elif flat:
+                s["off_nosed"] = s["off_nosed"] or not on_stand
+              elif flat and not _same(top, stand):
                 if above:
                   self.ups[r] += 1
                   if s["nosed"]:
                     self.edged[r] += 1
                   else:
                     self.clean[r] += 1
-                elif same and s["nosed"] and not (
-                    s["last_slide"] is not None and _same(s["last_slide"][0], top)
-                    and t - s["last_slide"][1] < SLIDE_REPEAT_S):
-                  self.ups[r] += 1
-                  self.slips[r] += 1
-                  s["last_slide"] = (top, t)
-                if not same or s["nosed"]:
-                  s["stand"], s["nosed"] = top, False
-                  self.reached[r].append(top)
+                s["stand"], s["nosed"] = top, False
+                s["z_stand"], s["rise"], s["off_nosed"] = z, 0.0, False
+                self.reached[r].append(top)
           if s["air"] > 0.0:   # landing after a flight: an idle step?
             if s["flat_off"] and s["air"] > IDLE_AIR_S + 1e-6 and s["apex"] - s["z0"] > IDLE_APEX:
               p = c[0][0]
@@ -218,6 +239,8 @@ class WheeledStairs:
           s["air"] += dt
           s["apex"] = max(s["apex"], z)
           s["on"] = 0
+          if s["z_stand"] is not None:
+            s["rise"] = max(s["rise"], z - s["z_stand"])
 
   def counts(self, up: np.ndarray) -> dict[str, np.ndarray]:
     """The counts, the idle steps split by the flight's start and end levels (up: per robot)."""
