@@ -142,6 +142,13 @@ def off_slopes(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
   return mask if slope is None else mask & ~slope
 
 
+def off_scripts(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
+  """`mask` without the robots under a flat script (flat.flat_measure; 2026-11-12): they follow the acceptance's
+  fixed commands and give the "flat:" readings; the readings defined on the drawn commands stay on those."""
+  flat = getattr(env, "u_flat", None)
+  return mask if flat is None else mask & ~flat.on
+
+
 def scan_modes(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor] | None:
   """The robots in each scan mode this episode ({"seen", "blind"}: masks from teacher_env.u_scan_mask's
   env.u_scan_on); None for an environment without the scan mask (or before its first reset)."""
@@ -608,7 +615,7 @@ class heavy_log:
         pm = payload_mask(env, lo, hi)
         if pm is None:
           continue
-        mask = off_slopes(env, on_eval(env, mask & pm))
+        mask = off_scripts(env, off_slopes(env, on_eval(env, mask & pm)))
         if not mask.any():
           continue
         v = value[mask]
@@ -625,7 +632,9 @@ def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", scan: str |
   """A constraint's measurement: mdp.constraints.METRICS or CUSTOM (stat "mean" or "pNN" over the robots it applies
   to now), "rate:<name>" from the meter, "lib:<name>" from the shared metrics (src/metrics, lib_meter), or
   "evalfail:<family>": the light evaluation robots' fail rate on the worst step-height band of their fixed stairs
-  rows (curriculum.eval_worst_band; None in a run without evaluation robots). `scan` ("seen" / "blind"): over the
+  rows (curriculum.eval_worst_band; None in a run without evaluation robots), or "flat:<reading>": the worst command
+  bin's statistic of the acceptance's flat protocols (flat.flat_measure.read; `stat` also "tail", "dev1", "absmed";
+  None in a run without evaluation robots or with U_FLAT_SCRIPTS=0). `scan` ("seen" / "blind"): over the
   robots in that scan mode only (None where the environment has no scan modes)."""
   if metric.startswith("evalfail:"):
     return eval_worst_band(env, metric[9:], scan or "all")
@@ -635,8 +644,11 @@ def measure(env: ManagerBasedRlEnv, metric: str, stat: str = "mean", scan: str |
   if metric.startswith("rate:"):
     m = getattr(env, "u_meter", None)
     return None if m is None else m.rate(metric[5:], scan)
+  if metric.startswith("flat:"):   # the acceptance's flat protocols on evaluation robots (flat.py)
+    m = getattr(env, "u_flat", None)
+    return None if m is None else m.read(metric[5:], stat, scan, **params)
   value, mask = (CUSTOM.get(metric) or METRICS[metric])(env, **params)
-  mask = off_slopes(env, on_eval(env, mask))
+  mask = off_scripts(env, off_slopes(env, on_eval(env, mask)))
   if scan is not None:
     modes = scan_modes(env)
     if modes is None:
@@ -654,7 +666,16 @@ def item_sig(c: dict) -> str:
 
 
 # The signatures of the items whose measure has changed since the checkpoints that carry none (2026-11-12).
-LEGACY_SIG = {"creep": "u_stand_hold_light|p90", "march": "u_stand_hold_light|p90"}
+LEGACY_SIG = {"creep": "u_stand_hold_light|p90", "march": "u_stand_hold_light|p90", "clock": "gait_match|mean",
+              "side_drift": "u_drift_light|p90", "straight_drift": "u_drift_light|p90"}
+
+# An item whose measure changed to a stricter reading of the same quantity keeps its multiplier across the change
+# ({item: the signatures it is carried over from}); its readings start afresh. 2026-11-12, the flat items on the
+# acceptance's own protocols (flat.py): the costs they scale are the same, and a resume that put them back to 1 would
+# take e.g. the hips' cost from 3x to 1x on a policy that needs more of it, not less.
+CARRY_SCALE = {"clock": {"gait_match|mean"}, "side_drift": {"u_drift_light|p90"},
+               "straight_drift": {"u_drift_light|p90"}, "creep": {"u_stop_creep_light|mean"},
+               "march_hip": {"u_march_hip_light|mean"}}
 
 # An item split off another one: {new item: (the item its terms hung on, that item's signature then)}. A checkpoint
 # from before the split gives the new item the multiplier its terms had (2026-11-12: march_hip_default was scaled
@@ -698,21 +719,38 @@ class constraints:
     # how each item is measured (into the checkpoint: `load` starts an item afresh when it has changed)
     self.sig: dict[str, str] = {c["name"]: item_sig(c) for c in (getattr(cfg, "params", None) or {}).get("items", [])}
     self.redefined: list[str] = []         # the items `load` started afresh
+    self.remeasured: list[str] = []        # the items `load` kept the multiplier of and measures anew (CARRY_SCALE)
+    self._env = env
     env.u_constraints = self
 
   def reset(self, env_ids=None) -> None:
     pass
 
   def state(self) -> dict:
-    return {"scale": dict(self.scale), "value": dict(self.value), "values": dict(self.values),
-            "count": dict(self.count), "relax": dict(self.relax), "ref": dict(self.ref), "sig": dict(self.sig)}
+    out = {"scale": dict(self.scale), "value": dict(self.value), "values": dict(self.values),
+           "count": dict(self.count), "relax": dict(self.relax), "ref": dict(self.ref), "sig": dict(self.sig)}
+    flat = getattr(self._env, "u_flat", None)
+    if flat is not None:   # the flat protocols' samples (flat.flat_measure): the "flat:" items' readings
+      out["flat"] = flat.state()
+    return out
+
+  def forget(self, prefix: str) -> None:
+    """Drop the readings of the items measured by metric `prefix` (their source stopped: flat.flat_measure's
+    fault): their multipliers hold where they are instead of following a reading that no longer moves."""
+    for name, sig in self.sig.items():
+      if sig.startswith(prefix):
+        self.value.pop(name, None)
+        for k in [k for k in {*self.values, *self.count} if k == name or k.startswith(name + "@")]:
+          self.values.pop(k, None)
+          self.count.pop(k, None)
 
   def load(self, state: dict) -> None:
     """A checkpoint's multipliers and readings. One from before the scan modes' split (no "values") gives the
     multipliers; its readings are taken afresh. An item measured another way than in the checkpoint (its
     signature; LEGACY_SIG for a checkpoint from before they were saved) starts afresh: multiplier 1, no readings --
     a multiplier that another quantity drove says nothing about this one (2026-11-12: the creep item's sat at its 3x
-    cap on the anchor measure)."""
+    cap on the anchor measure); an item in CARRY_SCALE whose old measure is listed there keeps its multiplier and
+    only its readings start afresh. The flat protocols' samples ("flat") go to flat.flat_measure when both exist."""
     self.scale = dict(state["scale"])
     self.value = dict(state.get("value", {}))
     self.values = dict(state.get("values", {}))
@@ -721,19 +759,25 @@ class constraints:
     # (a checkpoint from before the stairs families' reference has none: it starts at the first judged reading)
     self.ref = {f: float(v) for f, v in (state.get("ref") or {}).items()}
     old = state.get("sig")
-    self.redefined = []
+    self.redefined, self.remeasured = [], []
     for name, sig in self.sig.items():
       was = LEGACY_SIG.get(name, sig) if old is None else old.get(name, sig)
       if was == sig:
         continue
-      self.scale.pop(name, None)
+      keep = was in CARRY_SCALE.get(name, ()) and name in self.scale
+      if not keep:
+        self.scale.pop(name, None)
       self.value.pop(name, None)
       for k in [k for k in {*self.values, *self.count} if k == name or k.startswith(name + "@")]:
         self.values.pop(k, None)
         self.count.pop(k, None)
-      self.redefined.append(name)
-      print(f"[unified] constraint {name}: measured as {sig} now, {was} in the checkpoint -- its multiplier and "
-            f"readings start afresh")
+      (self.remeasured if keep else self.redefined).append(name)
+      print(f"[unified] constraint {name}: measured as {sig} now, {was} in the checkpoint -- "
+            + (f"its multiplier stays ({self.scale[name]:.2f}), its readings start afresh" if keep else
+               "its multiplier and readings start afresh"))
+    flat = getattr(self._env, "u_flat", None)
+    if flat is not None and state.get("flat"):
+      flat.load(state["flat"])
     for name, (src, src_sig) in SPLIT_FROM.items():
       if name not in self.sig or name in state["scale"] or src not in state["scale"]:
         continue
