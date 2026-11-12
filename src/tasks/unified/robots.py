@@ -51,7 +51,12 @@ def _from_table(name: str) -> URobot:
                 foot_r_m=r.get("foot_r") if r["kind"] == "legged" else None, payload_point=r.get("payload_point"))
 
 
-ROBOTS: dict[str, URobot] = {name: _from_table(name) for name in ("Go2", "Go2W")}
+# The robots the tasks are registered for: Go2 and Go2W, or the ones U_ROBOTS names ("As2", "As2W,B2", ...; 2026-11-12:
+# the short probes of the other robots -- the robot table and the blind builders have all six with one signature, and
+# registering every robot builds three times as many environments at every import).
+ROBOTS: dict[str, URobot] = {
+  name: _from_table(name) for name in (os.environ.get("U_ROBOTS") or "Go2,Go2W").split(",") if name
+}
 
 
 def unified_recipe(robot: URobot) -> dict:
@@ -89,15 +94,10 @@ def _environ(values: dict[str, str | None]):
 
 
 def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
-  if robot.name == "Go2":
-    from src.tasks.velocity.config.go2.blind_env_cfgs import unitree_go2_blind_scratch_env_cfg
-
-    return unitree_go2_blind_scratch_env_cfg
-  if robot.name == "Go2W":
-    from src.tasks.velocity.config.go2w.blind_env_cfgs import unitree_go2w_blind_scratch_env_cfg
-
-    return unitree_go2w_blind_scratch_env_cfg
-  raise KeyError(robot.name)
+  """The robot's blind builder from zero: unitree_<key>_blind_scratch_env_cfg(play, terrain, phase), the same
+  signature for all six robots."""
+  mod = importlib.import_module(f"src.tasks.velocity.config.{robot.key}.blind_env_cfgs")
+  return getattr(mod, f"unitree_{robot.key}_blind_scratch_env_cfg")
 
 
 # Keys left out of the base: the old constraint sets (the unified teacher has its own, constraints.py) and the

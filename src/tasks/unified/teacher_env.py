@@ -526,7 +526,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
   (diagnostics.py):
     U_Q_SCALE_MAX=<x>    the stairs-quality constraints' multipliers stay at or below x (1: the recipe's P weights);
     U_TERMINATED_X=<k>   an episode ended by a fall or an illegal contact costs k times as much (is_terminated);
-    U_PAYLOAD_Q=0        the payload limit does not follow the stairs quality (curriculum.progress_payload)."""
+    U_PAYLOAD_Q=0        the payload limit does not follow the stairs quality (curriculum.progress_payload);
+    U_Q_LR=<x>           the stairs-quality multipliers' step per update (constraints.LR 0.003: 1 -> 3 in ~370
+                         iterations, and the costs grew fivefold in 200 iterations with the behaviour unchanged);
+    U_Q_SPAN=<it>        the iterations the stairs quality takes for 0 -> 1 (curriculum.Q_SPAN_IT)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -536,6 +539,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
   v = os.environ.get("U_TERMINATED_X")
   if v:
     cfg.rewards["is_terminated"].weight *= float(v)
+  v = os.environ.get("U_Q_LR")
+  if v:
+    for c in items:
+      if c["by"] == "q":
+        c["lr"] = float(v)
 
 
 def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -589,6 +597,8 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
           c["base"] = {t: cfg.rewards[t].weight for t in c["terms"]}
       _probe_switches(cfg, items)
       _curriculum(cfg, robot, items, constrained, other if lean else [], (weights, params), other_shares)
+      if os.environ.get("U_Q_SPAN"):   # (_probe_switches; the curriculum's terms exist from here on)
+        cfg.curriculum["u_progress"].params["q_span_it"] = int(os.environ["U_Q_SPAN"])
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":
