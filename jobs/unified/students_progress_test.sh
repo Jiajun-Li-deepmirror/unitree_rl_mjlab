@@ -33,7 +33,7 @@ EOF
 task=$1; shift
 SV=100
 for a in "$@"; do case $a in --agent.run-name=*) name=${a#*=} ;; --agent.max-iterations=*) M=${a#*=} ;; --agent.save-interval=*) SV=${a#*=} ;; esac; done
-echo "$name $*" >> logs/train_args.txt
+echo "$name $* LINE_FLOOR=${U_STUDENT_LINE_FLOOR:-unset}" >> logs/train_args.txt
 case $task in *-RL) dir=go2_u_student_${task##*Student-}; dir=${dir,,}; dir=${dir%-rl}_rl; st=2 ;;
   *) dir=go2_u_student_${task##*Student-}; dir=${dir,,}; st=1 ;; esac
 run=logs/rsl_rl/$dir/$(date +%Y-%m-%d_%H-%M-%S)_$name
@@ -127,6 +127,7 @@ check "A exit 0" '[ "$(cat $A/rc)" = 0 ]'
 check "A S1 END plateau at 1100" 'L $A | grep -q "S1 END at 1100: plateau"'
 check "A S1 stopped before its cap" '[ $(lastck $r1) -lt 4000 ]'
 check "A S2 from model_1100" 'L $A | grep -q "stage 1 done: .*model_1100.pt"'
+check "A both stages trained with the formal line floor exported" '[ $(grep -c "LINE_FLOOR=2.0" $A/logs/train_args.txt) = 2 ]'
 check "A stage 2 saves every 50 (formal), stage 1 at the runner's 100" 'grep -q "blind2_tx_s0 .*--agent.save-interval=50" $A/logs/train_args.txt && ! grep -q "blind1_tx_s0 .*save-interval" $A/logs/train_args.txt'
 check "A gate 500 judged (11 checkpoints at a save every 50)" 'L $A | grep -q "S2 GATE 500: FAIL"'
 check "A gate 1000 FAIL" 'L $A | grep -q "S2 GATE 1000: FAIL"'

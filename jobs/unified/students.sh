@@ -40,6 +40,10 @@ if [ $PROBE = 1 ]; then
   [ $SMOKE = 1 ] && { echo "students.sh: STUDENT_PROBE=1 and SMOKE=1 together" >&2; exit 2; }
 fi
 source jobs/unified/formal.env   # the formal run's parameters, frozen with the commit
+# the students' straight-line flat items at least F_STUDENT_LINE_FLOOR times their weight (2026-11-14, go2-depth's
+# decision on probe S2K; src/tasks/unified/students.py line_floor): exported for the trainings, so each run's timeline
+# records it; an explicit U_STUDENT_LINE_FLOOR (a probe's) wins
+export U_STUDENT_LINE_FLOOR=${U_STUDENT_LINE_FLOOR:-$F_STUDENT_LINE_FLOOR}
 S1=${S1_ITERS:-$F_STUDENT_S1_ITERS} S2=${S2_ITERS:-$F_STUDENT_S2_ITERS} SEED=${SEED:-$F_STUDENT_SEED}
 # the stage-2 gates' candidate is the acceptance's (its verdict reused by name): the same average, or no run
 if [ $PROBE != 1 ] && [ $SMOKE != 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ] && [ "$F_S2_GATE_AVG_N" != "${AVG_N:-$F_ACCEPT_AVG_N}" ]; then
