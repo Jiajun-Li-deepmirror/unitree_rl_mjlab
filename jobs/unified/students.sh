@@ -91,12 +91,15 @@ s2_gate_run() {   # -n|-x KIND RUN K: the students' tier 2 on the average at K, 
   ( flock $how 9 || { log "STUDENT $kind S2 GATE $k: skipped (another gate runs on this card)"; exit 75; }
     BASELINE=1 CANDIDATES=avg AVG_N=$F_S2_GATE_AVG_N TN_GATE=skip ACCEPT_JOBS=1 ACCEPT_PEAK=1 ACCEPT_DRIFT_SPLIT=1 \
       ACCEPT_NEED_MB="$([ $kind = depth ] && echo "$F_S2_GATE_NEED_MB_DEPTH" || echo "$F_S2_GATE_NEED_MB")" ACCEPT_FREE_WAIT_S=$F_S2_GATE_WAIT_S \
+      ACCEPT_SMALL="$([ $kind = depth ] && echo "${F_S2_GATE_SMALL_DEPTH:-}")" \
       bash jobs/unified/accept.sh $R $kind $run $k >> $L 2>&1 ) 9> logs/jobs/unified_s2gate.lock
 }
 s2_gate_read() {   # KIND RUN K END -> GATE_OUT (pass | hard | fail | fault), GATE_GAP; logs the event
   local kind=$1 run=$2 k=$3 e=$4 P v q
   P=logs/checks/u_${r}_${kind}_$(basename $run)_a${F_S2_GATE_AVG_N}_$e
   v=$(head -n 1 ${P}_verdict.txt 2> /dev/null)
+  local sz=$(grep -m 1 '尺寸（门' ${P}_verdict.txt 2> /dev/null | sed 's/^ *//') note=""
+  [ -n "$sz" ] && note=" [$sz]"
   GATE_GAP=0
   case "$v" in
     PASS)
@@ -104,16 +107,16 @@ s2_gate_read() {   # KIND RUN K END -> GATE_OUT (pass | hard | fail | fault), GA
       GATE_GAP=${q%% *}
       if [ -z "$q" ] || awk -v g="${GATE_GAP:-1}" 'BEGIN { exit !(g > 0) }'; then
         GATE_OUT=hard
-        log "STUDENT $kind S2 GATE $k: HARDPASS quality gap ${GATE_GAP:-?} (${q#* }) -- kept, training goes on"
+        log "STUDENT $kind S2 GATE $k: HARDPASS quality gap ${GATE_GAP:-?} (${q#* }) -- kept, training goes on${note}"
         tl $run s2_gate $k verdict=HARDPASS end=$e gap=${GATE_GAP:-?} "quality=${q#* }"
       else
         GATE_OUT=pass
-        log "STUDENT $kind S2 GATE $k: PASS, the quality no worse than delivered (${q#* })"
+        log "STUDENT $kind S2 GATE $k: PASS, the quality no worse than delivered (${q#* })${note}"
         tl $run s2_gate $k verdict=PASS end=$e gap=$GATE_GAP "quality=${q#* }"
       fi ;;
-    FAIL*) GATE_OUT=fail; log "STUDENT $kind S2 GATE $k: $(echo "$v" | cut -c1-300)"
+    FAIL*) GATE_OUT=fail; log "STUDENT $kind S2 GATE $k: $(echo "$v" | cut -c1-300)${note}"
            tl $run s2_gate $k verdict=FAIL end=$e "why=$(echo "$v" | cut -c1-300)" ;;
-    *) GATE_OUT=fault; log "STUDENT $kind S2 GATE $k: no verdict (${v:-none}; a tool fault, training goes on)"
+    *) GATE_OUT=fault; log "STUDENT $kind S2 GATE $k: no verdict (${v:-none}; a tool fault, training goes on)${note}"
        tl $run s2_gate $k verdict=FAULT end=$e "why=${v:-none}" ;;
   esac
 }

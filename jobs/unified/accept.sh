@@ -176,6 +176,7 @@ run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait
 gpu_free() { nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | head -n 1 | awk -F', *' '{print $1 - $2}'; }
 gpu_used() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -d ' '; }
 memneed() {   # OUT -> MiB
+  [ -n "${ACCEPT_NEED_OVERRIDE:-}" ] && { echo $ACCEPT_NEED_OVERRIDE; return; }   # (run_sized's small size)
   local b=$(basename $1) e k need=${ACCEPT_FREE_MB:-0} es
   read -ra es <<< "${ACCEPT_NEED_MB:-}"   # (no globbing of "*:MiB")
   for e in "${es[@]}"; do
@@ -221,6 +222,22 @@ drift_join() {   # OUT: the two halves (ACCEPT_DRIFT_SPLIT) as one file, only wh
   fi
 }
 
+# ACCEPT_SMALL "test:robots:MiB ..." (2026-11-14, go2-depth: the depth students' gates beside two trainings -- stand
+# 13.0 GB and am 10.1 GB at full size do not fit the ~8 GB left): such a test runs at full size when the card has its
+# full need (ACCEPT_NEED_MB) free as it is about to start, else at the small size (robots per group / per command) when
+# that size's need is free, else it waits for the small one (memwait). The size used goes to OUT's .size file and the
+# verdict's detail lines; the bars and the reading are the same. Unset: full size always, as before.
+run_sized() {   # OUT TEST FULL_N CMD... (the command's size argument written @N@)
+  local out=$1 key=$2 n=$3 spec; shift 3
+  spec=$(echo " ${ACCEPT_SMALL:-} " | grep -oE " $key:[0-9]+:[0-9]+ " | tr -d ' ')
+  if [ -n "$spec" ]; then
+    local f=$(gpu_free) full=$(memneed $out)
+    if [ "${f:-0}" -lt "$full" ]; then n=$(echo $spec | cut -d: -f2); export ACCEPT_NEED_OVERRIDE=$(echo $spec | cut -d: -f3); fi
+  fi
+  echo "$key $n" > ${out%.txt}.size
+  run $out "${@//@N@/$n}"
+}
+
 tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   local tag=$1 CK=${CKOF[$1]} P=logs/checks/u_${r}_${KIND}_${name}_$1 cond X
   # REUSE_TIER2=1 (2026-11-13, go2-depth: the stage-2 gate's tier 2 is the acceptance's tier 2): a candidate whose tier
@@ -250,6 +267,10 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     *) echo "FAULT: whether $R has a typical payload could not be read (src/robot_table.py)"; return ;;
   esac
   # JOBS tests at a time (all conditions in one pool), each in its own process with its own U_PAYLOAD
+  pool_sized() {   # PAYLOAD OUT TEST FULL_N CMD... (run_sized)
+    while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
+    ( export U_PAYLOAD=$1; shift; run_sized "$@" ) &
+  }
   pool() {   # PAYLOAD OUT CMD...
     while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
     ( export U_PAYLOAD=$1; shift; run "$@" ) &
@@ -273,10 +294,10 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
       pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN
     fi
     pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
-    pool $pay ${P}_stand$X.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 768 $LIN $YAW
+    pool_sized $pay ${P}_stand$X.txt stand 768 $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
     pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96
     if [ $cond = unloaded ]; then
-      pool $pay ${P}_am.txt $W $S/accept_matrix.py --task $TF --envs-per-cmd 96 $CK $LIN $YAW
+      pool_sized $pay ${P}_am.txt am 96 $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
       pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd 48
     fi
     # wheels down: unloaded and typical (doc/redesign.md 2.2)
@@ -293,6 +314,9 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs 192 \
       --time-scale 1.6 --seed 0 )
   $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_verdict.txt 2>&1
+  # the sizes run_sized used, when any test ran small (a detail line: the first line stays the verdict)
+  local sz=$(for f in ${P}_*.size; do [ -f $f ] && echo "$(basename $f .size | sed "s/^$(basename $P)_//") $(cut -d' ' -f2 $f)"; done | tr '\n' ',' | sed 's/,$//')
+  [ -n "${ACCEPT_SMALL:-}" ] && [ -n "$sz" ] && echo "  尺寸（门，显存不够全尺寸时用小尺寸）：$sz" >> ${P}_verdict.txt
   local v=$(head -n 1 ${P}_verdict.txt)
   [[ "$v" == PASS || "$v" == FAIL* || "$v" == FAULT* ]] || v="FAULT: the judge gave no verdict: $(echo $v | cut -c1-120)"
   echo "$v"
