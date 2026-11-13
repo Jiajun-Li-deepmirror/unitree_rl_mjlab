@@ -329,6 +329,30 @@ def restore_teacher_curriculum(env, teacher_checkpoint: str, device: str) -> Non
   if cons is not None and "constraints" in state:
     cons.load(state["constraints"])
     print(f"[unified] student: the teacher's {len(state['constraints'].get('scale', {}))} constraint scales")
+    line_floor(cons)
+
+
+# U_STUDENT_LINE_FLOOR=<x> (2026-11-13, go2-depth's design; unset: the teacher's final multipliers as they are): the
+# students' straight-line flat items at least x times their configured weight. The teacher relaxes these items to its
+# floor (0.5) once it meets them, and the students' constraints are frozen at the teacher's final values -- while the
+# blind students drift 6-7% sideways at 0.3 m/s (the bar 5%) with no pressure left on it. Applied once after the
+# teacher's scales are loaded; frozen afterwards like the others. Under U_FLAT_ONLY=1 the stairs see min(x, 1).
+LINE_ITEMS = ("side_drift", "straight_drift", "back_drift", "head_tail", "head_med", "spin", "march")
+
+
+def line_floor(cons) -> list[str]:
+  v = os.environ.get("U_STUDENT_LINE_FLOOR")
+  if not v:
+    return []
+  x = float(v)
+  changed = []
+  for name in LINE_ITEMS:
+    if name in cons.scale:
+      old = float(cons.scale[name])
+      cons.scale[name] = max(old, x)
+      changed.append(f"{name} {old:.2f} -> {cons.scale[name]:.2f}")
+  print(f"[unified] student: U_STUDENT_LINE_FLOOR={x:g}: {', '.join(changed) or 'none of ' + ', '.join(LINE_ITEMS)}")
+  return changed
 
 
 def _is_blind(env) -> bool:

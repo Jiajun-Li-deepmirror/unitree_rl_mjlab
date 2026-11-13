@@ -26,6 +26,10 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from src.tasks.velocity.blind_env_cfg import STAIR_TERRAIN_NAMES
 
+# m: a stopped robot within this of where its command went to zero (2026-11-13, go2-depth: 0.50 -- the robots that go
+# back down an up flight go 0.8-1.7 m, the ones braking on a down flight roll one tread, 30-35 cm, and still stand on
+# the flight); jobs/unified/formal.env's F_STAIRS_STOP_DISP_M (exported) sets it
+STOP_DISP_MAX = float(os.environ.get("F_STAIRS_STOP_DISP_M", "0.50"))
 NUM_ROWS = 4
 STEP_RANGE = (0.05, 0.18)
 
@@ -243,6 +247,9 @@ def main() -> None:
   obs = pin_and_reset()
   set_cmd((args.vx, 0.0, args.wz))
   stopped_at = torch.full((num_envs,), -1, dtype=torch.long, device=dev)
+  # where each robot was when its command went to zero (2026-11-13, go2-depth: Go2W robots stopped on an up flight
+  # went back down to the start platform within 2 s -- 1.2-1.7 m -- and the 2-4 s drift alone read that as a stop)
+  stop_pos = torch.zeros((num_envs, 2), device=dev)
   alive = torch.ones(num_envs, dtype=torch.bool, device=dev)
   fall_after = torch.full((num_envs,), -2, dtype=torch.long, device=dev)   # -2: did not fall
   pos_hist, contact_hist = [], []
@@ -252,6 +259,7 @@ def main() -> None:
     if newly.any():
       set_cmd((0.0, 0.0, 0.0), newly)
       stopped_at[newly] = t
+      stop_pos[newly] = robot.data.root_link_pos_w[newly, :2]
     note_ring(t)
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
@@ -275,15 +283,19 @@ def main() -> None:
   contact_hist = torch.stack(contact_hist).cpu().numpy()
   stopped_np, alive_np = stopped_at.cpu().numpy(), alive.cpu().numpy()
   drift = np.full(num_envs, np.nan)
+  disp = np.full(num_envs, np.nan)   # from where the command went to zero to the hold's end (m)
   feet_down = np.full(num_envs, np.nan)
+  stop_pos_np = stop_pos.cpu().numpy()
   for b in range(num_envs):
     s = stopped_np[b]
     if s >= 0 and alive_np[b] and s + hold <= len(pos_hist):
       a, e = s + hold // 2, s + hold - 1
       drift[b] = np.linalg.norm(pos_hist[e, b] - pos_hist[a, b])
+      disp[b] = np.linalg.norm(pos_hist[e, b] - stop_pos_np[b])
       feet_down[b] = contact_hist[a : e + 1, b].mean()
   reached = stopped_np >= 0
-  stop_ok = reached & alive_np & (np.nan_to_num(drift, nan=1.0) < 0.05)
+  # stopped: still in the 2-4 s window AND where it was told to stop, within STOP_DISP_MAX (2026-11-13, go2-depth)
+  stop_ok = reached & alive_np & (np.nan_to_num(drift, nan=1.0) < 0.05) & (np.nan_to_num(disp, nan=9.0) <= STOP_DISP_MAX)
 
   # ---- Report ----
   print(f"\ncheckpoint: {args.checkpoint}\ncommand vx={args.vx} wz={args.wz}, "
@@ -309,6 +321,19 @@ def main() -> None:
     m = env_tread == tread
     print(f"tread {tread:>6}: traverse ok {trav_ok[m].mean():.0%}, stop ok {stop_ok[m].mean():.0%}")
   print(f"overall: traverse ok {trav_ok.mean():.0%}, fell {trav_fell.mean():.0%}; stop ok {stop_ok.mean():.0%}")
+  # where the stopped robots stayed (2026-11-13): per band and direction, of the robots that got the stop command and
+  # did not fall, the share within STOP_DISP_MAX of where they were told to stop and the displacement's median; its own
+  # lines ("stop-stay", not a band: the table's parsers read lines starting with a band)
+  held = reached & alive_np & np.isfinite(disp)
+  for lvl in range(NUM_ROWS):
+    for d in ("up", "down"):
+      m = (env_level == lvl) & (env_dir == d) & held
+      st = float((disp[m] <= STOP_DISP_MAX).mean()) if m.any() else float("nan")
+      md = float(np.median(disp[m])) if m.any() else float("nan")
+      p9 = float(np.percentile(disp[m], 90)) if m.any() else float("nan")
+      print(f"stop-stay {band(lvl):>9} {d:>4} | stayed {st:.0%} (within {STOP_DISP_MAX:.2f} m), displacement p50 {md:.2f} m, "
+            f"p90 {p9:.2f} m, n {int(m.sum())}")
+  print(f"stop-stay overall: stayed {float((disp[held] <= STOP_DISP_MAX).mean()) if held.any() else float('nan'):.0%} of {int(held.sum())}")
   # exact counts (2026-11-12, doc/redesign.md 2.2's "0 falls": the table's whole percents read 1-2 robots of 72 as 0%)
   print(f"falls: traverse {int(trav_fell.sum())} of {num_envs}, stop {int((~alive_np).sum())} of {num_envs}")
   # the stop run's falls by when (a reading; "falls:" above is what the judges read): on the approach (walking, before

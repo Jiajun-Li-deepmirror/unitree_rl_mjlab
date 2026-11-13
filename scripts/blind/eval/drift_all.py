@@ -44,6 +44,9 @@ p.add_argument("--num-envs", type=int, default=256)
 p.add_argument("--seconds", type=float, default=10.0)
 p.add_argument("--yaw-accel", type=float, default=0.0)
 p.add_argument("--lin-accel", type=float, default=0.0)
+p.add_argument("--cmds", default="", help="A-B: only the commands A..B of the list (0-based, inclusive) -- the same "
+               "robots per command in a smaller simulation (2026-11-13: the students' stage-2 gate runs the list in "
+               "two halves beside their training; the halves' outputs concatenated read as one run's)")
 payload_opt.add(p)
 args = p.parse_args()
 CMDS = [
@@ -51,6 +54,9 @@ CMDS = [
   (0.0, 0.3, 0.0), (0.0, -0.3, 0.0), (0.0, 0.6, 0.0), (0.0, -0.6, 0.0),
   (0.0, 0.0, 0.5), (0.0, 0.0, -0.5), (0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (0.0, 0.0, 1.5), (0.0, 0.0, -1.5),
 ]  # fmt: skip
+if args.cmds:
+  _a, _b = (int(x) for x in args.cmds.split("-"))
+  CMDS = CMDS[_a : _b + 1]
 
 cfg = load_env_cfg(args.task, play=True)
 payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
