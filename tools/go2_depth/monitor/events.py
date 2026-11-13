@@ -37,31 +37,42 @@ def poll(box: str, offsets: dict[str, int]) -> tuple[dict[str, int], list[str]] 
     script = (f"cd {D} || exit 1; for f in {FILES}; do [ -f \"$f\" ] || continue; "
               "s=$(stat -c %s \"$f\"); echo \"@@ $f $s\"; done")
     try:
-        out = subprocess.run([SSH, BOXES[box], script], capture_output=True, text=True, timeout=60).stdout
+        out = subprocess.run([SSH, BOXES[box], script], capture_output=True, text=True, errors="replace", timeout=60).stdout
     except subprocess.TimeoutExpired:
         return None
     sizes = {p: int(s) for _, p, s in (l.split() for l in out.splitlines() if l.startswith("@@ ") and len(l.split()) == 3)}
     if not sizes:
         return None
     lines: list[str] = []
+    taken: dict[str, int] = {}
     grow = [p for p, s in sizes.items() if p in offsets and s > offsets[p]]
     if grow:
         cmd = f"cd {D}; " + "; ".join(f"echo '@@@ {p}'; tail -c +{offsets[p] + 1} '{p}' | head -c {sizes[p] - offsets[p]}" for p in grow)
         try:
-            text = subprocess.run([SSH, BOXES[box], cmd], capture_output=True, text=True, timeout=90).stdout
+            raw = subprocess.run([SSH, BOXES[box], cmd], capture_output=True, timeout=90).stdout
         except subprocess.TimeoutExpired:
             return None
-        cur = ""
-        for l in text.splitlines():
-            if l.startswith("@@@ "):
-                cur = l[4:].replace("logs/jobs/", "")
-                continue
-            if l.strip() and EVENT.search(l) and not SKIP.search(l):
-                lines.append(f"[{box} {cur}] {l[:300]}")
+        # bytes, cut by the lengths asked for: a log is read while it is written, and a chunk may end inside a line
+        # (or inside a character: the decode of such a chunk as text stopped the monitor, 2026-11-13). Only a file's
+        # whole lines are taken; the line being written is read at the next poll, from its start.
+        pos = 0
+        for p in grow:
+            mark = f"@@@ {p}\n".encode()
+            i = raw.find(mark, pos)
+            if i < 0:
+                break
+            chunk = raw[i + len(mark): i + len(mark) + sizes[p] - offsets[p]]
+            pos = i + len(mark) + len(chunk)
+            whole = chunk[: chunk.rfind(b"\n") + 1]
+            taken[p] = offsets[p] + len(whole)
+            cur = p.replace("logs/jobs/", "")
+            for l in whole.decode("utf-8", errors="replace").splitlines():
+                if l.strip() and EVENT.search(l) and not SKIP.search(l):
+                    lines.append(f"[{box} {cur}] {l[:300]}")
     # a file new since the last poll counts from its start next time only if it is small (a fresh log)
     new = {p: (sizes[p] if p in offsets or not offsets else 0) for p in sizes}
     for p in grow:
-        new[p] = sizes[p]
+        new[p] = taken.get(p, offsets[p])
     return new, lines
 
 
