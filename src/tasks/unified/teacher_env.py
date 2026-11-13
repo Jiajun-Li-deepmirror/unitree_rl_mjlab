@@ -242,6 +242,17 @@ def constraint_items(kind: str) -> list[dict]:
       if item["name"] in caps:
         assert item["by"] == "q" and item["terms"], f"U_ITEM_CAP: {item['name']} is not a stairs-quality item with costs"
         item["max_scale"], item["own_cap"] = caps[item["name"]], True
+  v = os.environ.get("U_ITEM_FLOOR")   # a probe's switch (_probe_switches): "<item>:<floor>,..."
+  if v:
+    # the named stairs-quality items' multipliers start from a floor (the first update clamps a checkpoint's
+    # multiplier up to it: constraints.__call__), their cap at least that and their own. Skips as U_ITEM_CAP does.
+    floors = {k.strip(): float(x) for k, x in (kv.split(":") for kv in v.split(","))}
+    assert all(1.0 <= x <= 6.0 for x in floors.values()), f"U_ITEM_FLOOR {v}: floors 1-6"
+    for item in items:
+      if item["name"] in floors:
+        assert item["by"] == "q" and item["terms"], f"U_ITEM_FLOOR: {item['name']} is not a stairs-quality item with costs"
+        x = floors[item["name"]]
+        item["min_scale"], item["max_scale"], item["own_cap"] = x, max(item["max_scale"], x), True
   if os.environ.get("U_STAIR_PARK"):
     # park_down is enforced and scales the standstill cost (_add_stair_park); its cap is its own (PARK_CAP, not
     # U_Q_SCALE_MAX's: at the cost's weight alone the account is close on the steepest rows -- constraints.stairs_park)
@@ -950,6 +961,16 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          heading observation and the ground-speed climb (uprobe_s47): the climb item read 0.74 /
                          0.71 against its target 0.85 with its multiplier at the cap 1 for the whole probe, and
                          tier 2's blind climbs were 0.77x of the command (the bar: 0.8x);
+    U_ITEM_FLOOR=<item>:<floor>,...  the named stairs-quality items' multipliers do not go below their floor (1-6),
+                         their cap at least that (read in constraint_items) -- in effect from a checkpoint's first
+                         update on, where U_ITEM_CAP's rise takes hundreds of iterations. 2026-11-13, tier 2 of the
+                         Go2 uprobe_s62 9091 against the delivered go2_blind_v4 tile by tile: the riser kicks are
+                         level on the climbs (0.353 / step against 0.358) and the whole gap is on the descents
+                         (0.361 against 0.262), with the mid-tread share 0.02-0.04 lower on almost every tile
+                         (0.754 against 0.778). v4 trained with its feet_edge cost at 2 times the weight; here the
+                         edge / mid items hold it at U_Q_SCALE_MAX's cap of 1 with mid at 0.756 against its target
+                         0.84. U_ITEM_FLOOR=mid:<x> puts feet_edge at <x> times its weight (several items on one
+                         term: the strongest, constraints._apply);
     U_STAIR_APPROACH=<x> with U_STAIR_SPEED_H=1: the stairs speed cost also holds on the level ground of a climbing
                          column under a forward command (before the flight, on its landing) -- in full up to the
                          common payload, <x> times it from 2/3 of the limit up, linear in between (0.0: a heavy
