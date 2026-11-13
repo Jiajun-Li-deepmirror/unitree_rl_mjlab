@@ -83,7 +83,7 @@ s2_gate_run() {   # -n|-x KIND RUN K: the students' tier 2 on the average at K, 
   local how=$1 kind=$2 run=$3 k=$4
   ( flock $how 9 || { log "STUDENT $kind S2 GATE $k: skipped (another gate runs on this card)"; exit 75; }
     BASELINE=1 CANDIDATES=avg AVG_N=$F_S2_GATE_AVG_N TN_GATE=skip ACCEPT_JOBS=1 ACCEPT_PEAK=1 ACCEPT_DRIFT_SPLIT=1 \
-      ACCEPT_NEED_MB="$F_S2_GATE_NEED_MB" ACCEPT_FREE_WAIT_S=$F_S2_GATE_WAIT_S \
+      ACCEPT_NEED_MB="$([ $kind = depth ] && echo "$F_S2_GATE_NEED_MB_DEPTH" || echo "$F_S2_GATE_NEED_MB")" ACCEPT_FREE_WAIT_S=$F_S2_GATE_WAIT_S \
       bash jobs/unified/accept.sh $R $kind $run $k >> $L 2>&1 ) 9> logs/jobs/unified_s2gate.lock
 }
 s2_gate_read() {   # KIND RUN K END -> GATE_OUT (pass | hard | fail | fault), GATE_GAP; logs the event
