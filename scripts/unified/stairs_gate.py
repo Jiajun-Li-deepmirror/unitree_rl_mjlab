@@ -13,9 +13,12 @@ Judged, in each scan mode (the students' bars unless said):
   stop ok      the mid-flight stop's share: >= 95%
   four feet    the stop's all-feet-down share per band and direction: >= accept_tables.stop_feet_bar
   speed        the flight speed over the command (eval_stairs' "speed" lines, robots weighted), up and down: 0.8-1.2
-  counts       TEACHER_COUNT_BARS: "no worse than the delivered model" on tier 2 (option (b): the students' 0.245 kicks
-               is beyond even the delivered Go2 blind; a teacher worse than delivered does not go on); a robot without
-               an entry: the students' bars. Fewer than MIN_EVENTS counted: untested (a tool fault)
+  counts       hard: the edge <= 0.10 (legged) / TEACHER_COUNT_BARS' slide-back (wheeled). Fewer than MIN_EVENTS
+               counted: untested (a tool fault)
+Quality targets (legged; 2026-11-13, the user: no hard numbers -- few kicks going UP, ~2 per map3 flight; mid only a
+means against edge slips): TEACHER_COUNT_BARS' "targets" -- the ascents' kicks per scan mode (tile rows "up") and the
+slips of both modes pooled no worse than the delivered model. A hard pass that misses them: "HARDPASS (target gap G)",
+exit 5 (teacher.sh does not stop early on it; it keeps it for the pick at the cap). mid, the descents' kicks: reported.
 --pay N: also PREFIX_pay.txt (the seen mode with the walking payload, 8 kg at the acceptance's point), judged on its
 falls only (traverse + stop <= N); its speed, four feet and counts reported.
 --typ: also PREFIX_typ_on.txt / PREFIX_typ_off.txt (both scan modes with the typical payload, jobs/accept_payload.sh R
@@ -27,8 +30,8 @@ with 4 kg, which the speed -- read on the robots that got past -- let through). 
 6097 fell 43 / 27 and Go2W s28 4997 (every unloaded stairs item passed) 11 / 24 at the typical 4 kg, 10-36% on the
 15-18 cm climbs; the students' acceptance takes no fall there, so such a teacher's students fail 7000 iterations later.
 Reported only: the unloaded runs' stalled share, the heading on the flight.
-First line: "PASS ...", "FAIL (gap G): <reasons>" (G: the summed relative shortfall, for picking the best judged at the
-cap) or "FAULT: <what could not be read>". Exit 0 / 1 / 4.
+First line: "PASS ...", "HARDPASS (target gap G): ...", "FAIL (gap G): <reasons>" (G: the summed relative shortfall,
+for picking the best judged at the cap) or "FAULT: <what could not be read>". Exit 0 / 5 / 1 / 4.
 """
 
 from __future__ import annotations
@@ -47,17 +50,19 @@ FALLS_MAX = 2   # per scan mode, traverse + stop, of 576 (go2-depth 11-13: one n
 STOP_OK_MIN = 95.0
 SPEED_RANGE = (0.8, 1.2)
 MIN_EVENTS = aj.MIN_STAIR_EVENTS
-STUDENT_COUNT_BARS = {"legged": {"kicks": ("max", aj.LEGGED_BARS["kicks"]), "slips": ("max", aj.LEGGED_BARS["slips"]),
-                                 "mid": ("min", aj.LEGGED_BARS["mid"]), "edge": ("max", aj.LEGGED_BARS["edge"])},
+# The stairs counts (2026-11-13 ~15:10, go2-depth's decision after the user's "我其实没有明确的数字要求，尽量满足上楼梯
+# 不要踢立面，最好踩在中间就行。map3每段踢立面最好能控制在2次左右就行，踩中间其实主要是为了不要踩楼梯边缘导致脚滑，没有硬性
+# 要求"): HARD (in PASS / FAIL) the edge (legged) / the slide-back (wheeled); QUALITY TARGETS (not in PASS / FAIL) the
+# kicks on the ascents (eval_stairs' tile rows "up", each scan mode) and the slips (both modes pooled): the early pick
+# needs them no worse than the delivered model -- a hard pass that misses them is "HARDPASS" (exit 5), which
+# teacher.sh keeps for the pick at the cap. mid and the descents' kicks: reported only.
+STUDENT_COUNT_BARS = {"legged": {"edge": ("max", aj.LEGGED_BARS["edge"])},
                       "wheeled": {"slide_back": ("max", aj.WHEELED_SLIDE_BAR)}}
-# The teacher's stairs counts: the delivered model's tier-2 reading (11-13, the counters of 0dc3b56 / 28edf91, every
-# robot counted; go2-depth's choice (b)). edge: the students' 0.10, not the delivered 0.083 (unitree-rl-mjlab-62: a
-# teacher-only stricter edge would block on an item the students' own bar allows; the Go2 candidates read 0.090-0.097).
 TEACHER_COUNT_BARS = {
-  "Go2": {"bars": {"kicks": ("max", 0.31), "slips": ("max", 0.069), "mid": ("min", 0.778), "edge": ("max", 0.10)},
-          "source": "go2_blind_v4 model_10000 (logs/pkg/go2_fe_polish_10000) on t1, 0dc3b56: kicks 0.308, slips 0.068, "
-                    "mid 0.778, edge 0.083 (logs/checks/u_go2_v4_10000_stairs_tiles.txt)"},
-  "Go2W": {"bars": {"slide_back": ("max", 0.039)},
+  "Go2": {"bars": {"edge": ("max", 0.10)}, "targets": {"kicks_up": 0.36, "slips": 0.069},
+          "source": "go2_blind_v4 model_10000 (logs/pkg/go2_fe_polish_10000) on t1, 0dc3b56: kicks up 0.356 / down 0.260, "
+                    "slips 0.068, mid 0.778, edge 0.083 (logs/checks/u_go2_v4_10000_stairs_tiles.txt)"},
+  "Go2W": {"bars": {"slide_back": ("max", 0.039)}, "targets": {},
            "source": "go2w_bl2_g14_13600 (logs/pkg/go2w_bl2_g14_13600) on t2, 28edf91: slide-back 0.039 over 17116 "
                      "step-ups (logs/checks/u_go2w_deployed_13600_stairs_tiles.txt)"},
 }
@@ -226,14 +231,45 @@ def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) 
       if pf > pay_falls:
         bad.append(f"满载摔倒 {pf}")
         gap += 1.0 + 0.1 * (pf - pay_falls)
+  # the quality targets (legged; not in PASS / FAIL): the ascents' kicks per scan mode, the slips of both modes pooled
+  targets = (entry or {}).get("targets", {}) if not wheeled else {}
+  tmiss, tgap = [], 0.0
+  if not wheeled:
+    pooled = [0.0, 0.0]
+    for mode in ("on", "off"):
+      path = f"{prefix}_{mode}.txt"
+      dc, sm = aj.stairs_dir_counts(path), aj.stairs_metrics(path)
+      up, dn = (dc.get("up") or {}).get("kicks"), (dc.get("down") or {}).get("kicks")
+      if sm.get("slips") is not None and sm.get("steps"):
+        pooled[0] += sm["slips"] * sm["steps"]
+        pooled[1] += sm["steps"]
+      detail.append(f"scan {mode}: kicks up {'-' if up is None else f'{up:.3f}'}"
+                    + (f" (per map3 flight ~{up * aj.FLIGHT_STEPS:.1f})" if up is not None else "")
+                    + f", down {'-' if dn is None else f'{dn:.3f}'} (reported); slips {sm.get('slips')}, mid {sm.get('mid')}"
+                    + " (targets / reported)")
+      if "kicks_up" in targets:
+        if up is None:
+          missing.append(f"scan {mode}: no tile rows (the ascents' kicks)")
+        elif up > targets["kicks_up"]:
+          tmiss.append(f"scan {mode} 上楼 kicks {up:.3f}（每段约 {up * aj.FLIGHT_STEPS:.1f} 次）")
+          tgap += up / targets["kicks_up"] - 1.0
+    if "slips" in targets and pooled[1]:
+      sl = pooled[0] / pooled[1]
+      if sl > targets["slips"]:
+        tmiss.append(f"slips {sl:.3f}（两种模式合并）")
+        tgap += sl / targets["slips"] - 1.0
   src = entry["source"] if entry else "the students' bars (no delivered reading for this robot)"
   if bad:
     head, rc = f"FAIL (gap {gap:.2f}): " + "；".join(bad + [f"未测 {m}" for m in missing]), 1
   elif missing:
     head, rc = "FAULT: " + "；".join(missing), 4
+  elif tmiss:
+    head, rc = (f"HARDPASS (target gap {tgap:.2f}): 硬项全过；质量目标差于已交付（早停要求不差于已交付）："
+                + "；".join(tmiss)), 5
   else:
     head, rc = "PASS (the tier-2 stairs in both scan modes)", 0
-  return "\n".join([head] + [f"  {d}" for d in detail] + [f"  count bars: {bars}; from {src}"]), rc
+  return "\n".join([head] + [f"  {d}" for d in detail]
+                   + [f"  hard count bars: {bars}; quality targets: {targets or '-'}; from {src}"]), rc
 
 
 def main() -> int:

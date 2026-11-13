@@ -13,6 +13,10 @@
 # the students' bars, the stairs counts no worse than the delivered model); a seed's stairs again only
 # F_STAIRS_GATE_GAP (500) iterations on; every judged candidate in <pick>.judged; none passed by the cap -> "STOP: needs
 # a human" with the best judged (exit 3). STAIRS_GATE=0: the gate below on every item.
+# Quality targets (2026-11-13, go2-depth after the user's stairs wording): the stairs gate's "HARDPASS" (exit 5: every
+# hard item passed, the legged kicks going up / slips worse than the delivered model) is not an early stop; with the
+# flat tests passed it goes to <pick>.hardpass, and at the cap -- no seed no worse than delivered -- the one with the
+# smallest target gap is the pick (exit 0, its misses in the log). "STOP: needs a human" only when none hard-passed.
 # FLAT_GATE (F_FLAT_GATE, 1; 2026-11-13, go2-depth's decision: the flat part by tier 2 too, the training's flat readings
 # ran about half of tier 2's): after the stairs pass, tier-2's own flat tests on the same checkpoint
 # (jobs/unified/flat_gate.sh: both scan modes, the students' flat bars, no flat fall, ~30 min) -- PASS: the pick; FAIL:
@@ -50,7 +54,7 @@ log() { echo "$(date '+%m-%d %H:%M:%S') $R unified teacher $VARIANT: $*" >> $L; 
 n=$(echo $SEEDS | wc -w)
 ENVS=${NUM_ENVS:-4096}; [ "${PARALLEL:-0}" = 1 ] && ENVS=$(( ${NUM_ENVS:-4096} / n ))
 log "${RESUME_RUN:+resume from $(basename $RESUME_RUN) model_$RESUME_K; }seeds $SEEDS, $ENVS robots each, $([ "${PARALLEL:-0}" = 1 ] && echo side by side || echo one after the other), cap $ITERS it, code $(cat REPO_COMMIT 2>/dev/null), formal.env $(md5sum jobs/unified/formal.env | cut -c1-8)"
-declare -A PID RUN BEFORE LASTK FLATK
+declare -A PID RUN BEFORE LASTK FLATK FLATSV
 STAIRS_GATE=${STAIRS_GATE:-$F_STAIRS_GATE} FLAT_GATE=${FLAT_GATE:-${F_FLAT_GATE:-0}}
 PREARGS="--pre"
 if [ "$STAIRS_GATE" = 1 ] && [ "$FLAT_GATE" = 1 ]; then
@@ -112,10 +116,10 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
     # the curriculum (and, without --flat-tier2, the training's flat items) by --pre; the stairs by tier-2's own test
     # (jobs/unified/stairs_gate.sh) on that checkpoint, at most once per F_STAIRS_GATE_GAP iterations per seed; then
     # (FLAT_GATE) tier-2's own flat tests on it (jobs/unified/flat_gate.sh)
-    local k last=${LASTK[$s]:--1000000} sv rc
+    local k last=${LASTK[$s]:--1000000} sv rc srun=""
     if [ -n "${FLATK[$s]:-}" ]; then
-      # its stairs passed, its flat tests were a tool fault: only those again
-      k=${FLATK[$s]}
+      # its stairs passed (or hard-passed), its flat tests were a tool fault: only those again
+      k=${FLATK[$s]} srun=${FLATSV[$s]:-}
       log "seed $s: model_$k passed the tier-2 stairs; its tier-2 flat tests again (a tool fault before)"
     else
       v=$($PY scripts/unified/teacher_gate.py ${RUN[$s]} --hold $F_GATE_HOLD --every $F_GATE_EVERY_IT $PREARGS 2> /dev/null | head -n 1)
@@ -131,6 +135,7 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
       log "seed $s: model_$k tier-2 stairs: $(echo "$sv" | head -n 1 | cut -c1-400)"
       case $rc in
         0) ;;
+        5) srun=$(echo "$sv" | head -n 1) ;;   # every hard item passed, the quality targets not reached: no early stop
         1) LASTK[$s]=$k
            echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
            return 1 ;;
@@ -141,14 +146,22 @@ gate() {    # SEED -> 0 when it passed (writes the pick)
       sv=$(bash jobs/unified/flat_gate.sh $R ${RUN[$s]}/model_$k.pt); rc=$?
       log "seed $s: model_$k tier-2 flat: $(echo "$sv" | head -n 1 | cut -c1-400)"
       case $rc in
-        0) FLATK[$s]="" ;;
-        1) FLATK[$s]=""; LASTK[$s]=$k
-           echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: stairs PASS; flat $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
+        0) FLATK[$s]="" FLATSV[$s]="" ;;
+        1) FLATK[$s]="" FLATSV[$s]=""; LASTK[$s]=$k
+           echo "$(echo "$sv" | head -n 1 | grep -oE 'gap [0-9.]+' | cut -d' ' -f2) ${RUN[$s]}/model_$k.pt seed $s: stairs $([ -n "$srun" ] && echo HARDPASS || echo PASS); flat $(echo "$sv" | head -n 1 | cut -c1-300)" >> $PICK.judged
            return 1 ;;
-        *) FLATK[$s]=$k
+        *) FLATK[$s]=$k FLATSV[$s]=$srun
            log "seed $s: TOOL FAULT in the tier-2 flat gate (exit $rc; model_$k's flat tests again at the next gate)"
            return 1 ;;
       esac
+    fi
+    if [ -n "$srun" ]; then
+      # every hard item of the stairs and the flat tests passed, the quality targets not (no worse than delivered is
+      # the early stop's rule): kept for the pick at the cap, the next tier-2 judgment F_STAIRS_GATE_GAP on
+      LASTK[$s]=$k
+      echo "$(echo "$srun" | grep -oE 'target gap [0-9.]+' | grep -oE '[0-9.]+$') ${RUN[$s]}/model_$k.pt seed $s: $(echo "$srun" | cut -c1-300)" >> $PICK.hardpass
+      log "seed $s: model_$k passes every hard item (stairs + flat), the quality targets not -- kept for the pick at the cap ($PICK.hardpass)"
+      return 1
     fi
     echo "${RUN[$s]}/model_$k.pt seed $s" > $PICK
     log "TEACHER PICK ${RUN[$s]}/model_$k.pt (seed $s; the curriculum by the training's readings, the stairs$([ "$FLAT_GATE" = 1 ] && echo ' and the flat tests') by tier 2)"
@@ -179,7 +192,7 @@ stop() {   # PID...: all at once. SIGTERM (a background job of a non-interactive
   done
   [ -z "$alive" ] || kill -KILL $alive 2> /dev/null
 }
-rm -f $PICK $PICK.others $PICK.judged   # (a previous run's kept seeds and judged candidates are not this run's)
+rm -f $PICK $PICK.others $PICK.judged $PICK.hardpass   # (a previous run's kept seeds and judged candidates are not this run's)
 passed=""
 if [ "${PARALLEL:-0}" = 1 ]; then
   for s in $SEEDS; do start $s; done
@@ -218,6 +231,17 @@ if [ -n "$passed" ]; then
   others=$(for s in $SEEDS; do [ $s = $passed ] || echo -n "$s "; done)
   echo "envs=$ENVS seeds=${others% }" > $PICK.others
   log "PASS (seed $passed: $(cat $PICK)); kept for a fallback: seeds ${others:-none} ($PICK.others)"
+  exit 0
+fi
+if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.hardpass ]; then
+  # no seed was no worse than delivered by the cap (go2-depth 11-13): the hard-passing checkpoint (stairs + flat) whose
+  # quality targets fall shortest -- the summed excess over the delivered references -- is the pick, its misses logged
+  best=$(sort -g $PICK.hardpass | head -n 1)
+  ck=$(echo "$best" | cut -d' ' -f2) bseed=$(echo "$best" | grep -oE 'seed [0-9]+' | head -n 1 | cut -d' ' -f2)
+  echo "$ck seed $bseed" > $PICK
+  others=$(for s in $SEEDS; do [ $s = $bseed ] || echo -n "$s "; done)
+  echo "envs=$ENVS seeds=${others% }" > $PICK.others
+  log "TEACHER PICK $ck (seed $bseed; at the cap: every hard item passed, the quality targets not reached -- $(echo "$best" | cut -d' ' -f3- | cut -c1-300); all hard passes in $PICK.hardpass)"
   exit 0
 fi
 if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.judged ]; then
