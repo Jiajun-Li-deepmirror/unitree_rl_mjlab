@@ -51,7 +51,7 @@
 <div class="bt">
   <h1 class="bt-title" id="title">统一流程训练进度 · Go2 / Go2W</h1>
   <p class="bt-lead" id="lead">正式训练在跑 <b data-draw="c-training" data-source="counts" data-field="training" data-row="0">—</b> 个；老师已通过的机型 <b data-draw="c-teachers" data-source="counts" data-field="teachers" data-row="0">—</b> 个，已通过验收的学生 <b data-draw="c-students" data-source="counts" data-field="students" data-row="0">—</b> 个；正式运行的告警 <b data-draw="c-alerts" data-source="counts" data-field="alerts" data-row="0">—</b> 个，迟到的时间点 <b data-draw="c-late" data-source="counts" data-field="late" data-row="0">—</b> 个，卡住、中断或记录故障 <b data-draw="c-bad" data-source="counts" data-field="bad" data-row="0">—</b> 个。</p>
-  <p class="bt-sub" id="updated">数据更新于 <span data-draw="updated">—</span>（北京时间），大约每 30 分钟更新一次。只记录 11-12 16:15 从零开训之后的统一流程：每个机型先训练一个带特权信息的老师，老师通过后训练盲走、深度两个学生，学生通过三层验收后交付。t1 训练 Go2，t2 训练 Go2W。</p>
+  <p class="bt-sub" id="updated">数据更新于 <span data-draw="updated">—</span>（北京时间），大约每 30 分钟更新一次。只记录正式训练（一个冻结的提交、从零开始、每个机型 2 个独立种子）：每个机型先训练一个带特权信息的老师，老师通过后训练盲走、深度两个学生，学生通过三层验收后交付。t1 训练 Go2，t2 训练 Go2W。</p>
   <div class="bt-tiles" id="tiles">
     <div class="bt-tile" id="tile-training"><div class="bt-tile-label">正式训练在跑</div><div class="bt-tile-num" data-draw="t-training" data-source="counts" data-field="training" data-row="0">—</div></div>
     <div class="bt-tile" id="tile-teachers"><div class="bt-tile-label">老师已通过（机型）</div><div class="bt-tile-num" data-draw="t-teachers" data-source="counts" data-field="teachers" data-row="0">—</div></div>
@@ -82,15 +82,15 @@
     </table>
   </div>
   <h2 class="bt-h2" id="alerts-h">当前告警</h2>
-  <p class="bt-sub" id="alerts-sub">训练记录自己发出的告警，解除后从这里消失（最近事件里留有记录）。探针的告警只作参考，不计入上面的数字。</p>
+  <p class="bt-sub" id="alerts-sub">训练记录自己发出的告警，解除后从这里消失（最近事件里留有记录）。</p>
   <div class="bt-scroll" id="alerts-wrap">
     <table class="bt-table" id="alerts" data-source="alerts" data-row-key="key">
-      <thead><tr><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="counted">计入</th><th data-field="name">告警</th><th data-field="text">内容</th><th data-field="since">从第几步起</th><th data-field="at">最近一次时间</th></tr></thead>
+      <thead><tr><th data-field="robot">机型</th><th data-field="run">运行</th><th data-field="name">告警</th><th data-field="text">内容</th><th data-field="since">从第几步起</th><th data-field="at">最近一次时间</th></tr></thead>
       <tbody data-draw="alerts"></tbody>
     </table>
   </div>
   <h2 class="bt-h2" id="curves-h">训练曲线和参考进度</h2>
-  <p class="bt-sub" id="curves-sub">横轴是迭代步数，画到前面最近的一个参考时间点为止；每条线是一个正式的老师训练（探针不画）。菱形是参考进度：到那一步应该达到的值，线从菱形的达标一侧经过就算跟上。失败率从第 50 步起画，之前结束的回合太少。</p>
+  <p class="bt-sub" id="curves-sub">横轴是迭代步数，画到前面最近的一个参考时间点为止；每条线是正式老师训练的一个种子。菱形是参考进度：到那一步应该达到的值，线从菱形的达标一侧经过就算跟上。失败率从第 50 步起画，之前结束的回合太少。</p>
   <div class="bt-legend" id="legend" data-draw="legend" data-source="curves">—</div>
   <div class="bt-charts" id="charts">
     <figure class="bt-fig" id="fig-p"><figcaption>进度 p</figcaption><div class="bt-chart" data-draw="chart-p" data-source="curves">—</div></figure>
@@ -122,8 +122,7 @@
       <li>进度 p：课程进度，从 0 到 1。指令范围、地形难度和负载随它放开；失败的回合太多时它走得慢。</li>
       <li>楼梯质量 q：楼梯质量阶段的进度，从 0 到 1。上楼行够高、上楼失败率降下来之后才开始走；随它收紧落脚位置、踢台阶、滑动、停下时四脚着地等要求。</li>
       <li>上楼行：上楼地形按难度分行，数字越大台阶越高；课程把机器人往上提，直到它失败。</li>
-      <li>通过条件：p 和 q 都到 1，并且全部约束连续达标一段步数，老师就通过，学生自动开始。到步数上限还没通过就停下分析。</li>
-      <li>探针：把旧检查点接到新代码上只跑楼梯质量阶段，提前看这一段有没有问题；不参与选定和交付。</li>
+      <li>通过条件：先是课程预通过（p 和 q 都到 1 并保持一段步数）；然后由第 2 层（mjlab 里合并统计的测试）查这个检查点的楼梯，过了再查平地，都过就选定它。楼梯没过就继续训练，隔 500 步再判。到步数上限还没过：取判过的检查点里最好的。老师选定后按正式流程启动学生。</li>
       <li>时间点里的楼梯项只从「平地会走」之后算：刚开始时上楼行是起始值，不是爬上去的。</li>
       <li>验收三层：训练中的指标、mjlab 里合并统计的测试、tinynav 仿真；空载和负载都测，负载不允许摔倒。</li>
     </ul>
@@ -142,7 +141,7 @@
   dash.loader('events', { description: '取出文件里的 events 列表：训练记录和流程日志里的事件，新的在前。', fn: list('events') });
   dash.calc('counts', {
     title: '计数',
-    description: '把各机型那一行里的计数加起来；探针只做诊断，不计入。',
+    description: '把各机型那一行里的计数加起来。',
     inputs: ['robots'],
     fn: (robots) => {
       const sum = (k) => robots.reduce((n, r) => n + (Number(r[k]) || 0), 0);
@@ -202,9 +201,9 @@
     td(tr, r.robot, 'bt-nowrap'); td(tr, r.machine, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.next || '—', 'bt-wide');
     td(tr, r.cap_eta, 'bt-nowrap'); td(tr, r.gate, 'bt-wide'); td(tr, r.at, 'bt-nowrap');
   });
-  table('alerts', 'alerts', 7, '现在没有告警', (tr, r) => {
+  table('alerts', 'alerts', 6, '现在没有告警', (tr, r) => {
     tr.dataset.key = encodeURIComponent(r.key);
-    td(tr, r.robot, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.counted, 'bt-nowrap'); td(tr, r.name, 'bt-nowrap'); td(tr, r.text, 'bt-wide');
+    td(tr, r.robot, 'bt-nowrap'); td(tr, r.run, 'bt-nowrap'); td(tr, r.name, 'bt-nowrap'); td(tr, r.text, 'bt-wide');
     td(tr, r.since, 'bt-num'); td(tr, r.at, 'bt-nowrap');
   });
   table('miles', 'milestones', 9, '还没有时间点', (tr, r) => {

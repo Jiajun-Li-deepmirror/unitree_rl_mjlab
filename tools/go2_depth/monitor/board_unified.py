@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""board_unified.py OUTDIR [--since 2026-11-12_16-15-39] [--manual FILE] -- the progress board's data, the unified flow
-only (go2-depth 2026-11-12, the user: "看板重置，只记录united训练"). Writes OUTDIR/board.json for the board artifact
+"""board_unified.py OUTDIR [--since 2026-11-13_17-15-00] [--manual FILE] -- the progress board's data: the unified
+flow's FORMAL trainings only (go2-depth 2026-11-12, the user: "看板重置，只记录united训练"; 2026-11-13, the user:
+"重置看板，之后只要放正式训练的数据就行" -- a probe's run, its alerts, its chain-log lines and the notes about probes
+are left out; --since is the formal run's start). Writes OUTDIR/board.json for the board artifact
 https://claude.ai/artifact/EYUJwttsJF7dW5cQdbjrXY (its page is board_unified.html beside this file; the page's
 datasets all read this one file, each through a loader that takes one list):
 
   robots      one row per robot: where its flow stands (teacher -> blind / depth students -> acceptance -> delivery)
-  runs        one row per training run started at or after --since (teacher seeds, a probe, later the students)
+  runs        one row per formal training run started at or after --since (the teacher seeds, later the students)
   milestones  the reference schedule (diagnostics.expectations) of each formal teacher seed: the deadline iteration,
               the clock time the run gets there at its measured speed, reached / open / late, the readings now
   curves      p, q, the climbing row and the fail rates (flat ground; the evaluation robots' stairs rows) over the
               iterations (<= 150 points a run; the fail rates from iteration FAIL_FROM_IT on)
-  alerts      one row per alert active now (a probe's too, marked as not counted)
+  alerts      one row per alert active now
   events      the runs' timeline events (start, milestones, alerts, faults, ends) and the chain logs' lines, in
               Chinese, newest first
 
 Read over ssh from t1 (Go2) and t2 (Go2W): logs/rsl_rl/<r>_u_*/<run>/records/{status.json,record.jsonl,
 timeline.jsonl} (src/tasks/unified/diagnostics.py), logs/jobs/unified_<r>{,_students,_accept}.txt and the pick
-files. A run renamed after a void start (_discard ...) and a smoke run are left out by their names; a chain-log line
-older than --since or of a smoke run is left out too. --manual: a JSON file {"events": [{at, machine, robot, run,
-text}]} of notes to add (default ~/.cache/go2-depth-work/board/manual.json when it exists).
+files. A run renamed after a void start (_discard ...), a smoke run and a probe (uprobe_*, *_probe_*) are left out by
+their names; a chain-log line older than --since, of a smoke run or of a probe (PROBE_LINE) is left out too.
+--manual: a JSON file {"events": [{at, machine, robot, run, text}]} of notes to add (default ~/.cache/go2-depth-work/board/manual.json when it exists).
 
 A stairs milestone "reached" before the robots walk is the starting rows' value, not climbing (the 11-12 Go2 run:
 "climbing row at 1.5" at iteration 300, with the rows still falling from where they started): it counts here only
@@ -126,7 +128,7 @@ for r in a["robots"]:
             lines = open("logs/jobs/" + name, errors="replace").read().splitlines()
         except OSError:
             lines = []
-        out["logs"][name] = [l[:400] for l in lines if re.match(r"\d\d-\d\d \d\d:\d\d:\d\d ", l) and l[:14] >= since_log][-400:]
+        out["logs"][name] = [l[:400] for l in lines if re.match(r"\d\d-\d\d \d\d:\d\d:\d\d ", l) and l[:14] >= since_log and "NOT YET" not in l][-600:]
     for name in ("unified_%s_full.pick" % r, "unified_%s_blind.pick" % r, "unified_%s_depth.pick" % r):
         try:
             out["picks"][name] = open("logs/jobs/" + name).read().strip()[:300]
@@ -217,21 +219,42 @@ def fold_resumes(runs: list[dict]) -> list[dict]:
   return [r for r in runs if id(r) not in gone]
 
 
+# a chain-log line of a probe: the students' / acceptance scripts run as a probe (PROBE ...), a baseline reading
+# (BASELINE ..., "(baseline)"), anything on a probe's run directory
+PROBE_LINE = re.compile(r"PROBE|BASELINE|\(baseline\)|_probe_|uprobe_")
+
+
+def tier2_zh(m) -> str:
+  """A formal teacher's tier-2 verdict line (teacher.sh's gate: the stairs, then the flat tests) in Chinese."""
+  rest = re.sub(r"\(gap ([\d.]+)\)", r"（差距 \1）", m[4])
+  for a, b in (("HARDPASS", "硬项通过（质量目标没全到）"), ("PASS", "通过"), ("FAIL", "不通过"), ("scan on", "扫描开"), ("scan off", "扫描关")):
+    rest = rest.replace(a, b)
+  return f"种子 {m[1]} 第 {m[2]} 步，第 2 层{'楼梯' if m[3] == 'stairs' else '平地'}检查：{rest}"
+
+
 def chain_zh(text: str) -> str | None:
   """A chain-log line's text in Chinese (None: not an event for the board); an unknown line stays as written."""
   base = lambda p: "/".join(p.rstrip("/").split("/")[-2:])   # noqa: E731
   rules = [
-    (r"seed \d+: (NOT YET|no verdict|its new run dir|passes at \d+, but)", None),
+    (r"seed \d+: (NOT YET|no verdict|its new run dir|passes at \d+, but|PRE-PASS at \d+[;,])", None),
+    (r"gate: PRE-PASS on the curriculum", lambda m: "通过条件：先课程预通过（进度、质量走完并保持），再第 2 层楼梯检查，再第 2 层平地检查"),
+    (r"seed (\d+): PRE-PASS (\d+)$", lambda m: f"种子 {m[1]} 课程预通过（第 {m[2]} 步）；接着由第 2 层检查楼梯和平地"),
+    (r"seed (\d+): model_(\d+) tier-2 (stairs|flat): (.*)", tier2_zh),
+    (r"seed (\d+): TOOL FAULT in the tier-2 (stairs|flat) gate \(exit (\d+)",
+     lambda m: f"种子 {m[1]}：第 2 层{'楼梯' if m[2] == 'stairs' else '平地'}检查工具故障（exit {m[3]}；不算未通过，下次再判）"),
+    (r"STOP: needs a human -- no seed passed and nothing was judged", lambda m: "停下等人工处理：到上限没有种子通过，第 2 层也没有判过任何检查点"),
     (r"seed \d+ started \(pid", None),
     (r"FROM ZERO on (\w+)", lambda m: f"从零开训（代码 {m[1]}）；这之前的运行作废"),
     (r"seeds (.+?), (\d+) robots each, (side by side|one after the other), cap (\d+) it, code (\w+)",
      lambda m: f"老师链启动：种子 {m[1]}，每个 {m[2]} 台机器人，{'并行' if m[3] == 'side by side' else '依次'}，上限 {m[4]} 步，代码 {m[5]}"),
     (r"resume from (\S+) model_(\d+); seeds (.+?),", lambda m: f"老师链从 {m[1]} 第 {m[2]} 步续训（种子 {m[3]}）"),
-    (r"quality-stage probe .*?: (\S+) model_(\d+) .*?(\d+) it;",
-     lambda m: f"楼梯质量阶段探针启动：旧检查点 {m[1]} 第 {m[2]} 步接新代码跑 {m[3]} 步，只做诊断，不参与选定和交付"),
+    (r"quality-stage probe ", None),
     (r"seed (\d+) resumes from (\S+) model_(\d+)", lambda m: f"种子 {m[1]} 从 {m[2]} 第 {m[3]} 步续训"),
     (r"seed (\d+): already at the cap", lambda m: f"种子 {m[1]} 已到上限，不再启动"),
-    (r"TEACHER PICK (\S+) \(seed (\d+)\)", lambda m: f"老师通过：选定种子 {m[2]}，{base(m[1])}"),
+    (r"TEACHER PICK (\S+) \(seed (\d+)(.*)",
+     lambda m: (f"老师到上限：硬项全过、质量目标没全到，选定种子 {m[2]}，{base(m[1])}" if "every hard item passed" in m[3]
+                else f"老师到上限没过门：选定判过的检查点里最好的，种子 {m[2]}，{base(m[1])}" if "below the gate" in m[3]
+                else f"老师通过：选定种子 {m[2]}，{base(m[1])}")),
     (r"PASS \(seed (\d+): .*?\); kept for a fallback: seeds (.+?) \(", lambda m: f"老师链完成：种子 {m[1]} 通过；备用种子 {m[2]}"),
     (r"seeds (.+?) stopped \(seed (\d+) passed", lambda m: f"种子 {m[1]} 已停（种子 {m[2]} 通过；检查点都保留）"),
     (r"seed (\d+) stopped at its pick", lambda m: f"种子 {m[1]} 在选定的检查点停下"),
@@ -316,15 +339,15 @@ def fetch(key: str, since: str) -> dict | None:
 # the board's dataset documents: name -> (title, description); all six read the one attached file
 DATASETS = {
   "robots": ("各机型的流程", "每个机型一行：老师、盲走学生、深度学生、验收、交付各到哪一步，以及这台机器的 GPU。"
-                             "只记录统一流程（11-12 16:15 起从零开训的 Go2 / Go2W）。"),
-  "runs": ("训练运行", "每个训练运行一行（老师的每个种子、探针，之后是学生）：步数、进度 p、质量 q、上楼行、"
+                             "只记录正式训练（一个冻结提交、从零开始；Go2 / Go2W）。"),
+  "runs": ("训练运行", "每个正式训练运行一行（老师的每个种子，之后是学生）：步数、进度 p、质量 q、上楼行、"
                        "各失败率、动作噪声、速度、下一个参考时间点、通过条件、告警数。取自各运行的训练记录。"),
   "milestones": ("参考进度的时间点", "每个正式老师种子的参考进度：到第几步应该达到什么、按现在速度几点到、"
                                      "已达到 / 未到 / 迟到，以及现在的读数。"),
   "curves": ("训练曲线", "每个正式老师种子随迭代步数的 p、q、上楼行和各失败率（每个运行最多 150 个点；"
                          "失败率从第 50 步起）。"),
-  "alerts": ("当前告警", "训练记录里现在没解除的告警，每条一行；探针的也列出，但不计入总数。"),
-  "events": ("最近事件", "各运行的时间线事件（开训、时间点、告警、故障、结束）和流程日志里的结论，新的在前，最多 80 条。"),
+  "alerts": ("当前告警", "正式训练的记录里现在没解除的告警，每条一行。"),
+  "events": ("最近事件", "各正式运行的时间线事件（开训、时间点、告警、故障、结束）、流程日志里的结论和人工记下的判断，新的在前，最多 80 条。"),
 }
 SCHEDULE = "训练期间每 30 分钟由 Claude 的循环重新生成并上传"
 STALE_HOURS = 2
@@ -346,7 +369,7 @@ def docs(out: Path, blob: str) -> int:
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("outdir")
-  ap.add_argument("--since", default="2026-11-12_16-15-39")
+  ap.add_argument("--since", default="2026-11-13_17-15-00")   # the formal run's start (Go2W 17:15:52, Go2 17:32:10)
   ap.add_argument("--manual", default=str(MANUAL))
   ap.add_argument("--docs", metavar="BLOB", help="write OUTDIR/docs/*.json for the uploaded file /_blob/<id> and stop")
   a = ap.parse_args()
@@ -368,6 +391,8 @@ def main() -> int:
     for run in sorted(fold_resumes(d["runs"]), key=lambda x: (x["exp"], x["run"])):
       st, series = run["status"], run["series"]
       role, kind, lab = label(run["run"])
+      if role == "probe":   # the formal trainings only (the user, 2026-11-13)
+        continue
       it, cap = st.get("it"), st.get("total_it")
       age = (now_t - float(st.get("t_end") or st.get("t") or now_t)) / 60.0
       if st.get("ended"):
@@ -393,13 +418,12 @@ def main() -> int:
       todo = [k for k in order if k not in got]
       late = [k for k in todo if it is not None and it >= expect[k][0]]
       cur = run.get("cur") or {}
-      names = [x for x in st.get("alerts") or [] if not (role == "probe" and x.startswith("late:"))]
+      names = list(st.get("alerts") or [])
       last_alert = {e.get("name"): e for e in run["timeline"] if e.get("ev") == "alert"}
       alerts = "；".join(names)
       for n in names:
         e = last_alert.get(n) or {}
-        alerts_out.append({"key": f"{R} {lab} {n}", "robot": R, "machine": box, "run": lab,
-                           "counted": "否（探针）" if role == "probe" else "是", "name": n,
+        alerts_out.append({"key": f"{R} {lab} {n}", "robot": R, "machine": box, "run": lab, "name": n,
                            "text": rr.alert_zh(e) if e else "", "since": e.get("since", e.get("it")),
                            "at": clock(e.get("t")) if e.get("t") else ""})
       gate = run.get("gate") or {}
@@ -451,11 +475,17 @@ def main() -> int:
 
     # the chain logs: the teacher chain, the students, the acceptance
     last_line: dict = {}
+    prepass: set = set()
     for fname, lines in d["logs"].items():
       for l in lines:
         head, _, text = l[15:].partition(": ")
-        if "SMOKE" in l:
+        if "SMOKE" in l or PROBE_LINE.search(l):
           continue
+        m = re.search(r"seed (\d+): PRE-PASS \d+$", text)   # every gate round repeats it: the first one is the event
+        if m:
+          if (fname, m[1]) in prepass:
+            continue
+          prepass.add((fname, m[1]))
         what = "流程"
         m = re.match(r"\S+ (blind|depth)$", head)
         if m:
@@ -496,7 +526,7 @@ def main() -> int:
                    for k in ("blind", "depth") if ("accept", k) in last_line)
     deliv = [e["text"] for e in events if e["robot"] == R and e["text"].startswith("交付包已生成")]
     gpu = d.get("gpu")
-    formal = [row for _, row in mine if row["role"] != "probe"]   # (a probe is a diagnostic: not counted)
+    formal = [row for _, row in mine]
     robots.append({"robot": R, "machine": box, "teacher": t_cell, "blind": cells["blind"], "depth": cells["depth"],
                    "accept": acc or "没有开始", "delivery": "；".join(deliv) or "没有",
                    "gpu": "" if not gpu else f"{gpu[0]}%，{gpu[1] / 1024:.1f} GB",
