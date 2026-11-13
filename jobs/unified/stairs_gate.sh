@@ -4,7 +4,9 @@
 # unloaded, 18 robots per tile) in both scan modes, one after the other (out of GPU memory: 2 min and again, 6 times),
 # judged by scripts/unified/stairs_gate.py; F_STAIRS_GATE_PAY=1 adds a third run, the seen mode with the walking
 # payload, judged on its falls (<= F_STAIRS_GATE_PAY_FALLS); F_STAIRS_GATE_TYP=1 two more, both scan modes with the
-# typical payload, judged as the students' typical condition judges its stairs. Prints its verdict (first line PASS / FAIL (gap G): ... / FAULT: ...);
+# typical payload, judged as the students' typical condition judges its stairs; the loaded and typical runs with
+# eval_stairs --causes (each fall's termination term, body, pitch / roll; reported, not judged). Prints its verdict
+# (first line PASS / FAIL (gap G): ... / FAULT: ...);
 # files logs/checks/u_<r>_tgate_<run>_<model>_{on,off}.txt and ..._verdict.txt. Exit 0 PASS, 1 FAIL, 4 a tool fault.
 # Called by jobs/unified/teacher.sh on a seed's "PRE-PASS K" (scripts/unified/teacher_gate.py --pre).
 set -u
@@ -29,7 +31,7 @@ if [ "${F_STAIRS_GATE_PAY:-0}" = 1 ]; then
   PAY=$(bash jobs/accept_payload.sh $R)
   for i in 1 2 3 4 5 6 7; do
     U_SCAN=on U_PAYLOAD=$PAY $PY jobs/unified/u_eval.py scripts/go2_blind/eval_stairs.py --task Unitree-$R-U-Teacher-Stairs $CK \
-      --envs-per-tile 18 --metrics > ${P}_pay.txt 2>&1 && break
+      --envs-per-tile 18 --metrics --causes > ${P}_pay.txt 2>&1 && break
     grep -qiE "out of memory|CUDA error 2" ${P}_pay.txt && [ $i -lt 7 ] || break
     sleep 120
   done
@@ -42,7 +44,7 @@ if [ "${F_STAIRS_GATE_TYP:-0}" = 1 ] && TYP=$(bash jobs/accept_payload.sh $R typ
   for m in on off; do
     for i in 1 2 3 4 5 6 7; do
       U_SCAN=$m U_PAYLOAD=$TYP $PY jobs/unified/u_eval.py scripts/go2_blind/eval_stairs.py --task Unitree-$R-U-Teacher-Stairs $CK \
-        --envs-per-tile 18 --metrics > ${P}_typ_$m.txt 2>&1 && break
+        --envs-per-tile 18 --metrics --causes > ${P}_typ_$m.txt 2>&1 && break
       grep -qiE "out of memory|CUDA error 2" ${P}_typ_$m.txt && [ $i -lt 7 ] || break
       sleep 120
     done

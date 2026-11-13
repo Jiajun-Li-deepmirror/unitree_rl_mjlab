@@ -84,6 +84,16 @@ def feet(t: str) -> list[tuple[str, str, float]]:
     r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", t, re.M)]
 
 
+def causes_lines(path: str) -> list[str]:
+  """eval_stairs --causes' per-phase lines ("causes traverse: n ... | terms ... | bodies ... | ... | pitch ..."),
+  shortened to the phase, the count, the top terms / bodies and the pitch; reported, not judged."""
+  out = []
+  for m in re.finditer(r"^causes +((?:traverse|stop: [^:]+)): n (\d+) \| terms ([^|]*)\| bodies ([^|]*)\|[^|]*\| pitch p50 ([^ ]+) deg",
+                       aj.txt(path), re.M):
+    out.append(f"{m.group(1)} {m.group(2)}: {m.group(3).strip()}; {m.group(4).strip()}; pitch {m.group(5)}")
+  return out
+
+
 def mode_checks(r: str, path: str, t: str, tag: str, bars: dict, bad: list, missing: list, detail: list) -> float:
   """One run's falls, stop ok, four feet and counts (both the unloaded and the typical runs); returns its gap."""
   wheeled = r in at.WHEELED
@@ -189,6 +199,9 @@ def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) 
       lr = aj.stairs_reach(path)
       if lr:
         detail.append(f"{tag} per band (reported): {lr}")
+      cl = causes_lines(path)
+      if cl:
+        detail.append(f"{tag} fall causes (reported): " + " / ".join(cl))
   # the walking payload (go2-depth 11-13, the user's hard rule "带负载一定不能摔"): PREFIX_pay.txt -- the seen mode,
   # 8 kg at the acceptance's point -- judged on its falls only (pay_falls); speed, four feet and the counts reported
   if pay_falls is not None:
@@ -207,6 +220,9 @@ def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) 
       lr = aj.stairs_reach(path) if hasattr(aj, "stairs_reach") else None   # (an older accept_judge: none)
       if lr:
         detail.append(f"loaded per band (reported; a stall is not judged): {lr}")
+      cl = causes_lines(path)
+      if cl:
+        detail.append("loaded fall causes (reported): " + " / ".join(cl))
       if pf > pay_falls:
         bad.append(f"满载摔倒 {pf}")
         gap += 1.0 + 0.1 * (pf - pay_falls)
