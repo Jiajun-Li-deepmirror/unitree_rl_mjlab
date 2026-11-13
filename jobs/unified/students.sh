@@ -23,6 +23,9 @@
 # STUDENT_PROBE=1 (2026-11-13, go2-depth: a student from a probe teacher, TEACHER= required): runs named *_probe, the
 # picks left alone, no acceptance, no fallback -- the stage-2 run is the output; read it with
 # BASELINE=1 CANDIDATES=first TN_GATE=skip bash jobs/unified/accept.sh R KIND RUN (tier 2 only: no pick, no delivery).
+# Stopping a formal run by hand: stop this script first (its PID, TERM), then the trainings. A stage 2 whose training
+# alone is TERMed counts as a fault and is started over from the stage-1 end (F_S2_RETRIES; 2026-11-13: stage 2 is
+# never resumed -- student_ppo's resume restores neither the BC progress nor num_updates).
 set -u
 R=$1 VARIANT=${2:-full}
 r=${R,,}
