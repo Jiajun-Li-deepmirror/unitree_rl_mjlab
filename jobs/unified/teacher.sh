@@ -11,12 +11,16 @@
 # curriculum done and the flat items, by the training's readings) gives "PRE-PASS K"; then tier-2's own stairs test on
 # model_K (jobs/unified/stairs_gate.sh: both scan modes, unloaded, ~5 min) passes or not (scripts/unified/stairs_gate.py:
 # the students' bars, the stairs counts no worse than the delivered model); a seed's stairs again only
-# F_STAIRS_GATE_GAP (500) iterations on; every judged candidate in <pick>.judged; none passed by the cap -> "STOP: needs
-# a human" with the best judged (exit 3). STAIRS_GATE=0: the gate below on every item.
+# F_STAIRS_GATE_GAP (500) iterations on; every judged candidate in <pick>.judged. STAIRS_GATE=0: the gate below on
+# every item.
 # Quality targets (2026-11-13, go2-depth after the user's stairs wording): the stairs gate's "HARDPASS" (exit 5: every
 # hard item passed, the legged kicks going up / slips worse than the delivered model) is not an early stop; with the
 # flat tests passed it goes to <pick>.hardpass, and at the cap -- no seed no worse than delivered -- the one with the
-# smallest target gap is the pick (exit 0, its misses in the log). "STOP: needs a human" only when none hard-passed.
+# smallest target gap is the pick (exit 0, its misses in the log). None hard-passed either (go2-depth 11-13 16:00: the
+# students are started by hand, checked there; a teacher a little below the bars is judged by its students' own
+# acceptance): the best judged below the gate is the pick, exit 0, "TEACHER PICK ... (at the cap: below the gate -- ...)"
+# -- the flat fails of checkpoints whose stairs passed (hard) first, the smallest flat gap; without one, the stairs fails,
+# the smallest gap; a tie: the later step. "STOP: needs a human" (exit 3) only when nothing was judged.
 # FLAT_GATE (F_FLAT_GATE, 1; 2026-11-13, go2-depth's decision: the flat part by tier 2 too, the training's flat readings
 # ran about half of tier 2's): after the stairs pass, tier-2's own flat tests on the same checkpoint
 # (jobs/unified/flat_gate.sh: both scan modes, the students' flat bars, no flat fall, ~30 min) -- PASS: the pick; FAIL:
@@ -245,9 +249,25 @@ if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.hardpass ]; then
   exit 0
 fi
 if [ "$STAIRS_GATE" = 1 ] && [ -s $PICK.judged ]; then
-  # no automatic pick of the best below the bars (go2-depth 11-13: a student from a teacher worse than delivered would
-  # fail its acceptance anyway): a human decides, with the best judged candidate and its shortfalls
-  log "STOP: needs a human -- no seed passed the tier-2 gate (stairs$([ "$FLAT_GATE" = 1 ] && echo ' + flat')) by the cap; the best judged: $(sort -g $PICK.judged | head -n 1 | cut -c1-400) (all in $PICK.judged)"
+  # nothing passed, nothing hard-passed by the cap (go2-depth 11-13 16:00): the best judged below the gate is the pick
+  # (the header's order), its line in the log; the students' acceptance judges it
+  best=$(awk '{ if ($1 ~ /^[0-9.]+$/) { g = $1; ck = $2 } else { g = 999; ck = $1 }
+               st = (index($0, ": stairs PASS; flat") || index($0, ": stairs HARDPASS; flat")) ? 0 : 1
+               k = ck; sub(/.*model_/, "", k); sub(/\.pt$/, "", k)
+               printf "%d %s %d\t%s\n", st, g, -k, $0 }' $PICK.judged | sort -t' ' -k1,1n -k2,2g -k3,3n | head -n 1 | cut -f2-)
+  ck=$(echo "$best" | awk '{ print ($1 ~ /^[0-9.]+$/) ? $2 : $1 }') bseed=$(echo "$best" | grep -oE 'seed [0-9]+' | head -n 1 | cut -d' ' -f2)
+  if [ -n "$ck" ] && [ -n "$bseed" ]; then
+    echo "$ck seed $bseed" > $PICK
+    others=$(for s in $SEEDS; do [ $s = $bseed ] || echo -n "$s "; done)
+    echo "envs=$ENVS seeds=${others% }" > $PICK.others
+    log "TEACHER PICK $ck (seed $bseed; at the cap: below the gate -- $(echo "$best" | cut -c1-400); all judged in $PICK.judged)"
+    exit 0
+  fi
+  log "TOOL FAULT: the cap's pick below the gate could not read $PICK.judged's best line ($(echo "$best" | cut -c1-200))"
+  exit 4
+fi
+if [ "$STAIRS_GATE" = 1 ]; then
+  log "STOP: needs a human -- no seed passed and nothing was judged by tier 2 by the cap ($PICK.judged empty)"
   exit 3
 fi
 log "no seed passed"; exit 1
