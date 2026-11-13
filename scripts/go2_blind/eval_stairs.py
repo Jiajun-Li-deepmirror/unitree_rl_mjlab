@@ -347,6 +347,18 @@ def main() -> None:
       print(f"metrics (src/metrics): steps {steps:.0f}, kicks {meter.rate('kicks') or 0.0:.3f} / step, "
             f"slips {meter.rate('slips') or 0.0:.4f} / step, mid {meter.rate('mid') or 0.0:.3f}, "
             f"edge {meter.rate('edge') or 0.0:.3f} of {s.get('placed', 0.0):.0f} placements")
+    # the same counts by tile (lines start with "tile": the table parsers read lines starting with a band)
+    for g in tile_groups:
+      gs = meter.group_sums.get(g, {})
+      if meter.wheeled:
+        if gs.get("ups", 0.0) > 0:
+          r = meter.rate("slide_back", g)
+          print(f"tile {g}: step-ups {gs['ups']:.0f}, slide-back {'-' if r is None else f'{r:.3f}'}")
+      else:
+        st = (gs.get("ups", 0.0) + gs.get("downs", 0.0)) / meter.feet
+        if st > 0:
+          v = {k: meter.rate(k, g) for k in ("kicks", "slips", "mid", "edge")}
+          print(f"tile {g}: steps {st:.0f}, " + ", ".join(f"{k} {'-' if x is None else f'{x:.3f}'}" for k, x in v.items()))
   if cap is not None:
     # the falls broken down (--causes; lines start with "causes": the table parsers read lines starting with a band)
     def summary(recs):
@@ -370,18 +382,6 @@ def main() -> None:
         recs = [r for r in falls_rec if r["band"] == band(lvl) and r["dir"] == d]
         if recs:
           print(f"causes {band(lvl)} {d}: " + summary(recs))
-    # the same counts by tile (lines start with "tile": the table parsers read lines starting with a band)
-    for g in tile_groups:
-      gs = meter.group_sums.get(g, {})
-      if meter.wheeled:
-        if gs.get("ups", 0.0) > 0:
-          r = meter.rate("slide_back", g)
-          print(f"tile {g}: step-ups {gs['ups']:.0f}, slide-back {'-' if r is None else f'{r:.3f}'}")
-      else:
-        st = (gs.get("ups", 0.0) + gs.get("downs", 0.0)) / meter.feet
-        if st > 0:
-          v = {k: meter.rate(k, g) for k in ("kicks", "slips", "mid", "edge")}
-          print(f"tile {g}: steps {st:.0f}, " + ", ".join(f"{k} {'-' if x is None else f'{x:.3f}'}" for k, x in v.items()))
   env.close()
 
 
