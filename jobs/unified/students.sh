@@ -277,7 +277,7 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
   # down): one test at a time, the drift in halves, each test waiting for its need (the gates' table, per kind) up to
   # F_FINAL_ACCEPT_WAIT_S, then a tool fault (not a fail: rerun); full size always (no ACCEPT_SMALL)
   local guard=()
-  [ $progress = 1 ] && guard=(ACCEPT_JOBS=1 ACCEPT_DRIFT_SPLIT=1 ACCEPT_FREE_WAIT_S=$F_FINAL_ACCEPT_WAIT_S
+  [ $progress = 1 ] && guard=(ACCEPT_JOBS=1 ACCEPT_DRIFT_SPLIT=1 ACCEPT_FREE_WAIT_S=$F_FINAL_ACCEPT_WAIT_S "PAIR_NEED_MB=$F_PAIR_NEED_MB"
     "ACCEPT_NEED_MB=$([ $kind = depth ] && echo "$F_S2_GATE_NEED_MB_DEPTH" || echo "$F_S2_GATE_NEED_MB")")
   env "${guard[@]}" REUSE_TIER2=$progress ACCEPT_SMOKE=$SMOKE bash jobs/unified/accept.sh $R $kind $run $ends >> $L 2>&1
 }
