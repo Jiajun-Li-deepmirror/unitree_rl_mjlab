@@ -808,6 +808,31 @@ class flat_only:
     return out
 
 
+def gait_free(env: ManagerBasedRlEnv, sensor_name: str, term: str = "foot_gait", command_name: str = "twist",
+              command_threshold: float = 0.1) -> torch.Tensor:
+  """Reward term (weight 1, after `term`): over uneven ground the gait clock is not judged -- a robot under a command
+  to move earns the clock's reward in full there, whatever its feet do: raw (1 - current) x the term's weight now
+  (go2-depth 2026-11-13; the probe switch U_GAIT_EVEN=1, teacher_env._rewards; the legged only -- the wheeled group's
+  clock has stepped on even ground only since the old flow, mdp.feet_gait's scan_sensor_name).
+
+  The legged clock is a 0.6 s trot at every speed below 0.8 m/s, so a foot's stride is speed x 0.6 s: 0.27-0.28 m at
+  the 0.45-0.47 m/s the Go2 teacher climbs with, against treads of 0.25 and 0.32 m. The footholds then drift along
+  the treads by 2-5 cm a step and cross an edge every 6-12 steps, whatever the kick and edge costs weigh: tier 2 read
+  0.41-0.49 kicks a step and 75 % mid-tread footholds from 5598 to 7095 iterations, the same seen and blind, and the
+  kick costs at three times the weight did not lower it (uprobe_s31 / s33). The acceptance judges the gait clock on
+  even ground only (doc/redesign.md 2: the stairs tests do not read it). A robot told to march in place keeps its
+  clock (the march flag is not a command to move)."""
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+  out = torch.zeros(env.num_envs, device=env.device)
+  r = _raw(env, term)
+  if r is None:
+    return out
+  raw, w = r
+  command = env.command_manager.get_command(command_name)
+  moving = torch.norm(command[:, :2], dim=1) + torch.abs(command[:, 2]) > command_threshold
+  return (uneven_terrain_mask(env, sensor_name) & moving).float() * (1.0 - raw) * w
+
+
 def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_terminated") -> torch.Tensor:
   """Reward term (weight 1, after `term`): an episode ended by a fall or an illegal contact costs a loaded robot more,
   from 1x at LIGHT_FRAC of the payload limit to `scale` times at the limit, on top of whatever `term` weighs now (the

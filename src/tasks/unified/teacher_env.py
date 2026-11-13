@@ -740,6 +740,15 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
     rewards["u_heading_lag"] = RewardTermCfg(func=ucons.heading_lag, weight=-w,
                                              params={"sensor_name": sensor or "terrain_scan"})
+  # the gait clock on even ground only (a probe, _probe_switches): the legged; nothing for a robot whose clock has
+  # its own ground mask already (the wheeled group's stepping_only clock) or that has no clock
+  gait = rewards.get("foot_gait")
+  if os.environ.get("U_GAIT_EVEN") == "1" and gait is not None and gait.func is mdp.feet_gait \
+      and not gait.params.get("stepping_only") and not gait.params.get("march_only"):
+    sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
+    rewards["u_gait_free"] = RewardTermCfg(func=ucons.gait_free, weight=1.0, params={
+      "sensor_name": sensor or "terrain_scan", "command_name": gait.params["command_name"],
+      "command_threshold": gait.params["command_threshold"]})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
@@ -926,7 +935,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_SPEED_W=<w>   the flat speed deficit at the weight -<w> where it is lighter (the legged: -2; the wheeled
                          have -4 from the old flow's "speedw4", nothing changes for them). Go2 uprobe_s43 6596
                          (U_HEADING_OBS=1), tier 2: seen every forward command 90 % and more, blind (0.5, 0, 0) and
-                         (1.0, 0, 0) and their arcs x 75-79 % (bar 80 %), the speed_lin multiplier at its cap."""
+                         (1.0, 0, 0) and their arcs x 75-79 % (bar 80 %), the speed_lin multiplier at its cap.
+  The gait clock (2026-11-13: the Go2 teacher's riser kicks stay at 0.41-0.49 a step in tier 2 from 5598 to 7095
+  iterations, seen and blind alike, bar 0.31; read in _rewards):
+    U_GAIT_EVEN=1        the legged gait clock is judged on even ground only: over uneven ground a robot under a
+                         command to move earns foot_gait in full whatever its feet do (constraints.gait_free). The
+                         clock is a 0.6 s trot below 0.8 m/s, so the stride is speed x 0.6 s (0.27 m at the climbing
+                         speed) against treads of 0.25 / 0.32 m: the footholds drift across the edges. Nothing for
+                         the wheeled (their clock steps on even ground only already)."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
