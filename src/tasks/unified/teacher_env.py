@@ -927,6 +927,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
                          (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
     U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2);
+    U_CREEP_CAP=<x>      the cap of the creep item's multiplier (3; it scales standing_position_hold and
+                         standing_speed). 2026-11-13, tier 2: the stop creep is the one flat item both robots
+                         miss with the multiplier at its cap -- Go2 uprobe_s51 7095 a median of 1.07-1.51 cm after
+                         1.0 / 1.5 m/s (bar 1), Go2W uprobe_s39 5995 1.34-1.79 seen and 2.86 blind. No stepping,
+                         no wheel roll (stop_anatomy on the Go2W: the wheels' roll 0.00 cm, the base over the
+                         wheels 1.2-2.0 cm with the thighs still turning 0.02 rad from 2 to 6 s after the stop):
+                         the posture settles out of the braking lean for seconds, and at 3 times the weight the
+                         hold charges 0.3 a second for a centimetre;
     U_FLAT_DIAG_AXIS=<m> the flat speed deficit judges a diagonal command (both parts >= <m> m/s) per axis, as the
                          acceptance does (mdp.stair_speed_deficit axis_min; the wheeled have it at 0.2 from the old
                          flow's "diagaxis", nothing changes for them). Go2 uprobe_s42 / s43 6596: the diagonal's
@@ -992,6 +1000,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["name"] in FLAT_NEW:
         c["max_scale"] = max(c["min_scale"], float(v))
+  v = os.environ.get("U_CREEP_CAP")
+  if v:
+    assert 3.0 <= float(v) <= 30.0, f"U_CREEP_CAP {v}: the creep item's cap, 3-30"
+    for c in items:
+      if c["name"] == "creep":
+        c["max_scale"] = float(v)
   v = os.environ.get("U_FLAT_DIAG_AXIS")
   if v and "flat_speed_deficit" in cfg.rewards:
     assert 0.05 <= float(v) <= 0.5, f"U_FLAT_DIAG_AXIS {v}: the smallest part of a diagonal command, m/s"
