@@ -979,6 +979,33 @@ def gait_free(env: ManagerBasedRlEnv, sensor_name: str, term: str = "foot_gait",
   return (uneven_terrain_mask(env, sensor_name) & moving).float() * (1.0 - raw) * w
 
 
+def gait_march_calm(env: ManagerBasedRlEnv, sensor_name: str, even_only: bool = True, term: str = "foot_gait",
+                    command_name: str = "twist") -> torch.Tensor:
+  """Reward term (weight 1, after `term`): the clock item's multiplier presses on the commands to move only -- a
+  robot told to march in place earns the gait clock at the calm weight (constraints.calm: the term's weight with
+  every flat item's multiplier held at 1 or below): raw x (calm - current) while its march flag is up (go2-depth
+  2026-11-13; the probe switch U_CLOCK_FLOOR=<x>,move, teacher_env._rewards). With `even_only` on even ground only:
+  over uneven ground flat_only (U_FLAT_ONLY=1) takes the multiplier off every robot already.
+
+  The clock item is read on the commands to move (flat:gait: the worst command's share in step; the acceptance's
+  gait_clock.py judges the strafes, diagonals and arcs), but its multiplier scales foot_gait for the march too, where
+  the clock competes with march_position_hold. Go2 uprobe_s63 9091 (U_CLOCK_FLOOR=3, 500 iterations from s59's
+  8592), tier 2: the strafes (0, +-0.6, 0) 92-94 % in step and the diagonals (0.6, +-0.4, 0) 89-93 % (s59: 62-79 %,
+  bar 80 %) -- and the blind march's drift 26.9 cm against s59's 12.6."""
+  out = torch.zeros(env.num_envs, device=env.device)
+  calm = getattr(getattr(env, "u_constraints", None), "calm", {})
+  march = getattr(env.command_manager.get_term(command_name), "march", None)
+  r = _raw(env, term)
+  if term not in calm or march is None or r is None:
+    return out
+  raw, w = r
+  on = march
+  if even_only:
+    from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+    on = on & ~uneven_terrain_mask(env, sensor_name)
+  return on.float() * raw * (calm[term] - w)
+
+
 def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_terminated") -> torch.Tensor:
   """Reward term (weight 1, after `term`): an episode ended by a fall or an illegal contact costs a loaded robot more,
   from 1x at LIGHT_FRAC of the payload limit to `scale` times at the limit, on top of whatever `term` weighs now (the

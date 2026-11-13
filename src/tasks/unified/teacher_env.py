@@ -828,6 +828,13 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     rewards["u_gait_free"] = RewardTermCfg(func=ucons.gait_free, weight=1.0, params={
       "sensor_name": sensor or "terrain_scan", "command_name": gait.params["command_name"],
       "command_threshold": gait.params["command_threshold"]})
+  # the clock item's floor on the commands to move only (a probe, _probe_switches: U_CLOCK_FLOOR=<x>,move): a march
+  # in place keeps the clock at the calm weight; after foot_gait, any robot with a clock
+  if os.environ.get("U_CLOCK_FLOOR", "").endswith(",move") and gait is not None and gait.func is mdp.feet_gait:
+    sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
+    rewards["u_gait_march"] = RewardTermCfg(func=ucons.gait_march_calm, weight=1.0, params={
+      "sensor_name": sensor or "terrain_scan", "even_only": "u_flat_only" in rewards,
+      "command_name": gait.params["command_name"]})
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
@@ -1041,7 +1048,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          73-79 % (bar 80 %; go2_blind_v4 95 % at the weight alone, without payload and the joint
                          draws) -- with the multiplier at 1.56 after 8600 iterations: the training's worst bin
                          reads 0.78-0.85 against its target 0.84, a shortfall that moves the multiplier by 0.04
-                         in 200 iterations;
+                         in 200 iterations. `U_CLOCK_FLOOR=<x>,move` (read in _rewards too): the floor presses on
+                         the commands to move only -- a robot marching in place earns the clock at the calm weight
+                         (constraints.gait_march_calm). uprobe_s63 9091 (floor 3), tier 2: strafes 92-94 % and
+                         diagonals 89-93 % in step, and the blind march's drift 26.9 cm against s59's 12.6;
     U_FLAT_DIAG_AXIS=<m> the flat speed deficit judges a diagonal command (both parts >= <m> m/s) per axis, as the
                          acceptance does (mdp.stair_speed_deficit axis_min; the wheeled have it at 0.2 from the old
                          flow's "diagaxis", nothing changes for them). Go2 uprobe_s42 / s43 6596: the diagonal's
@@ -1133,10 +1143,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
         c["max_scale"] = float(v)
   v = os.environ.get("U_CLOCK_FLOOR")
   if v:
-    assert 1.0 <= float(v) <= 6.0, f"U_CLOCK_FLOOR {v}: the clock item's floor, 1-6"
+    x, *rest = v.split(",")
+    assert 1.0 <= float(x) <= 6.0 and rest in ([], ["move"]), f"U_CLOCK_FLOOR {v}: the clock item's floor, 1-6[,move]"
     for c in items:
       if c["name"] == "clock":
-        c["min_scale"], c["max_scale"] = float(v), max(c["max_scale"], float(v))
+        c["min_scale"], c["max_scale"] = float(x), max(c["max_scale"], float(x))
   v = os.environ.get("U_FLAT_DIAG_AXIS")
   if v and "flat_speed_deficit" in cfg.rewards:
     assert 0.05 <= float(v) <= 0.5, f"U_FLAT_DIAG_AXIS {v}: the smallest part of a diagonal command, m/s"
