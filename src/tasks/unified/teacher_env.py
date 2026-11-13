@@ -960,6 +960,13 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
                          (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
     U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2);
+    U_DR_LIGHT=1         the training task without the joint friction / damping / armature draws and without the
+                         stick-slip (unified_teacher_env_cfg; the checks' -Flat / -Stairs tasks and the students'
+                         tasks keep them, whatever the environment says). 2026-11-13: the delivered go2_blind_v4
+                         trained without them and passes the flat items under them with a margin the unified
+                         teacher lacks (stop creep 0.3-0.5 cm against 0.7-1.5, the strafe's gait clock 95 % against
+                         68-79 %, stance p90 0.125 rad against 0.13-0.17) on the same reward settings -- do these
+                         draws in training cost the flat precision?
     U_CREEP_CAP=<x>      the cap of the creep item's multiplier (3; it scales standing_position_hold and
                          standing_speed). 2026-11-13, tier 2: the stop creep is the one flat item both robots
                          miss with the multiplier at its cap -- Go2 uprobe_s51 7095 a median of 1.07-1.51 cm after
@@ -1093,8 +1100,10 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
   _add_privileged(cfg)
   _add_scan_mask(cfg)
-  _add_joint_dr(cfg)
-  stick_slip.add(cfg)   # after the sensor and the privileged group
+  # U_DR_LIGHT=1 (a probe's switch, _probe_switches): the training task alone goes without these two
+  if not (os.environ.get("U_DR_LIGHT") == "1" and terrain == "map3" and not play and student is None):
+    _add_joint_dr(cfg)
+    stick_slip.add(cfg)   # after the sensor and the privileged group
   other_shares = None
   if terrain == "map3":
     _payload_point(cfg, robot)
