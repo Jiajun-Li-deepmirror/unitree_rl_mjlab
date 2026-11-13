@@ -173,6 +173,12 @@ def constraint_items(kind: str) -> list[dict]:
     # reading showed it). The acceptance: at most 5% stalled per band, unloaded and at the common payload.
     c("park", "u_stairs_park", "max", 0.05, 0.3, "q", [], enforce=False, family="up"),
     c("park_heavy", "u_stairs_park_heavy", "max", 0.05, 0.3, "q", [], enforce=False, family="up"),
+    # logged only (2026-11-13): the same on the descending columns, the whole column -- the top platform, the flight
+    # and past it (constraints._stairs_park_down: from 6600 to 7600 iterations the Go2 candidates' seen mode came to
+    # wait at the edge of the top platform, tier 2 read 68-100% stalled on the descents from 8 cm up, and in training
+    # it showed only as a lower descent speed). With U_STAIR_PARK the first is enforced, on its own cost (below).
+    c("park_down", "u_stairs_park_down", "max", 0.05, 0.3, "q", [], enforce=False, family="down"),
+    c("park_down_heavy", "u_stairs_park_down_heavy", "max", 0.05, 0.3, "q", [], enforce=False, family="down"),
     # logged only (2026-11-13): the same on even ground under a straight command, p90 (constraints._flat_heading;
     # the acceptance's lines: heading p10 / p90 within 8 deg = 0.14 rad 10 s in, from each line's own start)
     c("heading_flat", "u_flat_heading", "max", 0.14, 0.3, 0.15, [], stat="p90", enforce=False),
@@ -236,6 +242,12 @@ def constraint_items(kind: str) -> list[dict]:
       if item["name"] in caps:
         assert item["by"] == "q" and item["terms"], f"U_ITEM_CAP: {item['name']} is not a stairs-quality item with costs"
         item["max_scale"], item["own_cap"] = caps[item["name"]], True
+  if os.environ.get("U_STAIR_PARK"):
+    # park_down is enforced and scales the standstill cost (_add_stair_park); its cap is its own (PARK_CAP, not
+    # U_Q_SCALE_MAX's: at the cost's weight alone the account is close on the steepest rows -- constraints.stairs_park)
+    at = next(i for i, item in enumerate(items) if item["name"] == "park_down")
+    items[at] = {**c("park_down", "u_stairs_park_down", "max", 0.05, 0.3, "q", [STAIR_PARK_TERM], max_scale=PARK_CAP,
+                     family="down"), "own_cap": True}
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -532,6 +544,27 @@ def _add_riser_keepout(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   if os.environ.get("U_KICK_KEEPOUT_DIR") == "1":   # only the faces a foot moves towards (riser_keepout's approach)
     params["approach"] = True
   cfg.rewards[KEEPOUT_TERM] = RewardTermCfg(func=ucons.riser_keepout, weight=-w, params=params)
+
+
+STAIR_PARK_TERM = "stairs_park"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+PARK_CAP = 4.0                    # the cap of the park_down item's multiplier under U_STAIR_PARK
+
+
+def _add_stair_park(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_STAIR_PARK=<w>[,<heavy>] (a probe's switch, _probe_switches): the cost constraints.stairs_park at the weight
+  -w, for the heavy class at <heavy> times it (0 without it). Before constraint_items / _rewards: it is the park_down
+  item's term (constraint_items), so it starts at Q_EPS of its weight and comes in with the stairs quality
+  (quality_diff: a cost the M keys do not have). Every kind of robot: the reading and the cost are of the command
+  and the speed over the ground."""
+  v = os.environ.get("U_STAIR_PARK")
+  if not v:
+    return
+  w, _, heavy = v.partition(",")
+  w, heavy = float(w), float(heavy or 0.0)
+  assert 0.0 < w <= 20.0 and 0.0 <= heavy <= 1.0, f"U_STAIR_PARK {v}: <weight 0-20>[,<the heavy class's share 0-1>]"
+  command = cfg.rewards["stair_speed_deficit"].params["command_name"]
+  cfg.rewards[STAIR_PARK_TERM] = RewardTermCfg(func=ucons.stairs_park, weight=-w,
+                                               params={"command_name": command, "heavy": heavy})
 
 
 BODY_CLEAR_TERM = "body_clear"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
@@ -950,7 +983,16 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          command to move earns foot_gait in full whatever its feet do (constraints.gait_free). The
                          clock is a 0.6 s trot below 0.8 m/s, so the stride is speed x 0.6 s (0.27 m at the climbing
                          speed) against treads of 0.25 / 0.32 m: the footholds drift across the edges. Nothing for
-                         the wheeled (their clock steps on even ground only already)."""
+                         the wheeled (their clock steps on even ground only already).
+  Waiting above a descent (2026-11-13: the Go2 candidates' seen mode from 6600 to 7600 iterations -- tier 2 68-100%
+  stalled at the top of the descents from 8 cm up, unloaded and at the common payload; read in _add_stair_park and
+  constraint_items):
+    U_STAIR_PARK=<w>[,<heavy>]   the cost constraints.stairs_park at the weight -<w> (0-20): standing on a
+                         descending column under a forward command, 1 at a standstill to 0 at half the commanded
+                         speed; in full up to the common payload, <heavy> times it (0) for the heavy class. The
+                         logged item park_down becomes enforced (bar 5% of those robots' time) and scales it, its
+                         multiplier up to PARK_CAP whatever U_Q_SCALE_MAX says. The account it answers (standing
+                         pays 3.6 a second over descending) is in the cost's docstring."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -1059,6 +1101,7 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
     other_shares = _add_slopes(cfg)
     _add_riser_keepout(cfg, robot)
     _add_body_clear(cfg, robot)
+    _add_stair_park(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

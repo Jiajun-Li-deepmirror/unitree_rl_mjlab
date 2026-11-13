@@ -108,6 +108,7 @@ Q_SPAN_IT, Q_ROW, Q_IN = 1000, 3.0, 0.5   # (the span 2000 before the faster clo
 Q_GAP = (0.04, 0.08)
 Q_HEALTH_MIN = 200
 UP_NAMES = ("stairs_up_narrow", "stairs_up_wide", "walled_up")   # the stairs columns that climb
+DOWN_NAMES = ("stairs_down_narrow", "stairs_down_wide", "walled_down")   # the ones that descend
 ROWS = ("up", "down", "other")
 SLOPE_NAMES = ("slope_down", "slope_up")   # the sloped tiles (teacher_env._add_slopes): other ground, not measured
 # The evaluation robots' stairs rows (module docstring): the rows that can hold a step below this height (m), the

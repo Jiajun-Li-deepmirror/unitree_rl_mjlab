@@ -487,6 +487,79 @@ def _stairs_park(env: ManagerBasedRlEnv, command_name: str = "twist", sensor_nam
   return (vx < slow * command[:, 0]).float(), mask
 
 
+def down_column(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Per robot: it is on a stairs column that descends (curriculum.DOWN_NAMES); all False without such columns."""
+  cols = getattr(env, "_u_down_columns", None)
+  if cols is None:
+    from src.tasks.unified.curriculum import DOWN_NAMES
+    from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
+
+    cols = sub_terrain_column_mask(env, DOWN_NAMES)
+    if cols is None:
+      return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    env._u_down_columns = cols
+  return cols[env.scene.terrain.terrain_types]
+
+
+def _stairs_park_down(env: ManagerBasedRlEnv, command_name: str = "twist", min_vx: float = 0.2,
+                      slow: float = 0.3) -> tuple[torch.Tensor, torch.Tensor]:
+  """_stairs_park for the descents: 1 for a robot that stands where it is told to walk on (its speed over the ground
+  along x below `slow` x the command), over the robots on a descending column under a forward command (vx >= min_vx,
+  |vy| <= 0.1) -- on the top platform, on the flight or past it. A robot that has just been told to walk reads 1
+  until it is up to speed, so a healthy policy does not read 0 (the Go2W candidates, on the climbs: 0.03).
+
+  2026-11-13, the Go2 candidates (uprobe_s47 -> s51 -> s52, iterations 6596 -> 7594): tier 2's seen mode went from
+  no robot stalled to 68% / 100% / 100% of the 8-12 / 12-15 / 15-18 cm descents (reach 0.76-0.90 m: the edge of the
+  top platform), unloaded and at the common payload, with one fall -- the blind mode, which cannot see the edge,
+  walked every descent. In training the descent item read it only as a slower speed over the robots pitched on the
+  steps (seen 0.86 -> 0.65 -> 0.29, its multiplier at the cap 1), and the survival item improved (a robot that does
+  not descend does not fall)."""
+  command = env.command_manager.get_command(command_name)
+  vx = _yaw_frame_velocity(env)[:, 0]
+  mask = (command[:, 0] >= min_vx) & (command[:, 1].abs() <= 0.1) & down_column(env)
+  return (vx < slow * command[:, 0]).float(), mask
+
+
+def stairs_park(env: ManagerBasedRlEnv, command_name: str, min_vx: float = 0.2, free: float = 0.5,
+                heavy: float = 0.0) -> torch.Tensor:
+  """Reward term (U_STAIR_PARK=<w>[,<heavy>], 2026-11-13): standing on a descending column under a command to walk
+  on. Per robot on such a column (down_column: the top platform, the flight, the ground past it) under a forward
+  command (vx >= min_vx): 1 at a standstill or moving against the command, falling linearly to 0 at `free` x the
+  commanded speed over the ground along the command -- nothing for a robot that walks, however carefully. In full
+  up to the common payload (COMMON_FRAC of the limit), `heavy` times it from the heavy class (HEAVY_FRAC) up, linear
+  in between: the acceptance wants every descent unloaded and at the common payload (reach, speed, at most 5%
+  stalled) and judges the full payload on its falls alone, and the user (2026-11-12): with payload the robot must
+  never fall, what is physically out of reach with it is not required -- so a heavy robot may wait on the platform
+  (`heavy` 0), where it stands on its four feet.
+
+  Why (S/probe/down_stall_probe.py on uprobe_s52 model_7594, seen mode, rows 5-8, light robots, per second): standing
+  before the first step down +0.26 (the stairs speed cost -1.75: it is charged there already, the edge is within its
+  0.45 m; the turn / pose / gait rewards a standing robot still earns), walking towards it +0.53, descending -3.34
+  (riser touches -1.25, line drift -1.31, leg tilt -0.98, edge placements -0.60, uneven support -0.45, leg contacts
+  -0.31, slide-backs -0.23, ...; the speed cost -0.49 even at 0.87x), and on rows 7-9 a fifth of the descents end
+  the episode (-40). Standing pays 3.6 a second, the descent item's multiplier -- the one thing that pushes back --
+  is at U_Q_SCALE_MAX's cap of 1, and lifting that cap (U_ITEM_CAP=descent:<x>) raises the speed cost on every
+  flight, the climbs with the full payload too (constraints._apply: the strongest weight). This cost charges the
+  standstill alone; the item park_down scales it (teacher_env.constraint_items).
+
+  The same account with the cost at -5 (the same checkpoint, which still parks: 70% of those steps at a standstill):
+  standing -4.08 a second (the cost -4.34 of it), creeping towards the edge at under half the commanded speed -2.33
+  (-2.80), against the descent's -3.3 and about -1 of the cost on its slow steps -- even, not decided. So the item's
+  multiplier has a cap of its own (teacher_env.PARK_CAP), and the probe from the parked checkpoint runs at 10."""
+  command = env.command_manager.get_command(command_name)
+  cmd = command[:, :2]
+  speed = torch.norm(cmd, dim=1)
+  safe = speed.clamp(min=1e-6)
+  along = (_yaw_frame_velocity(env)[:, :2] * (cmd / safe.unsqueeze(1))).sum(dim=1)
+  out = (1.0 - along / (free * safe)).clamp(min=0.0, max=1.0)
+  out = torch.where((command[:, 0] >= min_vx) & down_column(env), out, torch.zeros_like(out))
+  kg = getattr(env, "payload_kg", None)
+  if kg is not None:
+    frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
+    out = out * (1.0 - (1.0 - heavy) * frac.clamp(0.0, 1.0))
+  return out
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -685,6 +758,8 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_flat_heading": _flat_heading,
           "u_stair_speed_h": _stair_speed_h,
           "u_stairs_park": upto_common(_stairs_park), "u_stairs_park_heavy": over_heavy(_stairs_park),
+          "u_stairs_park_down": upto_common(_stairs_park_down),
+          "u_stairs_park_down_heavy": over_heavy(_stairs_park_down),
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
