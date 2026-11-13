@@ -10,7 +10,12 @@ acceptance's (Go2 kicks 0.72 / 0.46, Go2W slides 0.094 / 0.028, 11-13), the rati
 
 Judged, in each scan mode (the students' bars unless said):
   falls        traverse + stop, exact count: <= FALLS_MAX (2) per mode
-  stop ok      the mid-flight stop's share: >= 95%
+  stop ok      the mid-flight stop's share: >= 95% (eval_stairs' stop ok: still in the 2-4 s window and, since 2026-11-13,
+               within F_STAIRS_STOP_DISP_M, 0.50 m, of where the command went to zero)
+  stop stay    per band and direction, the stopped robots within 0.50 m of where they were told to stop (eval_stairs'
+               "stop-stay" lines): >= STOP_STAY_MIN (go2-depth 11-13: Go2W robots stopped on 12-18 cm up flights went
+               back down to the start platform, which the 2-4 s window read as a stop); an older output without
+               those lines: reported as not measured, not a fault
   four feet    the stop's all-feet-down share per band and direction: >= accept_tables.stop_feet_bar
   speed        the flight speed over the command (eval_stairs' "speed" lines, robots weighted), up and down: 0.8-1.2
   counts       hard: the edge <= 0.10 (legged) / TEACHER_COUNT_BARS' slide-back (wheeled). Fewer than MIN_EVENTS
@@ -48,6 +53,7 @@ at = aj.at
 FALLS_MAX = 2   # per scan mode, traverse + stop, of 576 (go2-depth 11-13: one number for every robot; the students'
                 # acceptance keeps 0 + the luck rule)
 STOP_OK_MIN = 95.0
+STOP_STAY_MIN = 90.0   # % per band and direction (go2-depth 11-13: as the per-band four-feet bar 0.9)
 SPEED_RANGE = (0.8, 1.2)
 MIN_EVENTS = aj.MIN_STAIR_EVENTS
 # The stairs counts (2026-11-13 ~15:10, go2-depth's decision after the user's "我其实没有明确的数字要求，尽量满足上楼梯
@@ -82,6 +88,13 @@ def speeds(t: str) -> dict[str, float]:
 def stop_ok(t: str) -> float | None:
   m = re.search(r"overall: traverse ok \d+%, fell \d+%; stop ok (\d+)%", t)
   return None if m is None else float(m.group(1))
+
+
+def stop_stay(t: str) -> list[tuple[str, str, float, float, int]]:
+  """eval_stairs' "stop-stay <band> <dir> | stayed X% (within ...), displacement p50 Y m, n N" lines."""
+  return [(m.group(1), m.group(2), float(m.group(3)), float(m.group(4)), int(m.group(5))) for m in re.finditer(
+    r"^stop-stay\s+(\d+-\d+cm)\s+(up|down) \| stayed (\d+)% \(within [\d.]+ m\), displacement p50 ([\d.]+|nan) m, (?:p90 [\d.]+ m, )?n (\d+)",
+    t, re.M) if m.group(4) != "nan"]
 
 
 def feet(t: str) -> list[tuple[str, str, float]]:
@@ -119,6 +132,15 @@ def mode_checks(r: str, path: str, t: str, tag: str, bars: dict, bad: list, miss
     if so < STOP_OK_MIN:
       bad.append(f"{tag} 停不稳 {so:.0f}%")
       gap += (STOP_OK_MIN - so) / STOP_OK_MIN
+  ss = stop_stay(t)
+  if not ss:
+    detail.append(f"{tag}: stop stay not measured (an eval_stairs without the stop-stay lines)")
+  else:
+    away = [(b, d, v, md) for b, d, v, md, n in ss if n > 0 and v < STOP_STAY_MIN]
+    detail.append(f"{tag}: stop stay " + ", ".join(f"{b} {d} {v:.0f}% p50 {md:.2f} m" for b, d, v, md, n in ss))
+    if away:
+      bad.append(f"{tag} 停住后走开 " + "，".join(f"{b} {d} 留 {v:.0f}%（位移中位数 {md:.2f} m）" for b, d, v, md in away))
+      gap += sum((STOP_STAY_MIN - v) / STOP_STAY_MIN for b, d, v, md in away)
   short = [(b, d, v) for b, d, v in feet(t) if v < at.stop_feet_bar(r, b, d)]
   if short:
     bad.append(f"{tag} 停住缺脚 " + "，".join(f"{b} {d} {v:.2f}" for b, d, v in short))
