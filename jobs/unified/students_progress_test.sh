@@ -31,7 +31,9 @@ EOF
   cat > $d/stub_train.sh <<'EOF'
 #!/bin/bash
 task=$1; shift
-for a in "$@"; do case $a in --agent.run-name=*) name=${a#*=} ;; --agent.max-iterations=*) M=${a#*=} ;; esac; done
+SV=100
+for a in "$@"; do case $a in --agent.run-name=*) name=${a#*=} ;; --agent.max-iterations=*) M=${a#*=} ;; --agent.save-interval=*) SV=${a#*=} ;; esac; done
+echo "$name $*" >> logs/train_args.txt
 case $task in *-RL) dir=go2_u_student_${task##*Student-}; dir=${dir,,}; dir=${dir%-rl}_rl; st=2 ;;
   *) dir=go2_u_student_${task##*Student-}; dir=${dir,,}; st=1 ;; esac
 run=logs/rsl_rl/$dir/$(date +%Y-%m-%d_%H-%M-%S)_$name
@@ -41,7 +43,7 @@ touch $run/model_0.pt
 for ((i = 0; i < M; i++)); do
   echo "Learning iteration $i/$M"
   if [ $st = 1 ]; then echo "  Mean behavior loss: $(awk -v i=$i "BEGIN { print ${STUB_LOSS:-0.05 + 1.3 * exp(-i / 60)} }")"; fi
-  [ $((i % 100)) = 0 ] && [ $i -gt 0 ] && touch $run/model_$i.pt
+  [ $((i % SV)) = 0 ] && [ $i -gt 0 ] && touch $run/model_$i.pt
   [ $st = 2 ] && sleep ${STUB_IT_S:-0.01}
 done
 touch $run/model_$((M - 1)).pt   # (the runner's last save: model_<max - 1>)
@@ -120,7 +122,8 @@ check "A exit 0" '[ "$(cat $A/rc)" = 0 ]'
 check "A S1 END plateau at 1100" 'L $A | grep -q "S1 END at 1100: plateau"'
 check "A S1 stopped before its cap" '[ $(lastck $r1) -lt 4000 ]'
 check "A S2 from model_1100" 'L $A | grep -q "stage 1 done: .*model_1100.pt"'
-check "A gate 500 skipped (6 checkpoints)" 'L $A | grep -q "S2 GATE 500: skipped (6 checkpoints"'
+check "A stage 2 saves every 50 (formal), stage 1 at the runner's 100" 'grep -q "blind2_tx_s0 .*--agent.save-interval=50" $A/logs/train_args.txt && ! grep -q "blind1_tx_s0 .*save-interval" $A/logs/train_args.txt'
+check "A gate 500 judged (11 checkpoints at a save every 50)" 'L $A | grep -q "S2 GATE 500: FAIL"'
 check "A gate 1000 FAIL" 'L $A | grep -q "S2 GATE 1000: FAIL"'
 check "A gate 1500 HARDPASS" 'L $A | grep -q "S2 GATE 1500: HARDPASS quality gap 0.500"'
 check "A gate 2000 PASS + PICK, stage 2 stopped" 'L $A | grep -q "S2 GATE 2000: PASS" && L $A | grep -q "S2 PICK a8_2000 (gate at 2000): stage 2 stopped"'
@@ -156,6 +159,7 @@ runit $D STUDENT_PROBE=1 S1_ITERS=1300 S2_ITERS=600
 check "D probe exit 0" '[ "$(cat $D/rc)" = 0 ]'
 check "D probe S1 to 1300, no S1 END" '[ $(lastck $(s1run $D)) = 1299 ] && ! L $D | grep -q "S1 END"'
 check "D probe no gates" '! L $D | grep -q "S2 GATE" && [ ! -f $D/logs/calls.txt ]'
+check "D probe keeps the runner's saves" '! grep -q "save-interval" $D/logs/train_args.txt'
 
 # --- E: F_S2_GATE_EVERY_IT=0 -> stage 2 to its cap, the acceptance as before (no reuse file)
 E=$W/E; setup $E
@@ -165,8 +169,8 @@ check "E exit 0, no gates, accept on the last" '[ "$(cat $E/rc)" = 0 ] && ! L $E
 # --- F: two students side by side (one card): each one's first gate waits for the card -- both judged early
 F=$W/F; setup $F
 runit $F KINDS="blind depth" F_STUDENT_S2_ITERS=2600 STUB_RULE="fail<99999 hard<99999 pass" STUB_GATE_S=6
-check "F blind's first gate judged" 'L $F | grep -qE "STUDENT blind S2 GATE 1000: FAIL"'
-check "F depth's first gate judged (waited, not skipped)" 'L $F | grep -qE "STUDENT depth S2 GATE 1000: FAIL" && ! L $F | grep -q "STUDENT depth S2 GATE 1000: skipped"'
+check "F blind's first gate judged" 'L $F | grep -qE "STUDENT blind S2 GATE 500: FAIL"'
+check "F depth's first gate judged (waited, not skipped)" 'L $F | grep -qE "STUDENT depth S2 GATE 500: FAIL" && ! L $F | grep -q "STUDENT depth S2 GATE 500: skipped"'
 check "F one gate on the card at a time (no two gate runs overlap)" 'sort -n $F/logs/spans.txt | awk "{ if (NR > 1 && \$1 < e) bad = 1; e = \$2 } END { exit bad }"'
 check "F every gate run judged" '[ $(wc -l < $F/logs/spans.txt) = $(L $F | grep -cE "S2 GATE [0-9]+: (FAIL|PASS|HARDPASS)") ]'
 

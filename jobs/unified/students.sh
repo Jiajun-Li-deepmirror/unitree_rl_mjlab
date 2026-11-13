@@ -46,6 +46,8 @@ if [ $PROBE != 1 ] && [ $SMOKE != 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ] &&
 fi
 ENVS=$([ -n "${NUM_ENVS:-}" ] && echo $(( NUM_ENVS / 2 )) || echo $F_STUDENT_ENVS_EACH)
 SAVE=""; [ -n "${SAVE_EVERY:-}" ] && SAVE="--agent.save-interval=$SAVE_EVERY"
+# stage 2's saves (formal runs; SAVE_EVERY, the smoke's, wins; probes keep the runner's 100)
+SAVE2=$SAVE; [ -z "$SAVE2" ] && [ $PROBE != 1 ] && [ $SMOKE != 1 ] && SAVE2="--agent.save-interval=$F_STUDENT_S2_SAVE_EVERY"
 FALLBACK=${FALLBACK:-$([ -n "${TEACHER:-}" ] && echo 0 || echo 1)}; [ $SMOKE = 1 ] && FALLBACK=0
 T=${TEACHER:-}
 if [ -z "$T" ]; then
@@ -157,7 +159,7 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
   log "$kind stage 1 done: $ck"
   before=$(newest ${r}_u_student_${kind}_rl $n2)
   $PY scripts/train.py Unitree-$R-U-Student-$K-RL --env.scene.num-envs=$ENVS --agent.run-name=$n2 --agent.seed=$SEED \
-    --agent.max-iterations=$S2 --agent.teacher-checkpoint=$T --agent.student-checkpoint=$ck $SAVE \
+    --agent.max-iterations=$S2 --agent.teacher-checkpoint=$T --agent.student-checkpoint=$ck $SAVE2 \
     > logs/jobs/unified_${r}_$n2.log 2>&1 &
   pid=$!
   # stage 2's gates (2026-11-13, go2-depth): every F_S2_GATE_EVERY_IT iterations the students' own tier 2 on the
