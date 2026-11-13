@@ -10,8 +10,9 @@ spins, stop, march, gait clock, stairs (reach with / without operator, speed, st
 falls; plus
   zero-command stance  long_stand (60 s) and stop_then_move (after a 1.5 m/s stop): leg joints' deviation from the
                        default stance p90 <= 0.15 rad, 0 falls after 3 s -- unloaded and loaded
-  stairs counts        src/metrics (tinynav's counters) while crossing: legged kicks <= 0.245 and slips <= 0.0245 per
-                       step, mid >= 80%, edge <= 10%; wheeled slide-back <= 5% of step-ups
+  stairs counts        src/metrics (tinynav's counters) while crossing: legged edge <= 10% (hard); the kicks on the
+                       ascents, slips and mid are quality targets reported in their own block, not judged (2026-11-13,
+                       the user; quality_lines); wheeled slide-back <= 5% of step-ups
 Loaded (PREFIX_<kind>_pay.txt, the walking payload): stairs 0 falls; the zero-command stance; drift / creep /
 alternating spins / march drift reported beside the unloaded ones (scripts/blind/acceptance/payload_gap.py), not judged
 -- but a fall in those four tests fails it (2026-11-12, doc/redesign.md 2.5 item 10).
@@ -57,10 +58,63 @@ def stairs_count_verdict(sm: dict, wheeled: bool, label: str) -> tuple[str, str 
     return detail, f"{label}楼梯计数：未测"
   if sm.get("steps", 0) < MIN_STAIR_EVENTS:
     return detail, f"{label}楼梯计数：未测（落脚 {sm.get('steps', 0):.0f} 次，少于 {MIN_STAIR_EVENTS}）"
-  tags = [f"{k} {sm[k]:.3f}" for k in ("kicks", "slips", "edge") if sm[k] > LEGGED_BARS[k]]
-  if sm["mid"] < LEGGED_BARS["mid"]:
-    tags.append(f"mid {sm['mid']:.3f}")
-  return detail, (f"{label}楼梯计数：" + "、".join(tags) if tags else None)
+  # hard: the edge only (2026-11-13, the user: mid is a means to keep off the edge; kicks / slips / mid are quality
+  # targets -- quality_lines(), outside PASS / FAIL)
+  return detail, (f"{label}楼梯计数：edge {sm['edge']:.3f}" if sm["edge"] > LEGGED_BARS["edge"] else None)
+
+
+# The legged stairs counts' quality targets (2026-11-13; the user ~15:00 CST: "我其实没有明确的数字要求，尽量满足上楼梯不要
+# 踢立面，最好踩在中间就行。map3每段踢立面最好能控制在2次左右就行，踩中间其实主要是为了不要踩楼梯边缘导致脚滑，没有硬性要
+# 求"; go2-depth's decision): not in PASS / FAIL; each reported beside the user's target and the delivered model's
+# reading (达到 / 未达到 / 差于已交付), and the report to the user lists them as they are. Kicks on the ASCENTS only
+# (eval_stairs' tile rows "up", step-weighted), also per map3 flight (x FLIGHT_STEPS steps); the descents' kicks and mid
+# reported only. The edge stays hard (stairs_count_verdict).
+QUALITY_TARGETS = {"kicks_up": ("max", 0.245), "slips": ("max", 0.0245), "mid": ("min", 0.80)}
+DELIVERED_REF = {   # the delivered legged blind policy's tier-2 reading, per robot (none: no comparison)
+  "Go2": {"kicks_up": 0.356, "slips": 0.068, "mid": 0.778, "src": "go2_blind_v4 model_10000 (0dc3b56 counters)"},
+}
+FLIGHT_STEPS = 8.15   # steps per map3 flight (go2-depth 11-13): kicks per flight = kicks per step x this
+
+
+def stairs_dir_counts(path: str) -> dict[str, dict[str, float]]:
+  """eval_stairs --metrics' tile rows pooled per direction ("up" / "down"), each count weighted by its tile's steps:
+  {dir: {steps, kicks, slips, mid, edge}} (a count a tile printed as '-' is left out of its own average)."""
+  acc: dict[str, dict] = {}
+  for m in re.finditer(r"^tile \S+ (up|down) \S+: steps ([\d.]+), kicks ([\d.]+|-), slips ([\d.]+|-), mid ([\d.]+|-), "
+                       r"edge ([\d.]+|-)", txt(path), re.M):
+    d, n = m.group(1), float(m.group(2))
+    a = acc.setdefault(d, {"steps": 0.0, **{k: [0.0, 0.0] for k in ("kicks", "slips", "mid", "edge")}})
+    a["steps"] += n
+    for k, g in (("kicks", 3), ("slips", 4), ("mid", 5), ("edge", 6)):
+      if m.group(g) != "-":
+        a[k][0] += float(m.group(g)) * n
+        a[k][1] += n
+  return {d: {"steps": a["steps"], **{k: (a[k][0] / a[k][1] if a[k][1] else None)
+                                       for k in ("kicks", "slips", "mid", "edge")}} for d, a in acc.items()}
+
+
+def quality_lines(r: str, path: str, label: str = "") -> list[str]:
+  """The legged quality-target block for one eval_stairs output (not judged)."""
+  dc, sm = stairs_dir_counts(path), stairs_metrics(path)
+  ref = DELIVERED_REF.get(r, {})
+  vals = {"kicks_up": (dc.get("up") or {}).get("kicks"), "slips": sm.get("slips"), "mid": sm.get("mid")}
+  names = {"kicks_up": "上楼 kicks（每步）", "slips": "slips（每步）", "mid": "mid（落在踏面中间）"}
+  out = [f"质量目标（非硬性）{label}："]
+  for k, (sense, goal) in QUALITY_TARGETS.items():
+    v, rv = vals[k], ref.get(k)
+    if v is None:
+      out.append(f"  {names[k]}：未测")
+      continue
+    met = v <= goal if sense == "max" else v >= goal
+    worse = rv is not None and (v > rv if sense == "max" else v < rv)
+    status = "达到" if met else ("差于已交付" if worse else "未达到")
+    extra = f"（每段约 {v * FLIGHT_STEPS:.1f} 次；目标每段约 {goal * FLIGHT_STEPS:.0f} 次）" if k == "kicks_up" else ""
+    out.append(f"  {names[k]}：{v:.3f}{extra}；目标 {'≤' if sense == 'max' else '≥'} {goal}；"
+               f"已交付 {rv if rv is not None else '-'} → {status}")
+  dn = (dc.get("down") or {}).get("kicks")
+  out.append(f"  下楼 kicks（每步，只报告）：{'-' if dn is None else f'{dn:.3f}'}"
+             + (f"；已交付参考：{ref['src']}" if ref else ""))
+  return out
 GOALS = {"g_speed": "平地速度", "g_drift": "跑偏", "g_spin": "原地旋转", "g_spinalt": "交替原地转", "g_stop": "停车",
          "g_march": "原地踏步", "g_clock": "步态节奏", "g_stairs": "楼梯", "g_falls": "摔倒"}
 
@@ -276,6 +330,8 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
   detail.append(line)
   if why:
     bad.append(why)
+  if not wheeled:
+    detail.extend(quality_lines(r, p["stairs"], "（常用负载）"))
   # no fall in any test run (goal_cells' own fall item reads the 44 flat commands, not run here: per test instead)
   cf = comparison_falls(p)
   if any(v is None for v in cf.values()):
@@ -336,6 +392,8 @@ def judge(argv: list[str]) -> int:
   detail.append(line)
   if why:
     bad.append(why)
+  if not wheeled:
+    detail.extend(quality_lines(r, p["stairs"]))
   # the heading on the flight: a reading here, judged in tinynav (the user: "heading需要验收"; go2-depth 11-13: tier 2
   # warns only -- a judged tier-2 bar would be a new acceptance rule)
   ha, hu = stairs_heading(p["stairs"])
