@@ -271,6 +271,12 @@ def constraint_items(kind: str) -> list[dict]:
     # the heavy class (constraints._stairs_stop_still)
     items += [c(f"stop_still_{d}{h}", f"u_stairs_stop_still{h}", "min", 0.95, 0.8, "q", [], {"facing": d},
                 enforce=False, family="stairs") for d in ("up", "down") for h in ("", "_heavy")]
+  if os.environ.get("U_STOP_PLACE"):
+    # logged only, with the cost (_add_stop_place): the share of the robots within 0.50 m of where a stand on a
+    # flight began, 2-4 s into it, by the way the nose pointed when it began, up to the common payload and in the
+    # heavy class (constraints._stop_place; tier 2's gate asks 90% of every band and direction)
+    items += [c(f"stop_place_{d}{h}", f"u_stop_place{h}", "min", 0.95, 0.8, "q", [], {"facing": d},
+                enforce=False, family="stairs") for d in ("up", "down") for h in ("", "_heavy")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -611,6 +617,31 @@ def _add_body_clear(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
     assert 0.05 <= f[2] <= 0.15, f"U_BODY_CLEAR {v}: the reach towards a step face, 0.05-0.15 m"
     params["reach"] = f[2]
   cfg.rewards[BODY_CLEAR_TERM] = RewardTermCfg(func=ucons.body_clear, weight=-f[0], params=params)
+
+
+STOP_PLACE_TERM = "u_stop_place"   # ("u_" prefix: quality_diff leaves it alone -- at its weight from the first iteration)
+
+
+def _add_stop_place(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_STOP_PLACE=<w>[,<free>[,<full>[,<heavy>]]] (a probe's switch, _probe_switches): the cost
+  constraints.stop_place at the weight -w; nothing within <free> m of where the stand began (0.30), in full from
+  <full> m on (<free> + 0.30); for the heavy class at <heavy> times it (0 without it). At its weight from the first
+  iteration (no constraint scales it, the stairs quality does not bring it in): a stop on a flight is asked to hold
+  its place whenever there is one. The command and the scan are feet_stand_uneven's (the stop_feet item's term:
+  in every robot's environment)."""
+  v = os.environ.get("U_STOP_PLACE")
+  if not v:
+    return
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 4 and 0.0 < f[0] <= 20.0, f"U_STOP_PLACE {v}: <weight 0-20>[,<free m>[,<full m>[,<heavy 0-1>]]]"
+  free = f[1] if len(f) > 1 else 0.30
+  full = f[2] if len(f) > 2 else free + 0.30
+  heavy = f[3] if len(f) > 3 else 0.0
+  assert 0.05 <= free < full <= 2.0 and 0.0 <= heavy <= 1.0, f"U_STOP_PLACE {v}: 0.05 <= free < full <= 2 m, heavy 0-1"
+  ref = cfg.rewards["feet_stand_uneven"].params
+  cfg.rewards[STOP_PLACE_TERM] = RewardTermCfg(func=ucons.stop_place, weight=-f[0], params={
+    "command_name": ref["command_name"], "sensor_name": ref["scan_sensor_name"],
+    "command_threshold": ref.get("command_threshold", 0.1), "free": free, "full": full, "heavy": heavy})
 
 
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
@@ -985,6 +1016,15 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          the common payload / in the heavy class (constraints._stairs_stop_still; a second
                          stop_creep term, u_stairs_stop). The training had no reading of it: the Go2W's formal
                          teachers failed tier 2 on it four times with every training reading in order.
+    U_STOP_PLACE=<w>[,<free>[,<full>[,<heavy>]]]   a robot told to stop over uneven ground stays where it was told:
+                         the cost constraints.stop_place at the weight -w on the distance from the base position
+                         at the stand's first step -- nothing within <free> m (0.30), in full from <full> m on
+                         (<free> + 0.30), until the command moves again; the heavy class at <heavy> times it (0).
+                         With it four logged items stop_place_{up,down}[_heavy]: the share of the robots within
+                         0.50 m of that position 2-4 s into a stand that began on a flight. 2026-11-14, the Go2W's
+                         formal teachers: after the zero command on a climbing 12-18 cm flight the robots rolled
+                         back to the start platform (0 of 72 held on 15-18 cm at 4400), which no cost charged and
+                         tier 2's stop run counted "ok" (_add_stop_place, constraints.stop_place).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
@@ -1250,6 +1290,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     _add_body_clear(cfg, robot)
     _add_stair_park(cfg)
     _add_com_support(cfg)
+    _add_stop_place(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

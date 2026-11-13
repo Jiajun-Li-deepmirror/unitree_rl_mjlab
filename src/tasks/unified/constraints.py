@@ -307,6 +307,95 @@ class stop_creep:
     return torch.zeros(env.num_envs, device=env.device)
 
 
+class stop_place:
+  """Reward term (U_STOP_PLACE=<w>[,<free>[,<full>[,<heavy>]]], go2-depth 2026-11-14): a robot told to stop on a
+  flight stays where it was told.
+
+  Why. The Go2W's formal teachers from zero (84e7965) answer the zero command on a climbing 12-18 cm flight by
+  rolling back down to the start platform (seed 0, 72 robots a band: model_2600 29 hold / 34 leave on 12-15 cm and
+  23 / 43 on 15-18 cm; model_4400 14 / 55 and 0 / 72, 1.2-1.7 m back inside 2 s), and nothing charges it:
+  standing_position_hold's anchor follows the base for up to 2 s after the stand begins (its push_window, the
+  braking's excuse), standing_pose_load waits for that anchor to lock, wheel_slide_back does not count at a zero
+  command, and on the platform every stop reading is perfect -- four wheels down (stop_feet), no speed, no creep.
+  Tier 2's stop run read the displacement between 2 s and 4 s after the command only, so the faster the retreat,
+  the better it read (84% -> 92% "stop ok"). The probe lineage's s51 model_7991 holds on the same flights (69 of 72
+  on 12-15 cm): it can be done. Keeping the flat items' hold terms strong on the flights (U_FLAT_ONLY_KEEP, s59)
+  did not stop the retreat and tripled the falls; the standing pose cost off the flights (U_STAND_POSE_EVEN, s61)
+  changed nothing.
+
+  Here: when the velocity command falls to zero (a stand, or a march in place) over uneven ground
+  (mdp.uneven_terrain_mask on `sensor_name`: a step within 0.45 m), the base position at that step is the reference
+  for the whole stand -- no following, no settling time. Per second: nothing within `free` of it (0.30 m, a tread:
+  the braking, a wheel rolling onto the tread below), 1 from `full` on (0.60 m), linear in between, until the
+  command moves again -- wherever the robot is by then (the ground under it now is not asked: the platform it
+  retreated to counts). A push during the stand ends the cost for that stand (the robot was moved; it is not asked
+  back). In full up to the common payload (COMMON_FRAC of the limit), `heavy` times it from the heavy class
+  (HEAVY_FRAC) up, linear in between, as stairs_park: the acceptance judges the stops unloaded and at the common
+  payload and the full payload on its falls alone -- a heavy robot may leave the flight (`heavy` 0).
+
+  The reading (env.u_stop_place; the constraints' "u_stop_place" / "u_stop_place_heavy", items
+  stop_place_{up,down}[_heavy]): `near` = within `stay` of the reference (0.50 m, tier 2's bar), counted (`mask`)
+  while the stand is `read_from` .. `read_to` old (2-4 s; a stand on a stairs column lasts 1.5-4 s) -- `up` / `down`
+  say which way the nose pointed when the stand began (the pitch by `min_pitch` or more), so a robot back on level
+  ground still counts for the flight it left. Unlike U_STOP_STILL's reading (the robots still pitched 3.5-4 s into
+  the stand: 1.0 on a checkpoint whose robots had all left)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    n, dev = env.num_envs, env.device
+    self.ref = torch.zeros(n, 2, device=dev)                    # the base position when the stand began
+    self.was = torch.zeros(n, dtype=torch.bool, device=dev)     # at the zero command at the last step
+    self.on = torch.zeros(n, dtype=torch.bool, device=dev)      # this stand began over uneven ground, no push since
+    self.up = torch.zeros(n, dtype=torch.bool, device=dev)      # nose up when the stand began
+    self.down = torch.zeros(n, dtype=torch.bool, device=dev)    # nose down when the stand began
+    self.since = torch.zeros(n, dtype=torch.long, device=dev)   # the step the stand began
+    self.seen_push = None                                       # events' push stamp at the last step
+    self.dist = torch.zeros(n, device=dev)                      # distance from the reference (m)
+    self.near = torch.zeros(n, device=dev)                      # 1 within `stay` of the reference
+    self.mask = torch.zeros(n, dtype=torch.bool, device=dev)    # the robots whose reading counts now
+    env.u_stop_place = self
+
+  def reset(self, env_ids=None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.was[env_ids] = False
+    self.on[env_ids] = False
+    self.mask[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, command_name: str, sensor_name: str, command_threshold: float = 0.1,
+               free: float = 0.30, full: float = 0.60, heavy: float = 0.0, stay: float = 0.50,
+               min_pitch: float = 0.05, read_from: float = 2.0, read_to: float = 4.0) -> torch.Tensor:
+    from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+    command = env.command_manager.get_command(command_name)
+    zero = (torch.norm(command[:, :2], dim=1) + command[:, 2].abs()) <= command_threshold
+    data = env.scene["robot"].data
+    pos = data.root_link_pos_w[:, :2]
+    step = int(env.common_step_counter)
+    new = zero & ~self.was
+    self.was = zero.clone()
+    gx = data.projected_gravity_b[:, 0]
+    self.ref = torch.where(new.unsqueeze(1), pos, self.ref)
+    self.since = torch.where(new, torch.full_like(self.since, step), self.since)
+    self.on = torch.where(new, uneven_terrain_mask(env, sensor_name), self.on) & zero
+    self.up = torch.where(new, gx <= -min_pitch, self.up)
+    self.down = torch.where(new, gx >= min_pitch, self.down)
+    stamp = getattr(env, "_push_step", None)
+    if stamp is not None:
+      if self.seen_push is not None:
+        self.on &= ~(stamp > self.seen_push)
+      self.seen_push = stamp.clone()
+    self.dist = torch.norm(pos - self.ref, dim=1)
+    self.near = (self.dist <= stay).float()
+    age = (step - self.since) * env.step_dt
+    self.mask = self.on & (age >= read_from) & (age <= read_to)
+    out = self.on.float() * ((self.dist - free) / (full - free)).clamp(min=0.0, max=1.0)
+    kg = getattr(env, "payload_kg", None)
+    if kg is not None:
+      frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
+      out = out * (1.0 - (1.0 - heavy) * frac.clamp(0.0, 1.0))
+    return out
+
+
 class march_reset:
   """Reward term with zero output (a tiny nonzero weight): whether a march sets a splayed stance back, the way the
   acceptance measures it (go2-depth 2026-11-12).
@@ -455,6 +544,17 @@ def _stairs_stop_still(env: ManagerBasedRlEnv, facing: str = "up", min_pitch: fl
   gx = env.scene["robot"].data.projected_gravity_b[:, 0]
   pitched = gx >= min_pitch if facing == "down" else gx <= -min_pitch
   return (t.value < max_drift).float(), t.mask & env.command_manager.get_term("twist").is_stair_env & pitched
+
+
+def _stop_place(env: ManagerBasedRlEnv, facing: str = "up") -> tuple[torch.Tensor, torch.Tensor]:
+  """`stop_place`'s reading: 1 for a robot within 0.50 m of where its stand began, over the stands that began on a
+  flight of a stairs column nose up (`facing` "up") / nose down ("down"), 2-4 s into the stand -- wherever the robot
+  is by then (tier 2's stop run from the next freeze on: the displacement from the zero command to 4 s after it)."""
+  t = getattr(env, "u_stop_place", None)
+  if t is None:
+    raise RuntimeError("u_stop_place: U_STOP_PLACE's term is not in this environment (teacher_env._add_stop_place)")
+  assert facing in ("up", "down"), facing
+  return t.near, t.mask & env.command_manager.get_term("twist").is_stair_env & (t.up if facing == "up" else t.down)
 
 
 def _yaw_frame_velocity(env: ManagerBasedRlEnv, asset_name: str = "robot") -> torch.Tensor:
@@ -861,6 +961,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_com_stop": upto_common(_com_stop), "u_com_stop_heavy": over_heavy(_com_stop),
           "u_stairs_stop_still": upto_common(_stairs_stop_still),
           "u_stairs_stop_still_heavy": over_heavy(_stairs_stop_still),
+          "u_stop_place": upto_common(_stop_place), "u_stop_place_heavy": over_heavy(_stop_place),
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
