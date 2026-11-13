@@ -66,8 +66,11 @@ KIND: dict[str, dict[str, str]] = {
 ROBOT: dict[str, dict[str, str]] = {
   # the standing pose cost off the uneven ground: the heavy legged robot's loaded falls at the stops halve (179 -> 88,
   # go2-home's mAJ). Not for the others: the Go2's loaded falls tripled with it (62 against 20, s50 / s51), the
-  # Go2W gained nothing (s38)
-  "As2": {"U_STAND_POSE_EVEN": "1"},
+  # Go2W gained nothing (s38).
+  # The stairs share ramps in over progress 0-0.15, as the wheeled: every As2 probe descends from a start with it
+  # (go2-home's uprobe_s1; the timeline env_vars of mAJ / mAK / mAM carry it) -- the legged default (the task's
+  # 0.3-0.8) is untested under the As2's recipe, so the code keeps what the probes ran
+  "As2": {"U_STAND_POSE_EVEN": "1", "U_STAIRS_P": "0.0,0.15"},
 }
 
 # read by the runner when it starts (runner._entropy_by_q, _std_cap_by_q), not by the builders

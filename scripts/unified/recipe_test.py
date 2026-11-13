@@ -41,7 +41,7 @@ PROBE_LINES = {
   "Go2": _LEGGED,
   "Go2W": f"{_PK} U_STAIR_SPEED_H=1 U_HEADING_OBS=1 U_HEADING_LAG=2 U_STAIR_APPROACH=0 U_BODY_CLEAR=50,0.06,0.10 "
           "U_STAIRS_P=0.0,0.15",
-  "As2": f"{_LEGGED} U_STAND_POSE_EVEN=1",
+  "As2": f"{_LEGGED} U_STAND_POSE_EVEN=1 U_STAIRS_P=0.0,0.15",   # go2-home's mAM timeline env_vars (11-13 15:35)
 }
 
 
