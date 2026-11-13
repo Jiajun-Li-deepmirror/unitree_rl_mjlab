@@ -576,16 +576,23 @@ BODY_CLEAR_TERM = "body_clear"   # (no "u_" prefix, as KEEPOUT_TERM: in with the
 
 
 def _add_body_clear(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
-  """U_BODY_CLEAR=<w> (a probe's switch, _probe_switches): the cost constraints.body_clear at the weight -w, on the
-  geoms of the illegal-contact termination's sensor. Before _rewards / quality_diff: a cost the M keys do not have,
-  so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint scales it)."""
+  """U_BODY_CLEAR=<w>[,<margin>[,<reach>]] (a probe's switch, _probe_switches): the cost constraints.body_clear at
+  the weight -w, on the geoms of the illegal-contact termination's sensor; its margin over a step's top (m, 0.03)
+  and its reach towards a step face (m, 0.05) when given. Before _rewards / quality_diff: a cost the M keys do not
+  have, so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint scales it)."""
   v = os.environ.get("U_BODY_CLEAR")
   if not v or "illegal_contact" not in cfg.terminations:
     return
-  w = float(v)
-  assert 0.0 < w <= 50.0, f"U_BODY_CLEAR {v}: the cost's weight"
-  sensor = cfg.terminations["illegal_contact"].params["sensor_name"]
-  cfg.rewards[BODY_CLEAR_TERM] = RewardTermCfg(func=ucons.body_clear, weight=-w, params={"sensor_name": sensor})
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 3 and 0.0 < f[0] <= 50.0, f"U_BODY_CLEAR {v}: <the cost's weight 0-50>[,<margin>[,<reach>]]"
+  params = {"sensor_name": cfg.terminations["illegal_contact"].params["sensor_name"]}
+  if len(f) > 1:
+    assert 0.03 <= f[1] <= 0.10, f"U_BODY_CLEAR {v}: the margin over a step's top, 0.03-0.10 m"
+    params["margin"] = f[1]
+  if len(f) > 2:
+    assert 0.05 <= f[2] <= 0.15, f"U_BODY_CLEAR {v}: the reach towards a step face, 0.05-0.15 m"
+    params["reach"] = f[2]
+  cfg.rewards[BODY_CLEAR_TERM] = RewardTermCfg(func=ucons.body_clear, weight=-f[0], params=params)
 
 
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
@@ -960,7 +967,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_BODY_CLEAR=<w>     the cost body_clear at the weight -<w>: a point of the bodies whose touch ends the episode
                          (trunk, hips, the As2's thigh roots) within 3 cm over the terrain or of a step's top next
                          to it (constraints.body_clear, read in _add_body_clear) -- the climbs' fails are the chin
-                         / the thigh roots on a step, with a payload the more;
+                         / the thigh roots on a step, with a payload the more; U_BODY_CLEAR=<w>,<margin>[,<reach>]
+                         with another margin (m) and reach towards a step face (m, 0.05): the Go2W at weight 50
+                         (uprobe_s46) passes the stairs unloaded and with the acceptance's 8 kg still loses 28 of
+                         576 on the climbs, the head (base2) on a step -- the loaded trunk rides lower than the
+                         3 cm the unloaded one learned to keep;
     U_KICK_KEEPOUT=<w>   legged: the cost riser_keepout at the weight -<w> -- a swinging foot close to a step face
                          and below its top (constraints.riser_keepout) -- as one of the kicks item's costs (read in
                          _add_riser_keepout and constraint_items); with U_KICK_KEEPOUT_DIR=1 only the faces the
