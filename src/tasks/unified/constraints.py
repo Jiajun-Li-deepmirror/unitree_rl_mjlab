@@ -921,7 +921,17 @@ class flat_only:
   a level stance has the front and rear legs far from the default, it was the largest cost of a stop -- 4.2 a second
   nose up and 5.4 nose down with the full payload, 1.7 / 2.1 with none (stand_stairs_terms on uprobe_s41's
   model_6097; a stop on even ground earns about +4 a second, on the stairs -0.3 to -9.3) -- and more than half of
-  the full payload's falls in tier 2 were stops on a descent, 0-4 s after the stop."""
+  the full payload's falls in tier 2 were stops on a descent, 0-4 s after the stop.
+
+  `keep_terms` (the probe switch U_FLAT_ONLY_KEEP=<term>,<term>, 2026-11-13): these terms keep their items'
+  multipliers over uneven ground -- nothing is added back for them. Why: the Go2W's formal teachers from zero
+  (84e7965, ufull_s0 / s1 at 2600-3300 iterations) fail tier 2's stairs test on the stop in the middle of a flight --
+  12-18 cm steps going up: still moving 2-4 s after the zero command (8-39 cm in those 2 s, "stop ok" 82-85% against
+  95%), and with the full payload falls 2-4 s after a stop going down (31 -> 87 and 11 -> 26 of 576 over 600
+  iterations) -- where the probe lineage's teachers read 97-100% from uprobe_s22's model_4498 on. That lineage
+  learned its stop before this term existed (it came in at 4498): until then the creep item's multiplier (3x) scaled
+  standing_position_hold and standing_speed on the flights too; a teacher from zero under this term has them at 1x
+  there, and no training reading counts the creep of a stop on a flight."""
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     pass
@@ -930,7 +940,8 @@ class flat_only:
     pass
 
   def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, heavy_terms: list[str],
-               min_frac: float = HEAVY_FRAC, zero_terms: tuple[str, ...] = ()) -> torch.Tensor:
+               min_frac: float = HEAVY_FRAC, zero_terms: tuple[str, ...] = (),
+               keep_terms: tuple[str, ...] = ()) -> torch.Tensor:
     from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
     out = torch.zeros(env.num_envs, device=env.device)
     calm = getattr(getattr(env, "u_constraints", None), "calm", {})
@@ -943,7 +954,7 @@ class flat_only:
       if r is not None:
         out -= uneven.float() * r[0] * r[1]
     for t, w_calm in calm.items():
-      if t in zero_terms:
+      if t in zero_terms or t in keep_terms:
         continue
       r = _raw(env, t)
       if r is None:

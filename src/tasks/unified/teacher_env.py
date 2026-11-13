@@ -795,6 +795,11 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     params = {"sensor_name": sensor or "terrain_scan", "heavy_terms": heavy_terms}
     if os.environ.get("U_STAND_POSE_EVEN") == "1" and "standing_pose_load" in rewards:   # a probe's switch
       params["zero_terms"] = ("standing_pose_load",)
+    if os.environ.get("U_FLAT_ONLY_KEEP"):   # a probe's switch (_probe_switches)
+      keep = tuple(t for t in os.environ["U_FLAT_ONLY_KEEP"].split(",") if t)
+      assert keep and all(t in rewards for t in keep) and not set(keep) & set(params.get("zero_terms", ())), \
+        f"U_FLAT_ONLY_KEEP {keep}: reward terms of this build (and none of U_STAND_POSE_EVEN's)"
+      params["keep_terms"] = keep
     rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params=params)
   assert os.environ.get("U_STAND_POSE_EVEN") != "1" or os.environ.get("U_FLAT_ONLY") == "1", \
     "U_STAND_POSE_EVEN goes with U_FLAT_ONLY=1 (its term takes the cost off the uneven ground)"
@@ -958,6 +963,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_ONLY=1        a flat item's multiplier presses on flat ground only: over uneven ground its terms stay at
                          the configured weight or below (constraints.flat_only, set up in _rewards: the flat line
                          item at its 3x cap cost the climbing Go2 1.5 a second, as much as its quality costs).
+    U_FLAT_ONLY_KEEP=<term>[,<term>]   with U_FLAT_ONLY=1: these reward terms keep their flat items' multipliers
+                         over uneven ground too (flat_only's keep_terms). 2026-11-13, the Go2W's formal teachers
+                         from zero: the stop in the middle of a flight (tier 2: still moving 2-4 s after the zero
+                         command going up, falls after a stop going down with the full payload) -- the probe
+                         U_FLAT_ONLY_KEEP=standing_position_hold,standing_speed (the creep item's terms).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
