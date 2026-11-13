@@ -157,67 +157,82 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
     return 4
   fi
   log "$kind stage 1 done: $ck"
-  before=$(newest ${r}_u_student_${kind}_rl $n2)
-  $PY scripts/train.py Unitree-$R-U-Student-$K-RL --env.scene.num-envs=$ENVS --agent.run-name=$n2 --agent.seed=$SEED \
-    --agent.max-iterations=$S2 --agent.teacher-checkpoint=$T --agent.student-checkpoint=$ck $SAVE2 \
-    > logs/jobs/unified_${r}_$n2.log 2>&1 &
-  pid=$!
-  # stage 2's gates (2026-11-13, go2-depth): every F_S2_GATE_EVERY_IT iterations the students' own tier 2 on the
-  # average of the newest F_S2_GATE_AVG_N checkpoints (accept.sh BASELINE=1: no pick, no tinynav, no delivery), one gate
-  # at a time on the card (a point that comes while one runs, or without the memory, is skipped). PASS with the quality
-  # readings no worse than delivered: stage 2 stops there and that candidate goes on (its tier 2 reused); PASS worse:
-  # kept, training goes on; at the cap the kept one with the smallest quality gap, else the last average as before
-  local run2="" gpid="" gk="" ge="" pick_end="" HP="" Kg last n d gfirst=1
-  declare -A GDONE=()
-  if [ $progress = 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ]; then
-    while kill -0 $pid 2> /dev/null || [ -n "$gpid" ]; do
-      sleep ${S2_POLL_S:-60}
-      if [ -z "$run2" ]; then
-        d=$(newest ${r}_u_student_${kind}_rl $n2); [ -n "$d" ] && [ "$d" != "$before" ] && run2=$d
-        [ -n "$run2" ] || continue
-      fi
-      if [ -n "$gpid" ] && ! kill -0 $gpid 2> /dev/null; then   # a gate ended: its verdict
-        wait $gpid 2> /dev/null
-        if [ $? = 75 ]; then GATE_OUT=skip; else s2_gate_read $kind $run2 $gk $ge; gfirst=0; fi
-        gpid=""
-        case $GATE_OUT in
-          pass) pick_end=$ge
-                log "STUDENT $kind S2 PICK a${F_S2_GATE_AVG_N}_$ge (gate at $gk): stage 2 stopped"
-                tl $run2 s2_pick $gk end=$ge why=gate
-                kill -0 $pid 2> /dev/null && stopw $pid
-                break ;;
-          hard) HP="$HP$GATE_GAP $ge
+  local attempt=0
+  while :; do
+  attempt=$((attempt + 1))
+    before=$(newest ${r}_u_student_${kind}_rl $n2)
+    $PY scripts/train.py Unitree-$R-U-Student-$K-RL --env.scene.num-envs=$ENVS --agent.run-name=$n2 --agent.seed=$SEED \
+      --agent.max-iterations=$S2 --agent.teacher-checkpoint=$T --agent.student-checkpoint=$ck $SAVE2 \
+      > logs/jobs/unified_${r}_$n2.log 2>&1 &
+    pid=$!
+    # stage 2's gates (2026-11-13, go2-depth): every F_S2_GATE_EVERY_IT iterations the students' own tier 2 on the
+    # average of the newest F_S2_GATE_AVG_N checkpoints (accept.sh BASELINE=1: no pick, no tinynav, no delivery), one gate
+    # at a time on the card (a point that comes while one runs, or without the memory, is skipped). PASS with the quality
+    # readings no worse than delivered: stage 2 stops there and that candidate goes on (its tier 2 reused); PASS worse:
+    # kept, training goes on; at the cap the kept one with the smallest quality gap, else the last average as before
+    local run2="" gpid="" gk="" ge="" pick_end="" HP="" Kg last n d gfirst=1
+    declare -A GDONE=()
+    if [ $progress = 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ]; then
+      while kill -0 $pid 2> /dev/null || [ -n "$gpid" ]; do
+        sleep ${S2_POLL_S:-60}
+        if [ -z "$run2" ]; then
+          d=$(newest ${r}_u_student_${kind}_rl $n2); [ -n "$d" ] && [ "$d" != "$before" ] && run2=$d
+          [ -n "$run2" ] || continue
+        fi
+        if [ -n "$gpid" ] && ! kill -0 $gpid 2> /dev/null; then   # a gate ended: its verdict
+          wait $gpid 2> /dev/null
+          if [ $? = 75 ]; then GATE_OUT=skip; else s2_gate_read $kind $run2 $gk $ge; gfirst=0; fi
+          gpid=""
+          case $GATE_OUT in
+            pass) pick_end=$ge
+                  log "STUDENT $kind S2 PICK a${F_S2_GATE_AVG_N}_$ge (gate at $gk): stage 2 stopped"
+                  tl $run2 s2_pick $gk end=$ge why=gate
+                  kill -0 $pid 2> /dev/null && stopw $pid
+                  break ;;
+            hard) HP="$HP$GATE_GAP $ge
 " ;;
-        esac
-      fi
-      kill -0 $pid 2> /dev/null || continue   # (training ended: only the running gate is waited for)
-      last=$(ls $run2/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | tail -n 1)
-      [ -n "$last" ] || continue
-      for Kg in $(seq $F_S2_GATE_EVERY_IT $F_S2_GATE_EVERY_IT $last); do
-        [ -n "${GDONE[$Kg]:-}" ] && continue
-        GDONE[$Kg]=1
-        n=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | awk -v k=$Kg '$1 <= k' | wc -l)
-        if [ -n "$gpid" ]; then log "STUDENT $kind S2 GATE $Kg: skipped (the gate at $gk still runs)"
-          tl $run2 s2_gate $Kg verdict=skipped "why=the gate at $gk still runs"; continue; fi
-        if [ $n -lt $F_S2_GATE_AVG_N ]; then log "STUDENT $kind S2 GATE $Kg: skipped ($n checkpoints, the average takes $F_S2_GATE_AVG_N)"
-          tl $run2 s2_gate $Kg verdict=skipped "why=$n checkpoints"; continue; fi
-        ge=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | awk -v k=$Kg '$1 <= k' | tail -n 1)
-        # a student's first gate waits for the card (go2-depth: each student one full reading early); later ones skip
-        s2_gate_run $([ $gfirst = 1 ] && printf %s -x || printf %s -n) $kind $run2 $Kg &   # (echo -n prints nothing)
-        gpid=$! gk=$Kg
-        log "STUDENT $kind S2 GATE $Kg: started on a${F_S2_GATE_AVG_N}_$ge$([ $gfirst = 1 ] && echo ' (its first: waits for the card if another gate runs)')"
-        break
+          esac
+        fi
+        kill -0 $pid 2> /dev/null || continue   # (training ended: only the running gate is waited for)
+        last=$(ls $run2/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | tail -n 1)
+        [ -n "$last" ] || continue
+        for Kg in $(seq $F_S2_GATE_EVERY_IT $F_S2_GATE_EVERY_IT $last); do
+          [ -n "${GDONE[$Kg]:-}" ] && continue
+          GDONE[$Kg]=1
+          n=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | awk -v k=$Kg '$1 <= k' | wc -l)
+          if [ -n "$gpid" ]; then log "STUDENT $kind S2 GATE $Kg: skipped (the gate at $gk still runs)"
+            tl $run2 s2_gate $Kg verdict=skipped "why=the gate at $gk still runs"; continue; fi
+          if [ $n -lt $F_S2_GATE_AVG_N ]; then log "STUDENT $kind S2 GATE $Kg: skipped ($n checkpoints, the average takes $F_S2_GATE_AVG_N)"
+            tl $run2 s2_gate $Kg verdict=skipped "why=$n checkpoints"; continue; fi
+          ge=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | awk -v k=$Kg '$1 <= k' | tail -n 1)
+          # a student's first gate waits for the card (go2-depth: each student one full reading early); later ones skip
+          s2_gate_run $([ $gfirst = 1 ] && printf %s -x || printf %s -n) $kind $run2 $Kg &   # (echo -n prints nothing)
+          gpid=$! gk=$Kg
+          log "STUDENT $kind S2 GATE $Kg: started on a${F_S2_GATE_AVG_N}_$ge$([ $gfirst = 1 ] && echo ' (its first: waits for the card if another gate runs)')"
+          break
+        done
       done
-    done
-  fi
-  wait $pid
-  rc=$?
-  [ -n "$pick_end" ] && rc=0   # (stopped by its gate)
-  run=$(newest ${r}_u_student_${kind}_rl $n2)
-  if [ $rc != 0 ] || [ -z "$run" ] || [ "$run" = "$before" ]; then
-    log "TOOL FAULT: $kind stage 2 ended with exit $rc ($(grep -E 'Error' logs/jobs/unified_${r}_$n2.log | tail -n 1 | cut -c1-160))"
-    return 4
-  fi
+    fi
+    wait $pid
+    rc=$?
+    [ -n "$pick_end" ] && rc=0   # (stopped by its gate)
+    run=$(newest ${r}_u_student_${kind}_rl $n2)
+    if [ $rc != 0 ] || [ -z "$run" ] || [ "$run" = "$before" ]; then
+      if [ $progress = 1 ] && [ $attempt -le ${F_S2_RETRIES:-1} ]; then
+        # stage 2 is never resumed (2026-11-13, go2-depth): student_ppo's resume restores neither the BC progress (each
+        # learn() decays from the configured bc_coef over its own iterations) nor num_updates (the critic warm-up again)
+        # -- a stage 2 that ends in a fault starts over from the stage-1 end, a new run; the failed one's log is kept
+        log "STUDENT $kind S2 FAULT (exit $rc, attempt $attempt, run ${run2:-none}): stage 2 again from $ck -- a new run, never a resume ($(grep -E 'Error' logs/jobs/unified_${r}_$n2.log | tail -n 1 | cut -c1-160))"
+        [ -n "$run2" ] && tl $run2 s2_fault 0 attempt=$attempt rc=$rc
+        [ -n "$gpid" ] && wait $gpid 2> /dev/null
+        mv -f logs/jobs/unified_${r}_$n2.log logs/jobs/unified_${r}_$n2.fault$attempt.log
+        continue
+      fi
+      log "TOOL FAULT: $kind stage 2 ended with exit $rc ($(grep -E 'Error' logs/jobs/unified_${r}_$n2.log | tail -n 1 | cut -c1-160))"
+      return 4
+    fi
+    break
+  done
   log "$kind stage 2 done: $run"
   if [ $PROBE = 1 ]; then
     log "$kind: probe -- no acceptance (read $run with BASELINE=1 CANDIDATES=first TN_GATE=skip jobs/unified/accept.sh)"

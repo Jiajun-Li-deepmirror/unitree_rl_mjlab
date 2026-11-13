@@ -44,6 +44,10 @@ for ((i = 0; i < M; i++)); do
   echo "Learning iteration $i/$M"
   if [ $st = 1 ]; then echo "  Mean behavior loss: $(awk -v i=$i "BEGIN { print ${STUB_LOSS:-0.05 + 1.3 * exp(-i / 60)} }")"; fi
   [ $((i % SV)) = 0 ] && [ $i -gt 0 ] && touch $run/model_$i.pt
+  if [ $st = 2 ] && [ "${STUB_CRASH_S2:-x}" = $i ]; then   # a stage-2 crash, STUB_CRASH_TIMES times over all runs
+    c=$(cat logs/crashes 2> /dev/null || echo 0)
+    if [ $c -lt ${STUB_CRASH_TIMES:-1} ]; then echo $((c + 1)) > logs/crashes; echo "RuntimeError: stub crash"; exit 1; fi
+  fi
   [ $st = 2 ] && sleep ${STUB_IT_S:-0.01}
 done
 touch $run/model_$((M - 1)).pt   # (the runner's last save: model_<max - 1>)
@@ -180,6 +184,17 @@ check "F every gate run judged" '[ $(wc -l < $F/logs/spans.txt) = $(L $F | grep 
 G=$W/G; setup $G
 runit $G F_S2_GATE_AVG_N=6
 check "G AVG_N mismatch: exit 2, no training" '[ "$(cat $G/rc)" = 2 ] && L $G | grep -q "setup error: F_S2_GATE_AVG_N (6)" && [ -z "$(s1run $G)" ]'
+
+# --- H: stage 2 crashes once at 700 -> started over from the stage-1 end (a new run, not a resume), then accepted
+H=$W/H; setup $H
+runit $H F_STUDENT_S2_ITERS=1200 STUB_RULE="fail<0 hard<0 pass" STUB_CRASH_S2=700 STUB_CRASH_TIMES=1 F_S2_GATE_EVERY_IT=0
+check "H exit 0 after one stage-2 restart" '[ "$(cat $H/rc)" = 0 ] && L $H | grep -q "STUDENT blind S2 FAULT (exit 1, attempt 1"'
+check "H two stage-2 runs, both from the stage-1 end (no resume)" '[ $(grep -c "blind2_tx_s0 .*--agent.student-checkpoint=.*model_1100.pt" $H/logs/train_args.txt) = 2 ] && ! grep -q "blind2_tx_s0 .*resume" $H/logs/train_args.txt'
+check "H the failed attempt's log kept, the acceptance on the second run" '[ -f $H/logs/jobs/unified_go2_blind2_tx_s0.fault1.log ] && grep -q "e=1199" $H/logs/calls.txt'
+# --- I: stage 2 crashes twice -> a tool fault (exit 4), no third attempt
+I=$W/I; setup $I
+runit $I F_STUDENT_S2_ITERS=1200 STUB_CRASH_S2=700 STUB_CRASH_TIMES=5 F_S2_GATE_EVERY_IT=0
+check "I exit 4 after the retry also crashed" '[ "$(cat $I/rc)" = 4 ] && L $I | grep -q "TOOL FAULT: blind stage 2 ended with exit 1" && [ $(grep -c "blind2_tx_s0" $I/logs/train_args.txt) = 2 ]'
 
 echo "(work dir $W)"
 [ $NF = 0 ] && { echo "ALL OK"; rm -rf $W; exit 0; }
