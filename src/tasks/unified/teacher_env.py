@@ -265,6 +265,12 @@ def constraint_items(kind: str) -> list[dict]:
     # flights, up to the common payload and in the heavy class (constraints._com_stop)
     items += [c("com_stop", "u_com_stop", "max", 0.05, 0.3, "q", [], enforce=False, family="stairs"),
               c("com_stop_heavy", "u_com_stop_heavy", "max", 0.05, 0.3, "q", [], enforce=False, family="stairs")]
+  if os.environ.get("U_STOP_STILL") == "1":
+    # logged only: the stop in the middle of a flight as tier 2 judges it -- the share of the robots within 5 cm
+    # between 2 s and 4 s after the zero command (the gate: 95%), nose up / nose down, up to the common payload and in
+    # the heavy class (constraints._stairs_stop_still)
+    items += [c(f"stop_still_{d}{h}", f"u_stairs_stop_still{h}", "min", 0.95, 0.8, "q", [], {"facing": d},
+                enforce=False, family="stairs") for d in ("up", "down") for h in ("", "_heavy")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -844,6 +850,11 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   rewards["u_meter"] = RewardTermCfg(func=ucons.meter, weight=1e-9, params={"events": METER_EVENTS[kind]})
   # the stop creep on the acceptance's time base (after standing_position_hold: it reads that term's clock)
   rewards["u_stop_creep"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={})
+  if os.environ.get("U_STOP_STILL") == "1":
+    # the stop on a flight on tier 2's time base (the stop_still items): the reference 2 s after the stand began,
+    # counted 3.5-4 s after it began
+    rewards["u_stairs_stop"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={
+      "key": "u_stairs_stop", "settle_s": 2.0, "window_s": 2.0, "min_window_s": 1.5})
   # the march's drift the same way (after march_position_hold) and the hips' reset over a march
   rewards["u_march_drift"] = RewardTermCfg(func=ucons.stop_creep, weight=1e-9, params={
     "key": "u_march_drift", "term": "march_position_hold", "settle_s": 2.0, "window_s": 5.0, "min_window_s": 4.0,
@@ -968,6 +979,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          from zero: the stop in the middle of a flight (tier 2: still moving 2-4 s after the zero
                          command going up, falls after a stop going down with the full payload) -- the probe
                          U_FLAT_ONLY_KEEP=standing_position_hold,standing_speed (the creep item's terms).
+    U_STOP_STILL=1       logged only: the stop in the middle of a flight as tier 2's stop run judges it -- four
+                         items stop_still_{up,down}[_heavy], the share of the robots that moved less than 5 cm
+                         between 2 s and 4 s after the zero command (the gate asks 95%), nose up / nose down, up to
+                         the common payload / in the heavy class (constraints._stairs_stop_still; a second
+                         stop_creep term, u_stairs_stop). The training had no reading of it: the Go2W's formal
+                         teachers failed tier 2 on it four times with every training reading in order.
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight

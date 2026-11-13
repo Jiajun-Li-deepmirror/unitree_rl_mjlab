@@ -429,6 +429,34 @@ def _stairs_stop_feet(env: ManagerBasedRlEnv, sensor_name: str = "feet_ground_co
   return value, mask
 
 
+def _stairs_stop_still(env: ManagerBasedRlEnv, facing: str = "up", min_pitch: float = 0.05,
+                       max_drift: float = 0.05) -> tuple[torch.Tensor, torch.Tensor]:
+  """Whether a robot stopped on a flight holds still, as tier 2's stop run judges it (go2-depth 2026-11-13).
+
+  The stop run (scripts/go2_blind/eval_stairs.py) gives the zero command in the middle of a flight and takes the
+  displacement between 2 s and 4 s after it; "stop ok" needs less than 5 cm, the gate 95% of the robots. Nothing in
+  the training read that: stop_feet counts only the robots that have come to rest (base speed below 0.1 m/s), the
+  creep item reads on even ground under U_FLAT_ONLY, the park items read a standstill under a command to move. The
+  Go2W's formal teachers from zero (84e7965) read 82-85% on tier 2 at 2600-3300 iterations -- only the climbing
+  8-18 cm bands (still moving 8-39 cm), and with the full payload falls 2-4 s after a stop going down -- with every
+  training reading as the probe lineage's, which stops at 99%.
+
+  Here: `stop_creep` a second time (env.u_stairs_stop: the reference 2 s after the stand began, counted 3.5-4 s after
+  it began), value 1 where the distance from the reference is below `max_drift`, over the robots on a stairs column
+  whose body is pitched by `min_pitch` or more -- `facing` "up" nose up, "down" nose down (as _stairs_stop_feet).
+
+  Not in it: a robot that fell inside the window (its episode ended; tier 2 counts it "not ok") and one that rolled
+  back onto level ground (no longer pitched). The falls at a stop are in the episode records: run_report.py's
+  per-ground table, the failed episodes' command speed "<0.1m/s" with the payload class and the pitch at the end."""
+  t = getattr(env, "u_stairs_stop", None)
+  if t is None:
+    raise RuntimeError("u_stairs_stop: U_STOP_STILL's stop_creep term is not in this environment (teacher_env._rewards)")
+  assert facing in ("up", "down"), facing
+  gx = env.scene["robot"].data.projected_gravity_b[:, 0]
+  pitched = gx >= min_pitch if facing == "down" else gx <= -min_pitch
+  return (t.value < max_drift).float(), t.mask & env.command_manager.get_term("twist").is_stair_env & pitched
+
+
 def _yaw_frame_velocity(env: ManagerBasedRlEnv, asset_name: str = "robot") -> torch.Tensor:
   """The base's velocity in the frame that turns with its heading only (x ahead, y to the left, z up): the ground it
   covers. The body frame's x of a base pitched along a flight is the distance along the slope -- at 30 deg 15% more
@@ -831,6 +859,8 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stairs_park_down": upto_common(_stairs_park_down),
           "u_stairs_park_down_heavy": over_heavy(_stairs_park_down),
           "u_com_stop": upto_common(_com_stop), "u_com_stop_heavy": over_heavy(_com_stop),
+          "u_stairs_stop_still": upto_common(_stairs_stop_still),
+          "u_stairs_stop_still_heavy": over_heavy(_stairs_stop_still),
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
