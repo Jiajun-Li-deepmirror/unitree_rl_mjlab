@@ -1014,6 +1014,13 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          wheels 1.2-2.0 cm with the thighs still turning 0.02 rad from 2 to 6 s after the stop):
                          the posture settles out of the braking lean for seconds, and at 3 times the weight the
                          hold charges 0.3 a second for a centimetre;
+    U_CLOCK_FLOOR=<x>    the floor of the clock item's multiplier (1; it scales foot_gait on even ground), its cap
+                         at least that. 2026-11-13, tier 2 of the Go2 uprobe_s59 8592: the gait clock is the one
+                         flat item it misses -- the strafe (0, +-0.6, 0) 62-69 % in step and (0.6, +-0.4, 0)
+                         73-79 % (bar 80 %; go2_blind_v4 95 % at the weight alone, without payload and the joint
+                         draws) -- with the multiplier at 1.56 after 8600 iterations: the training's worst bin
+                         reads 0.78-0.85 against its target 0.84, a shortfall that moves the multiplier by 0.04
+                         in 200 iterations;
     U_FLAT_DIAG_AXIS=<m> the flat speed deficit judges a diagonal command (both parts >= <m> m/s) per axis, as the
                          acceptance does (mdp.stair_speed_deficit axis_min; the wheeled have it at 0.2 from the old
                          flow's "diagaxis", nothing changes for them). Go2 uprobe_s42 / s43 6596: the diagonal's
@@ -1103,6 +1110,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["name"] == "creep":
         c["max_scale"] = float(v)
+  v = os.environ.get("U_CLOCK_FLOOR")
+  if v:
+    assert 1.0 <= float(v) <= 6.0, f"U_CLOCK_FLOOR {v}: the clock item's floor, 1-6"
+    for c in items:
+      if c["name"] == "clock":
+        c["min_scale"], c["max_scale"] = float(v), max(c["max_scale"], float(v))
   v = os.environ.get("U_FLAT_DIAG_AXIS")
   if v and "flat_speed_deficit" in cfg.rewards:
     assert 0.05 <= float(v) <= 0.5, f"U_FLAT_DIAG_AXIS {v}: the smallest part of a diagonal command, m/s"
