@@ -24,14 +24,35 @@ tag=$(basename $(dirname $DCK))_$(basename $DCK .pt)
 P=logs/checks/u_${r}_pair${SFX}_$tag
 SCALE=1.0 conds="unloaded loaded"
 [ $SMOKE = 1 ] && SCALE=0.05 conds="unloaded"
+# (a flow test's ACCEPT_TEST_DIV=<k>, jobs/unified/accept.sh: the scale 1/k)
+[ "${ACCEPT_TEST_DIV:-1}" -gt 1 ] 2> /dev/null && SCALE=$(awk -v d=$ACCEPT_TEST_DIV 'BEGIN { print 1.0 / d }')
 mkdir -p logs/checks
 t0=$(date +%s)
 log "camera-failure test: depth $DCK + blind $BCK ($conds)"
 verdict_of() { grep -E "^camera_fail verdict:" $1 2> /dev/null | tail -n 1 | sed 's/^camera_fail verdict: //'; }
+# Beside a training (2026-11-14, go2-depth: jobs/unified/students.sh's final acceptance, the other kind's student may
+# still be training): a part starts only with its need free on the card -- PAIR_NEED_MB "flat:MiB stairs:MiB" (unset:
+# no wait, as before) -- waiting up to ACCEPT_FREE_WAIT_S (0: no limit); no room in time leaves the part without a
+# verdict, a tool fault (the same rule as accept.sh's memwait)
+pair_need() { local e es; read -ra es <<< "${PAIR_NEED_MB:-}"; for e in "${es[@]}"; do [ "${e%%:*}" = $1 ] && { echo ${e#*:}; return; }; done; echo 0; }
+roomwait() {   # PART OUT -> 0 room, 1 none in time (OUT says so)
+  local need=$(pair_need $1) t0=$(date +%s) f
+  [ "$need" -gt 0 ] 2> /dev/null || return 0
+  while f=$(nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | head -n 1 | awk -F', *' '{print $1 - $2}') \
+        && [ "${f:-0}" -lt $need ]; do
+    if [ "${ACCEPT_FREE_WAIT_S:-0}" -gt 0 ] && [ $(( $(date +%s) - t0 )) -ge $ACCEPT_FREE_WAIT_S ]; then
+      echo "TOOL FAULT: no room on the card: needs $need MiB free, $f free for ${ACCEPT_FREE_WAIT_S} s" > $2
+      log "TOOL FAULT: $(basename $2): no room on the card ($need MiB needed, $f free for ${ACCEPT_FREE_WAIT_S} s)"
+      return 1
+    fi
+    sleep 20
+  done
+}
 one_part() {   # PAYLOAD PART OUT
   local pay=$1 part=$2 out=$3 i retried=0 v
   export U_PAYLOAD=$pay
   for i in 1 2 3 4 5 6 7 8; do
+    roomwait $part $out || return 0
     $PY scripts/unified/camera_fail.py $R $DCK $BCK --part $part --scale $SCALE --seed $((i - 1)) > $out 2>&1
     v=$(verdict_of $out)
     if [ -n "$v" ] && { [[ "$v" != UNTESTED* ]] || [ $SMOKE = 1 ]; }; then return 0; fi

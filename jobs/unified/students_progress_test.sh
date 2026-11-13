@@ -61,7 +61,7 @@ r=${R,,}
 its=$(ls $RUN/model_*.pt | grep -oE '[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n)
 if [ $# -gt 0 ]; then e=$(echo "$its" | awk -v k=$1 '$1 <= k' | tail -n 1); else e=$(echo "$its" | tail -n 1); fi
 P=logs/checks/u_${r}_${KIND}_$(basename $RUN)_a8_$e
-echo "call kind=$KIND base=${BASELINE:-0} reuse=${REUSE_TIER2:-0} e=$e jobs=${ACCEPT_JOBS:-} peak=${ACCEPT_PEAK:-} split=${ACCEPT_DRIFT_SPLIT:-} need=${ACCEPT_NEED_MB:+set} wait=${ACCEPT_FREE_WAIT_S:-} small=${ACCEPT_SMALL:-}" >> logs/calls.txt
+echo "call kind=$KIND base=${BASELINE:-0} reuse=${REUSE_TIER2:-0} e=$e jobs=${ACCEPT_JOBS:-} peak=${ACCEPT_PEAK:-} split=${ACCEPT_DRIFT_SPLIT:-} need=${ACCEPT_NEED_MB:+set} wait=${ACCEPT_FREE_WAIT_S:-} small=${ACCEPT_SMALL:-} pair=${PAIR_NEED_MB:-}" >> logs/calls.txt
 [ "${BASELINE:-0}" = 1 ] && echo "need kind=$KIND ${ACCEPT_NEED_MB:-}" >> logs/needs.txt
 if [ "${REUSE_TIER2:-0}" = 1 ] && [ -s ${P}_verdict.txt ]; then
   v=$(head -n 1 ${P}_verdict.txt); echo "reused kind=$KIND e=$e $v" >> logs/calls.txt
@@ -134,7 +134,7 @@ check "A gate 1000 FAIL" 'L $A | grep -q "S2 GATE 1000: FAIL"'
 check "A gate 1500 HARDPASS" 'L $A | grep -q "S2 GATE 1500: HARDPASS quality gap 0.500"'
 check "A gate 2000 PASS + PICK, stage 2 stopped" 'L $A | grep -q "S2 GATE 2000: PASS" && L $A | grep -q "S2 PICK a8_2000 (gate at 2000): stage 2 stopped"'
 check "A S2 stopped before its cap" '[ $(lastck $r2) -lt 3000 ]'
-check "A the final acceptance guarded: one test at a time, drift halves, needs, a long wait, full size" 'grep "base=0 reuse=1" $A/logs/calls.txt | grep -q "jobs=1 peak= split=1 need=set wait=14400 small=\$"'
+check "A the final acceptance guarded: one test at a time, drift halves, needs, a long wait, full size" 'grep "base=0 reuse=1" $A/logs/calls.txt | grep -q "jobs=1 peak= split=1 need=set wait=14400 small= pair=flat:6000 stairs:3000\$"'
 check "A gates ran with the gate settings" 'grep "base=1" $A/logs/calls.txt | grep -v "jobs=1 peak=1 split=1 need=set" | wc -l | grep -qx 0'
 check "A acceptance reused the gate's tier 2 at 2000" 'grep -q "reused kind=blind e=2000 PASS" $A/logs/calls.txt'
 check "A pick is a8_2000" 'grep -q "avg8_2000.pt" $A/logs/jobs/unified_go2_blind.pick'
