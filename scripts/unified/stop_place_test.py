@@ -14,7 +14,9 @@
   common    as retreat, at the common payload                             the cost in full
 then the command moves (no cost for anyone) and falls to zero again: the new stand takes a new reference.
 (B) On the built configurations (no GPU), per robot:
-  (1) without the switch: no stop_place item, no u_stop_place term;
+  (1) with the switch off (U_STOP_PLACE= in the environment: an empty value wins over the recipe's): no stop_place
+      item, no u_stop_place term; the plain build: the recipe's own weight where the robot's recipe carries the
+      switch (recipe.py), no item and no term where it does not;
   (2) with U_STOP_PLACE=8: the term at the weight -8 with the defaults (free 0.30, full 0.60, heavy 0), the command
       and the scan of feet_stand_uneven; four items stop_place_{up,down}[_heavy], logged only (enforce False, no
       terms), their metrics in constraints.CUSTOM; U_STOP_PLACE=6,0.2,0.8,0.5 read as written;
@@ -181,9 +183,18 @@ def main() -> int:
   for n in names:
     robot = ROBOTS[n]
     print(f"{n}:")
-    cfg0, items0 = build(robot)
+    cfg0, items0 = with_switch("", robot)   # the switch off, whatever the robot's recipe carries
     check(term not in cfg0.rewards and not [i for i in items0 if i["name"].startswith("stop_place")],
-          "without the switch: no item, no term")
+          "with the switch off (U_STOP_PLACE= in the environment): no item, no term")
+    own = urecipe.recipe(robot).get("U_STOP_PLACE")
+    cfgr, itemsr = build(robot)
+    got, n_items = cfgr.rewards.get(term), len([i for i in itemsr if i["name"].startswith("stop_place")])
+    if own:
+      check(got is not None and got.weight == -float(own.split(",")[0]) and n_items == 4,
+            f"the plain build, the recipe's own U_STOP_PLACE={own}: the term at {got.weight if got else None}, "
+            f"{n_items} items")
+    else:
+      check(got is None and n_items == 0, "the plain build, the recipe carries no U_STOP_PLACE: no item, no term")
     cfg1, items1 = with_switch("8", robot)
     new = [i for i in items1 if i["name"].startswith("stop_place")]
     check(sorted(i["name"] for i in new) == sorted(want), f"with it: the items {[i['name'] for i in new]}")

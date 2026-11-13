@@ -65,6 +65,13 @@ KIND: dict[str, dict[str, str]] = {
                                       # stood before the flight); not for the heavy class (the 0)
     "U_BODY_CLEAR": "50,0.06,0.10",   # as the legged, with the wheeled margin and reach (Go2W's loaded falls on tier
                                       # 2: 16 at the plain 50 -> 5)
+    "U_STOP_PLACE": "12",             # a robot told to stop on a flight stays where it was told (within 0.30 m free,
+                                      # in full from 0.60 m): the Go2W of 84e7965 rolled back off a climbing flight
+                                      # after the stop command (stayed 35 % / 17 % on 12-15 / 15-18 cm at 3000
+                                      # iterations; tier 2 asks 90 % of every band). The weight 12 from the formal
+                                      # model_1500: 100 % / 99 % at 2000, 100 % / 100 % at 2500 (s70: the stop ok 99 %, no
+                                      # fall); 8 held 96 % / 51 % and came and went, 5 did not hold. Not for the
+                                      # legged: no weight (3 / 8 / 20) holds the Go2 on a 15-18 cm descent
   },
 }
 
