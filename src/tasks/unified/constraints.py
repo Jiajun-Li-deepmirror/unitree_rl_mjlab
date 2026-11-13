@@ -758,6 +758,30 @@ def _com_stop(env: ManagerBasedRlEnv, min_pitch: float = 0.05) -> tuple[torch.Te
   return dist, mask
 
 
+def _descent_over(env: ManagerBasedRlEnv, over: float = 1.2, **params) -> tuple[torch.Tensor, torch.Tensor]:
+  """1 for a robot above `over` x its commanded speed over the ground, over the robots the descent item reads
+  (_stair_speed_h: pitched nose down on uneven ground under a forward command). 1.2x is the top of the acceptance's
+  flight speed band; the descent item reads the mean ratio against a floor and says nothing of a robot too fast."""
+  ratio, mask = _stair_speed_h(env, **{**params, "descend": True})
+  return (ratio > over).float(), mask
+
+
+def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, over: float = 1.1) -> torch.Tensor:
+  """Reward term (U_DESCENT_SPEED=<w>[,<over>], 2026-11-14): going down a flight faster than told. Per robot the
+  descent item reads (_stair_speed_h: pitched nose down on uneven ground under a forward command): how far its speed
+  over the ground along x exceeds `over` x the command, as a fraction of the command, at most 1. Every payload.
+
+  The Go2's formal teacher of 84e7965 (model_5200, tier 2's traverse at 0.5 m/s): 0.99 / 1.06 / 1.10 / 1.35x the
+  command down the 5-8 / 8-12 / 12-15 / 15-18 cm flights -- and told to stop on a 15-18 cm descent it was 72 cm
+  further and 48 cm lower 2 s later (7-15 cm on the lower flights); stayed within 0.50 m: 30 % (the gate asks 90 %
+  of every band). The stop-place cost alone did not hold it there (U_STOP_PLACE 3 / 8 / 20 from that checkpoint:
+  30 / 61 / 37 %, the loaded falls 36 -> 62-83). The stairs speed cost has an upper side (ratio_high 1.1) at the
+  legged weight -2, scaled by the descent item -- an item that asks the mean ratio to be at least 0.9, which a robot
+  too fast meets: at 1.35x that side cost 0.5 per second at most."""
+  ratio, mask = _stair_speed_h(env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
+  return mask.float() * (ratio - over).clamp(min=0.0, max=1.0)
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -962,6 +986,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stairs_stop_still": upto_common(_stairs_stop_still),
           "u_stairs_stop_still_heavy": over_heavy(_stairs_stop_still),
           "u_stop_place": upto_common(_stop_place), "u_stop_place_heavy": over_heavy(_stop_place),
+          "u_descent_over": _descent_over,
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
