@@ -178,7 +178,7 @@ runit $F KINDS="blind depth" F_STUDENT_S2_ITERS=2600 STUB_RULE="fail<99999 hard<
 check "F blind's first gate judged" 'L $F | grep -qE "STUDENT blind S2 GATE 500: FAIL"'
 check "F depth's first gate judged (waited, not skipped)" 'L $F | grep -qE "STUDENT depth S2 GATE 500: FAIL" && ! L $F | grep -q "STUDENT depth S2 GATE 500: skipped"'
 check "F one gate on the card at a time (no two gate runs overlap)" 'sort -n $F/logs/spans.txt | awk "{ if (NR > 1 && \$1 < e) bad = 1; e = \$2 } END { exit bad }"'
-check "F the depth gates use the depth table, the blind ones the blind table" 'grep -q "^need kind=depth \*:7500\$" $F/logs/needs.txt && grep "^need kind=blind" $F/logs/needs.txt | grep -q "stand:5800" && ! grep "^need kind=depth" $F/logs/needs.txt | grep -q stand'
+check "F the depth gates use the depth table, the blind ones the blind table" 'grep "^need kind=depth" $F/logs/needs.txt | grep -q "stand:15000" && grep "^need kind=blind" $F/logs/needs.txt | grep -q "stand:5800" && ! grep "^need kind=blind" $F/logs/needs.txt | grep -q "stand:15000"'
 check "F every gate run judged" '[ $(wc -l < $F/logs/spans.txt) = $(L $F | grep -cE "S2 GATE [0-9]+: (FAIL|PASS|HARDPASS)") ]'
 
 # --- G: the gates' average differs from the acceptance's -> setup error, nothing trained
