@@ -47,6 +47,10 @@ SSH = "/home/dm/.cache/go2-depth-work/ssh/r"
 D = "/root/gpufree-data/go2-depth/depth_fe"
 ROBOTS = {"go2": ("Go2", "t1", "30714"), "go2w": ("Go2W", "t2", "31365")}   # key -> (name, box, ssh port)
 MANUAL = Path("/home/dm/.cache/go2-depth-work/board/manual.json")
+# a robot whose formal run was started again from zero on a new commit: its board starts at that start (the runs and
+# chain-log lines of the stopped version are left out; what was decided about it stays in the manual notes).
+# 2026-11-14 05:40: the Go2W on 170dd4c (the wheeled stop place), after the 84e7965 run was stopped at 01:02:56
+SINCE = {"go2w": "2026-11-14_05-40-00"}
 CST = timezone(timedelta(hours=8))
 STALE_MIN = 15          # a run whose status is older than this while its process lives: stalled
 SPEED_WINDOW_S = 1800   # the speed is measured over the run's last half hour
@@ -381,7 +385,7 @@ def main() -> int:
   slots = json.loads(SLOTS.read_text()) if SLOTS.exists() else {}   # (a run keeps its colour when others come or go)
 
   for key, (R, box, _) in ROBOTS.items():
-    d = fetch(key, a.since)
+    d = fetch(key, max(a.since, SINCE.get(key, a.since)))
     if d is None:
       robots.append({"robot": R, "machine": box, "teacher": "连不上训练机", "blind": "", "depth": "", "accept": "",
                      "delivery": "", "gpu": "", "n_training": 0, "teacher_ok": 0, "students_ok": 0, "n_alerts": 0,
@@ -439,7 +443,7 @@ def main() -> int:
       nxt = ""
       if todo and status in ("training", "stalled"):
         k = todo[0]
-        nxt = f"{MILE.get(k, (k,))[0]}（期限第 {expect[k][0]} 步" + (f"，约 {clock(eta(expect[k][0]))[6:]}）" if eta(expect[k][0]) and k not in late else "，已迟到）")
+        nxt = f"{MILE.get(k, (k,))[0]}（期限第 {expect[k][0]} 步" + ("，已迟到）" if k in late else f"，约 {clock(eta(expect[k][0]))[6:]}）" if eta(expect[k][0]) else "）")
       row = {
         "key": f"{R} {lab}", "robot": R, "machine": box, "run": lab, "role": role, "kind": kind, "status": status,
         "iter": it, "max": cap, "p": r3(st.get("p")), "q": r3(st.get("q")), "up": r3(cur.get("rows", {}).get("up", st.get("up")), 2),
