@@ -244,6 +244,7 @@ def chain_zh(text: str) -> str | None:
      lambda m: f"种子 {m[1]}：第 2 层{'楼梯' if m[2] == 'stairs' else '平地'}检查工具故障（exit {m[3]}；不算未通过，下次再判）"),
     (r"STOP: needs a human -- no seed passed and nothing was judged", lambda m: "停下等人工处理：到上限没有种子通过，第 2 层也没有判过任何检查点"),
     (r"seed \d+ started \(pid", None),
+    (r"STOPPED by ", lambda m: "正式训练被手动停止：这一版不交付（原因见同一时刻的说明）；检查点都保留"),
     (r"FROM ZERO on (\w+)", lambda m: f"从零开训（代码 {m[1]}）；这之前的运行作废"),
     (r"seeds (.+?), (\d+) robots each, (side by side|one after the other), cap (\d+) it, code (\w+)",
      lambda m: f"老师链启动：种子 {m[1]}，每个 {m[2]} 台机器人，{'并行' if m[3] == 'side by side' else '依次'}，上限 {m[4]} 步，代码 {m[5]}"),
