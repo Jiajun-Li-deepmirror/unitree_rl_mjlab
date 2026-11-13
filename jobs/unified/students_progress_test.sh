@@ -59,7 +59,9 @@ echo "call kind=$KIND base=${BASELINE:-0} reuse=${REUSE_TIER2:-0} e=$e jobs=${AC
 if [ "${REUSE_TIER2:-0}" = 1 ] && [ -s ${P}_verdict.txt ]; then
   v=$(head -n 1 ${P}_verdict.txt); echo "reused kind=$KIND e=$e $v" >> logs/calls.txt
 else
+  t0=$(date +%s.%N)
   sleep ${STUB_GATE_S:-2}
+  [ "${BASELINE:-0}" = 1 ] && echo "$t0 $(date +%s.%N)" >> logs/spans.txt
   read e1 e2 <<< "$(echo ${STUB_RULE:-fail<1500 hard<2500 pass} | grep -oE '[0-9]+' | tr '\n' ' ')"
   if [ $e -lt $e1 ]; then v="FAIL: 楼梯 (stub)"; g=0
   elif [ $e -lt $e2 ]; then v=PASS; g=$(( e2 - e ))
@@ -159,6 +161,19 @@ check "D probe no gates" '! L $D | grep -q "S2 GATE" && [ ! -f $D/logs/calls.txt
 E=$W/E; setup $E
 runit $E F_S2_GATE_EVERY_IT=0 F_STUDENT_S2_ITERS=900 STUB_RULE="fail<0 hard<0 pass"
 check "E exit 0, no gates, accept on the last" '[ "$(cat $E/rc)" = 0 ] && ! L $E | grep -q "S2 GATE" && grep -q "base=0 reuse=1 e=899" $E/logs/calls.txt'
+
+# --- F: two students side by side (one card): each one's first gate waits for the card -- both judged early
+F=$W/F; setup $F
+runit $F KINDS="blind depth" F_STUDENT_S2_ITERS=2600 STUB_RULE="fail<99999 hard<99999 pass" STUB_GATE_S=6
+check "F blind's first gate judged" 'L $F | grep -qE "STUDENT blind S2 GATE 1000: FAIL"'
+check "F depth's first gate judged (waited, not skipped)" 'L $F | grep -qE "STUDENT depth S2 GATE 1000: FAIL" && ! L $F | grep -q "STUDENT depth S2 GATE 1000: skipped"'
+check "F one gate on the card at a time (no two gate runs overlap)" 'sort -n $F/logs/spans.txt | awk "{ if (NR > 1 && \$1 < e) bad = 1; e = \$2 } END { exit bad }"'
+check "F every gate run judged" '[ $(wc -l < $F/logs/spans.txt) = $(L $F | grep -cE "S2 GATE [0-9]+: (FAIL|PASS|HARDPASS)") ]'
+
+# --- G: the gates' average differs from the acceptance's -> setup error, nothing trained
+G=$W/G; setup $G
+runit $G F_S2_GATE_AVG_N=6
+check "G AVG_N mismatch: exit 2, no training" '[ "$(cat $G/rc)" = 2 ] && L $G | grep -q "setup error: F_S2_GATE_AVG_N (6)" && [ -z "$(s1run $G)" ]'
 
 echo "(work dir $W)"
 [ $NF = 0 ] && { echo "ALL OK"; rm -rf $W; exit 0; }

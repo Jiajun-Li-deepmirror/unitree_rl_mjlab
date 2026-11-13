@@ -38,6 +38,12 @@ if [ $PROBE = 1 ]; then
 fi
 source jobs/unified/formal.env   # the formal run's parameters, frozen with the commit
 S1=${S1_ITERS:-$F_STUDENT_S1_ITERS} S2=${S2_ITERS:-$F_STUDENT_S2_ITERS} SEED=${SEED:-$F_STUDENT_SEED}
+# the stage-2 gates' candidate is the acceptance's (its verdict reused by name): the same average, or no run
+if [ $PROBE != 1 ] && [ $SMOKE != 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ] && [ "$F_S2_GATE_AVG_N" != "${AVG_N:-$F_ACCEPT_AVG_N}" ]; then
+  log "setup error: F_S2_GATE_AVG_N ($F_S2_GATE_AVG_N) differs from the acceptance's AVG_N (${AVG_N:-$F_ACCEPT_AVG_N}) -- the gates' verdicts would not be reused (jobs/unified/formal.env)"
+  echo "students.sh: F_S2_GATE_AVG_N != the acceptance's AVG_N" >&2
+  exit 2
+fi
 ENVS=$([ -n "${NUM_ENVS:-}" ] && echo $(( NUM_ENVS / 2 )) || echo $F_STUDENT_ENVS_EACH)
 SAVE=""; [ -n "${SAVE_EVERY:-}" ] && SAVE="--agent.save-interval=$SAVE_EVERY"
 FALLBACK=${FALLBACK:-$([ -n "${TEACHER:-}" ] && echo 0 || echo 1)}; [ $SMOKE = 1 ] && FALLBACK=0
@@ -159,7 +165,7 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
   # at a time on the card (a point that comes while one runs, or without the memory, is skipped). PASS with the quality
   # readings no worse than delivered: stage 2 stops there and that candidate goes on (its tier 2 reused); PASS worse:
   # kept, training goes on; at the cap the kept one with the smallest quality gap, else the last average as before
-  local run2="" gpid="" gk="" ge="" pick_end="" HP="" Kg last n d
+  local run2="" gpid="" gk="" ge="" pick_end="" HP="" Kg last n d gfirst=1
   declare -A GDONE=()
   if [ $progress = 1 ] && [ "${F_S2_GATE_EVERY_IT:-0}" -gt 0 ]; then
     while kill -0 $pid 2> /dev/null || [ -n "$gpid" ]; do
@@ -170,7 +176,7 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
       fi
       if [ -n "$gpid" ] && ! kill -0 $gpid 2> /dev/null; then   # a gate ended: its verdict
         wait $gpid 2> /dev/null
-        if [ $? = 75 ]; then GATE_OUT=skip; else s2_gate_read $kind $run2 $gk $ge; fi
+        if [ $? = 75 ]; then GATE_OUT=skip; else s2_gate_read $kind $run2 $gk $ge; gfirst=0; fi
         gpid=""
         case $GATE_OUT in
           pass) pick_end=$ge
@@ -194,9 +200,10 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
         if [ $n -lt $F_S2_GATE_AVG_N ]; then log "STUDENT $kind S2 GATE $Kg: skipped ($n checkpoints, the average takes $F_S2_GATE_AVG_N)"
           tl $run2 s2_gate $Kg verdict=skipped "why=$n checkpoints"; continue; fi
         ge=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | awk -v k=$Kg '$1 <= k' | tail -n 1)
-        s2_gate_run -n $kind $run2 $Kg &
+        # a student's first gate waits for the card (go2-depth: each student one full reading early); later ones skip
+        s2_gate_run $([ $gfirst = 1 ] && printf %s -x || printf %s -n) $kind $run2 $Kg &   # (echo -n prints nothing)
         gpid=$! gk=$Kg
-        log "STUDENT $kind S2 GATE $Kg: started on a${F_S2_GATE_AVG_N}_$ge"
+        log "STUDENT $kind S2 GATE $Kg: started on a${F_S2_GATE_AVG_N}_$ge$([ $gfirst = 1 ] && echo ' (its first: waits for the card if another gate runs)')"
         break
       done
     done
