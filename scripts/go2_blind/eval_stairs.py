@@ -13,6 +13,7 @@ Robots are pinned to the stair tiles of Unitree-Go2-Blind (4 step-height bands f
 
 import argparse
 import os
+from collections import Counter
 from dataclasses import asdict
 
 import numpy as np
@@ -41,6 +42,10 @@ def main() -> None:
   parser.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base (payload_opt.py)")
   parser.add_argument("--metrics", action="store_true",
                       help="also count kicks / slips / placements with src/metrics (tinynav's counters) while crossing")
+  parser.add_argument("--causes", action="store_true",
+                      help="also break the falls down (2026-11-13, go2-depth): the termination terms, the bodies in illegal "
+                           "contact, the base's pitch / roll and its move along the flight over the last 1 s, taken just "
+                           "before the reset; by run phase and by band (a reading: lines start with 'causes')")
   args = parser.parse_args()
 
   env_cfg = load_env_cfg(args.task, play=True)
@@ -114,6 +119,71 @@ def main() -> None:
     lo, hi = STEP_RANGE
     return f"{100 * (lo + (hi - lo) * level / NUM_ROWS):.0f}-{100 * (lo + (hi - lo) * (level + 1) / NUM_ROWS):.0f}cm"
 
+  # --causes: env.step resets a terminated robot inside the step (ManagerBasedRlEnv._reset_idx), so its state is taken
+  # in a wrapper of _reset_idx, before the reset: which termination terms fired, which bodies touched (the
+  # illegal_contact term's sensor, as src/tasks/unified/diagnostics.py reads it), the base's pitch / roll and its
+  # Chebyshev distance from the tile centre (the flight's direction: + outwards); the distance 1 s before from a ring
+  hist_len = max(1, int(round(1.0 / dt)))
+  cap = None
+  falls_rec = []
+  if args.causes:
+    tm = env.termination_manager
+    cause_names = [n for n in tm.active_terms if not tm.get_term_cfg(n).time_out]
+    ic_sensor, ic_thr, ic_bodies = None, 10.0, []
+    if "illegal_contact" in cause_names:
+      try:
+        prm = tm.get_term_cfg("illegal_contact").params
+        ic_sensor = env.scene[prm["sensor_name"]]
+        ic_thr = float(prm.get("force_threshold", 10.0))
+        ic_bodies = [sl.primary_name for sl in ic_sensor._slots][:62]
+      except Exception:
+        ic_sensor, ic_bodies = None, []
+    shifts = torch.arange(max(len(ic_bodies), 1), device=dev)
+    cap = {"cause": torch.zeros(num_envs, dtype=torch.long, device=dev),
+           "body": torch.zeros(num_envs, dtype=torch.long, device=dev),
+           "pitch": torch.zeros(num_envs, device=dev), "roll": torch.zeros(num_envs, device=dev),
+           "d": torch.zeros(num_envs, device=dev), "ring": torch.zeros(hist_len, num_envs, device=dev)}
+    orig_reset_idx = env._reset_idx
+
+    def reset_capture(env_ids=None):
+      try:
+        if env_ids is not None and len(env_ids) > 0 and env.common_step_counter > 0:
+          ids = env_ids
+          c = torch.zeros(len(ids), dtype=torch.long, device=dev)
+          for j, n in enumerate(cause_names):
+            c |= tm.get_term(n)[ids].long() << j
+          cap["cause"][ids] = c
+          if ic_sensor is not None and ic_bodies:
+            dd = ic_sensor.data
+            fh = getattr(dd, "force_history", None)
+            hit = (torch.norm(fh[ids], dim=-1) > ic_thr).any(dim=-1) if fh is not None else dd.found[ids] > 0
+            hit = hit.reshape(len(ids), -1)[:, :len(ic_bodies)]
+            cap["body"][ids] = (hit.long() << shifts[:hit.shape[1]]).sum(dim=1)
+          g = robot.data.projected_gravity_b[ids]
+          cap["pitch"][ids] = torch.rad2deg(torch.atan2(g[:, 0], -g[:, 2]))   # + nose down
+          cap["roll"][ids] = torch.rad2deg(torch.atan2(g[:, 1], -g[:, 2]))
+          cap["d"][ids] = cheb_dist()[ids]
+      except Exception:
+        pass
+      return orig_reset_idx(env_ids)
+
+    env._reset_idx = reset_capture
+
+  def note_falls(mask, phase, k):
+    """The robots of mask fell in this step (their state taken before the reset): one record each."""
+    if cap is None or not bool(mask.any()):
+      return
+    ids = mask.nonzero(as_tuple=False).squeeze(-1)
+    back = cap["d"][ids] - cap["ring"][(k + 1) % hist_len, ids] if k + 1 >= hist_len else cap["d"][ids] - cap["ring"][0, ids]
+    for i, e in enumerate(ids.tolist()):
+      falls_rec.append({"phase": phase, "band": band(int(env_level[e])), "dir": str(env_dir[e]),
+                        "cause": int(cap["cause"][e]), "body": int(cap["body"][e]), "pitch": float(cap["pitch"][e]),
+                        "roll": float(cap["roll"][e]), "move": float(back[i])})
+
+  def note_ring(k):
+    if cap is not None:
+      cap["ring"][k % hist_len] = cheb_dist()
+
   # ---- Traverse ----
   obs = pin_and_reset()
   set_cmd((args.vx, 0.0, args.wz))
@@ -141,6 +211,7 @@ def main() -> None:
   hd_sum = torch.zeros(num_envs, device=dev)
   hd_n = torch.zeros(num_envs, device=dev)
   for k in range(int(round(3.6 / max(abs(args.vx), 0.1) * 2.0 / dt))):
+    note_ring(k)
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
     if meter is not None:
@@ -149,6 +220,7 @@ def main() -> None:
     active = alive & ~success
     leg_hits += (active & (leg_sensor.data.found > 0).flatten(1).any(1)).float()
     steps_alive += active.float()
+    note_falls(term & active, "traverse", k)
     alive &= ~(term & active)
     max_dist = torch.where(alive, torch.maximum(max_dist, cheb_dist()), max_dist)
     d_now = cheb_dist()
@@ -180,11 +252,17 @@ def main() -> None:
     if newly.any():
       set_cmd((0.0, 0.0, 0.0), newly)
       stopped_at[newly] = t
+    note_ring(t)
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
     term = env.termination_manager.terminated
     in_hold = (stopped_at >= 0) & (t - stopped_at < hold)
     fell_now = term & ((stopped_at < 0) | in_hold) & alive
+    if cap is not None:
+      since = t - stopped_at
+      note_falls(fell_now & (stopped_at < 0), "stop: approach", t)
+      note_falls(fell_now & (stopped_at >= 0) & (since < int(round(2.0 / dt))), "stop: 0-2 s", t)
+      note_falls(fell_now & (stopped_at >= 0) & (since >= int(round(2.0 / dt))), "stop: 2-4 s", t)
     # when (2026-11-13, go2-depth): the steps since the stop command at the fall (-1: before it, on the approach)
     fall_after = torch.where(fell_now, torch.where(stopped_at >= 0, t - stopped_at, torch.full_like(stopped_at, -1)),
                              fall_after)
@@ -269,6 +347,29 @@ def main() -> None:
       print(f"metrics (src/metrics): steps {steps:.0f}, kicks {meter.rate('kicks') or 0.0:.3f} / step, "
             f"slips {meter.rate('slips') or 0.0:.4f} / step, mid {meter.rate('mid') or 0.0:.3f}, "
             f"edge {meter.rate('edge') or 0.0:.3f} of {s.get('placed', 0.0):.0f} placements")
+  if cap is not None:
+    # the falls broken down (--causes; lines start with "causes": the table parsers read lines starting with a band)
+    def summary(recs):
+      n = len(recs)
+      terms = Counter(nm for r in recs for j, nm in enumerate(cause_names) if r["cause"] >> j & 1)
+      bodies = Counter(nm for r in recs for j, nm in enumerate(ic_bodies) if r["body"] >> j & 1)
+      back = sum(1 for r in recs if r["move"] <= -0.05)
+      pit = np.array([r["pitch"] for r in recs])
+      rol = np.abs(np.array([r["roll"] for r in recs]))
+      return (f"n {n} | terms " + ", ".join(f"{k} {v / n:.0%}" for k, v in terms.most_common()) + " | bodies "
+              + (", ".join(f"{k} {v / n:.0%}" for k, v in bodies.most_common(5)) or "-")
+              + f" | moved back >= 5 cm in the last 1 s {back / n:.0%} | pitch p50 {np.median(pit):+.0f} deg (+ nose down, "
+              f"p10 {np.percentile(pit, 10):+.0f}, p90 {np.percentile(pit, 90):+.0f}) | |roll| p50 {np.median(rol):.0f} deg")
+    print(f"causes of the falls (--causes, taken before the reset): {len(falls_rec)} falls; termination terms {cause_names}")
+    for ph in ("traverse", "stop: approach", "stop: 0-2 s", "stop: 2-4 s"):
+      recs = [r for r in falls_rec if r["phase"] == ph]
+      if recs:
+        print(f"causes {ph:>15}: " + summary(recs))
+    for lvl in range(NUM_ROWS):
+      for d in ("up", "down"):
+        recs = [r for r in falls_rec if r["band"] == band(lvl) and r["dir"] == d]
+        if recs:
+          print(f"causes {band(lvl)} {d}: " + summary(recs))
     # the same counts by tile (lines start with "tile": the table parsers read lines starting with a band)
     for g in tile_groups:
       gs = meter.group_sums.get(g, {})
