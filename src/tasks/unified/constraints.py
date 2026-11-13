@@ -560,6 +560,76 @@ def stairs_park(env: ManagerBasedRlEnv, command_name: str, min_vx: float = 0.2, 
   return out
 
 
+def com_offset(env: ManagerBasedRlEnv, asset_cfg) -> tuple[torch.Tensor, torch.Tensor]:
+  """Per robot: how far the whole robot's centre of mass -- every body at its mass now, so the payload and the base's
+  own CoM noise with it (mdp.base_payload_point writes the base's mass and CoM) -- lies from the centre of its four
+  feet / wheels (`asset_cfg`'s sites) over the ground, in metres, and the feet's mean distance from their own centre
+  (the size of the support: Go2 0.245 m, Go2W 0.25-0.29 m).
+
+  From the bodies' masses and CoM positions themselves, so whatever the model's derived fields hold (S/probe/
+  com_check.py: equal to MuJoCo's subtree_com of the base to the millimetre, with and without a payload)."""
+  asset = env.scene[asset_cfg.name]
+  mass = env.sim.model.body_mass[:, asset.indexing.body_ids]
+  com = (asset.data.body_com_pos_w * mass.unsqueeze(-1)).sum(dim=1) / mass.sum(dim=1, keepdim=True)
+  feet = asset.data.site_pos_w[:, asset_cfg.site_ids][..., :2]
+  centre = feet.mean(dim=1)
+  size = torch.norm(feet - centre.unsqueeze(1), dim=-1).mean(dim=1)
+  return torch.norm(com[:, :2] - centre, dim=1), size
+
+
+def com_support(env: ManagerBasedRlEnv, asset_cfg, sensor_name: str, command_name: str = "twist",
+                free: float = 0.12, span: float = 0.80, moving: float = 0.0) -> torch.Tensor:
+  """Reward term (U_COM_SUPPORT=<w>[,<moving>], 2026-11-13): over uneven ground, the whole robot's centre of mass
+  off the centre of its four feet / wheels (com_offset; over the ground, so along gravity). In units of the
+  support's size: nothing within `free` of it (Go2: 3 cm), 1 from `free` + `span` on (23 cm), linear in between --
+  a slope all the way from a robot at rest to one about to go over, so no flat part where the loaded ones stand. In
+  full at the zero command, `moving` times it under a command (0: the stops alone). Even ground costs nothing: the
+  flat items (creep, the stance, the march) stay as they are.
+
+  What it answers (2026-11-13, tier 2 with the acceptance's payload at x +0.15 m, z +0.20 m): the three robots' falls
+  with payload are one fall. Go2W uprobe_s44 6993: 19 loaded falls, 13 of them 2-4 s after a stop on a descent,
+  forwards. Go2 uprobe_s58 8093: 29, 15 within 2 s of the stop, forwards. As2 mAH 2996 (15 kg): 93 / 57 / 32% of the
+  stops on the 15-18 / 12-15 / 8-12 cm descents and 79 / 24 / 11% of the descents themselves, forwards (and a quarter
+  of the 15-18 cm climbs backwards, sliding back first). Nothing in the recipe says where the weight should be: the
+  costs of a stop are the speed, the position hold, the legs' tilt and the pose (standing_pose_load: each leg joint's
+  distance from the default, times 1 + the payload's share -- at the Go2W's loaded stops nose down the largest cost,
+  7.8 a second, S/probe/stand_stairs_terms.py), and the payload's mount point is drawn, so a pose that holds one
+  payload tips another. Without the pose cost on the steps (U_STAND_POSE_EVEN) the Go2 fell more and earlier (72
+  loaded falls against 20, 58 of them walking down or within 2 s of the stop): the pose cost stays, this one is
+  added to it. Where the robots stand now (S/probe/com_check.py, unloaded, zero command): the Go2 (uprobe_s52 7594)
+  nose down on a flight 6.5 cm ahead of the feet's centre -- the default pose on a slope: the trunk parallel to it,
+  the legs square to the trunk -- and 3.6 cm behind it nose up; the Go2W (uprobe_s44 6993) 2.1 cm / 1.3 cm; both
+  1.6 cm on even ground. The acceptance's payload (8 kg, 0.15 m ahead, 0.20 m up) moves the Go2's centre of mass
+  another 5 cm ahead and 7 cm up, about 13 cm ahead of the feet's centre nose down in the same pose, with the front
+  feet 19 cm ahead of it. The cost pays for bringing the base back over the feet, wherever the payload sits, and
+  the unloaded robot for the same posture at a smaller price (0.18 of the weight at 6.5 cm).
+
+  Stores each robot's distance (m) as env.u_com_offset for the logged readings (_com_stop)."""
+  from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
+
+  dist, size = com_offset(env, asset_cfg)
+  env.u_com_offset = dist
+  out = ((dist / size.clamp(min=1e-3) - free) / span).clamp(0.0, 1.0)
+  out = torch.where(uneven_terrain_mask(env, sensor_name), out, torch.zeros_like(out))
+  if moving < 1.0:
+    stand = env.command_manager.get_command(command_name).abs().sum(dim=1) == 0.0
+    out = torch.where(stand, out, moving * out)
+  return out
+
+
+def _com_stop(env: ManagerBasedRlEnv, min_pitch: float = 0.05) -> tuple[torch.Tensor, torch.Tensor]:
+  """The centre of mass off the centre of the feet (m; com_support's env.u_com_offset, the step before), over the
+  robots at the zero command on a flight of a stairs column (the body pitched by min_pitch or more, either way).
+  No robot without the cost (the reading is logged with U_COM_SUPPORT alone)."""
+  dist = getattr(env, "u_com_offset", None)
+  command = env.command_manager.get_command("twist")
+  mask = env.command_manager.get_term("twist").is_stair_env & (command.abs().sum(dim=1) == 0.0)
+  mask = mask & (env.scene["robot"].data.projected_gravity_b[:, 0].abs() >= min_pitch)
+  if dist is None:
+    return torch.zeros(env.num_envs, device=env.device), torch.zeros_like(mask)
+  return dist, mask
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -760,6 +830,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stairs_park": upto_common(_stairs_park), "u_stairs_park_heavy": over_heavy(_stairs_park),
           "u_stairs_park_down": upto_common(_stairs_park_down),
           "u_stairs_park_down_heavy": over_heavy(_stairs_park_down),
+          "u_com_stop": upto_common(_com_stop), "u_com_stop_heavy": over_heavy(_com_stop),
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,

@@ -248,6 +248,11 @@ def constraint_items(kind: str) -> list[dict]:
     at = next(i for i, item in enumerate(items) if item["name"] == "park_down")
     items[at] = {**c("park_down", "u_stairs_park_down", "max", 0.05, 0.3, "q", [STAIR_PARK_TERM], max_scale=PARK_CAP,
                      family="down"), "own_cap": True}
+  if os.environ.get("U_COM_SUPPORT"):
+    # logged only, with the cost (_add_com_support): the centre of mass off the feet's centre (m) at the stops on the
+    # flights, up to the common payload and in the heavy class (constraints._com_stop)
+    items += [c("com_stop", "u_com_stop", "max", 0.05, 0.3, "q", [], enforce=False, family="stairs"),
+              c("com_stop_heavy", "u_com_stop_heavy", "max", 0.05, 0.3, "q", [], enforce=False, family="stairs")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -581,6 +586,29 @@ def _add_body_clear(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   assert 0.0 < w <= 50.0, f"U_BODY_CLEAR {v}: the cost's weight"
   sensor = cfg.terminations["illegal_contact"].params["sensor_name"]
   cfg.rewards[BODY_CLEAR_TERM] = RewardTermCfg(func=ucons.body_clear, weight=-w, params={"sensor_name": sensor})
+
+
+COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+
+
+def _add_com_support(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_COM_SUPPORT=<w>[,<moving>] (a probe's switch, _probe_switches): the cost constraints.com_support at the weight
+  -w, under a command at <moving> times it (0 without it: the stops alone). Before _rewards / quality_diff: a cost
+  the M keys do not have, so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint
+  scales it). Every kind of robot: the feet's sites carry the same names on the wheeled (the wheels' centres)."""
+  v = os.environ.get("U_COM_SUPPORT")
+  if not v or "stair_speed_deficit" not in cfg.rewards:
+    return
+  from src.tasks.velocity.blind_env_cfg import FOOT_SITE_NAMES
+
+  w, _, moving = v.partition(",")
+  w, moving = float(w), float(moving or 0.0)
+  assert 0.0 < w <= 30.0 and 0.0 <= moving <= 1.0, f"U_COM_SUPPORT {v}: <weight 0-30>[,<the share under a command 0-1>]"
+  src = cfg.rewards["stair_speed_deficit"].params
+  cfg.rewards[COM_TERM] = RewardTermCfg(
+    func=ucons.com_support, weight=-w,
+    params={"asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES), "sensor_name": src["sensor_name"],
+            "command_name": src["command_name"], "moving": moving})
 
 
 _M_WEIGHT_NOTED: set[tuple[str, str]] = set()   # (one line per robot and term, whatever the number of its tasks)
@@ -999,7 +1027,16 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          speed; in full up to the common payload, <heavy> times it (0) for the heavy class. The
                          logged item park_down becomes enforced (bar 5% of those robots' time) and scales it, its
                          multiplier up to PARK_CAP whatever U_Q_SCALE_MAX says. The account it answers (standing
-                         pays 3.6 a second over descending) is in the cost's docstring."""
+                         pays 3.6 a second over descending) is in the cost's docstring.
+  The falls with payload (2026-11-13: forwards at and after the stops on the descents, on the Go2, the Go2W and the
+  As2 alike -- tier 2 with the acceptance's payload; read in _add_com_support and constraint_items):
+    U_COM_SUPPORT=<w>[,<moving>]   the cost constraints.com_support at the weight -<w> (0-30): over uneven ground,
+                         the whole robot's centre of mass (the payload with it) off the centre of its four feet /
+                         wheels over the ground -- nothing within 0.12 of the support's size (Go2: 3 cm), 1 from 0.92
+                         of it on (23 cm); in full at the zero command, <moving> times it (0) under a command. On top of
+                         standing_pose_load, not instead of it (the cost's docstring). Logs the items com_stop /
+                         com_stop_heavy: that distance (m) at the stops on the flights, up to the common payload
+                         and in the heavy class."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
@@ -1111,6 +1148,7 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
     _add_riser_keepout(cfg, robot)
     _add_body_clear(cfg, robot)
     _add_stair_park(cfg)
+    _add_com_support(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:
