@@ -388,11 +388,13 @@ def main() -> int:
       continue
     now_t = d["now"]
     mine = []
-    for run in sorted(fold_resumes(d["runs"]), key=lambda x: (x["exp"], x["run"])):
+    # the formal trainings only (the user, 2026-11-13). The probes go before the folding: a probe continued from a
+    # formal run's checkpoint is a resume too, and folded first it took the formal run off the board with itself
+    # (11-13 22:40: uprobe_s58 from the Go2W seed 0's model_3200)
+    formal = [r for r in d["runs"] if label(r["run"])[0] != "probe"]
+    for run in sorted(fold_resumes(formal), key=lambda x: (x["exp"], x["run"])):
       st, series = run["status"], run["series"]
       role, kind, lab = label(run["run"])
-      if role == "probe":   # the formal trainings only (the user, 2026-11-13)
-        continue
       it, cap = st.get("it"), st.get("total_it")
       age = (now_t - float(st.get("t_end") or st.get("t") or now_t)) / 60.0
       if st.get("ended"):
