@@ -93,6 +93,31 @@ def stairs_dir_counts(path: str) -> dict[str, dict[str, float]]:
                                        for k in ("kicks", "slips", "mid", "edge")}} for d, a in acc.items()}
 
 
+QUALITY_GATED = ("kicks_up", "slips")   # the targets an early stop needs no worse than delivered (mid: reported)
+QUALITY_UNMEASURED_GAP = 9.0             # the gap an unmeasured one counts (finite: the shell sorts and compares it)
+
+
+def quality_gap(r: str, path: str) -> tuple[float, str]:
+  """(gap, text) of one eval_stairs output against the delivered model's readings (DELIVERED_REF): the summed relative
+  excess of QUALITY_GATED (the teacher gate's rule, 2026-11-13); 0 when no worse, or when the robot has no reference
+  (wheeled ones: none -- their counts are hard items)."""
+  ref = DELIVERED_REF.get(r)
+  if not ref or r in at.WHEELED:
+    return 0.0, "no delivered reference"
+  dc, sm = stairs_dir_counts(path), stairs_metrics(path)
+  vals = {"kicks_up": (dc.get("up") or {}).get("kicks"), "slips": sm.get("slips")}
+  gap, parts = 0.0, []
+  for k in QUALITY_GATED:
+    v = vals.get(k)
+    if v is None:   # not measured is not "no worse": no early stop on it
+      parts.append(f"{k} 未测")
+      gap += QUALITY_UNMEASURED_GAP
+      continue
+    parts.append(f"{k} {v:.3f}/{ref[k]}")
+    gap += max(0.0, v / ref[k] - 1.0)
+  return gap, ", ".join(parts)
+
+
 def quality_lines(r: str, path: str, label: str = "") -> list[str]:
   """The legged quality-target block for one eval_stairs output (not judged)."""
   dc, sm = stairs_dir_counts(path), stairs_metrics(path)

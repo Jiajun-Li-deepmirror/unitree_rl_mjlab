@@ -158,16 +158,82 @@ run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait
   # other failure: retried once. A tool fault is not a result: logged, and the judge reports the test as not measured.
   local out=$1 i; shift
   for i in 1 2 3 4 5 6 7; do
-    "$@" > $out 2>&1 && return 0
+    memwait $out || return 1
+    peakrun $out "$@" && return 0
     grep -qiE "out of memory|CUDA error 2" $out || break
     [ $i -lt 7 ] && sleep 300
   done
-  "$@" > $out 2>&1 && return 0
+  memwait $out || return 1
+  peakrun $out "$@" && return 0
   log "TOOL FAULT: $(basename $out): $(grep -E 'Error' $out | tail -n 1 | cut -c1-160)"
+}
+# Beside a training (2026-11-13: jobs/unified/students.sh's stage-2 gates; unset, every test runs as before): a test
+# starts only with its need free on the card -- ACCEPT_NEED_MB "test:MiB ..." (test = the file's test name, e.g.
+# drift3; "*" any other), else ACCEPT_FREE_MB -- and waits up to ACCEPT_FREE_WAIT_S (0: no limit) for it; no room in
+# time is a tool fault of that test (never a training taken down: 11-13 one was). ACCEPT_PEAK=1 (one test at a time):
+# each test's memory peak above the card's use at its start in OUT's .peak (the boxes' nvidia-smi shows no container
+# pids, so the card's total is what can be read).
+gpu_free() { nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | head -n 1 | awk -F', *' '{print $1 - $2}'; }
+gpu_used() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -d ' '; }
+memneed() {   # OUT -> MiB
+  local b=$(basename $1) e k need=${ACCEPT_FREE_MB:-0} es
+  read -ra es <<< "${ACCEPT_NEED_MB:-}"   # (no globbing of "*:MiB")
+  for e in "${es[@]}"; do
+    k=${e%%:*}
+    if [ "$k" = "*" ]; then need=${e#*:}; continue; fi
+    if [[ $b == *_$k.* || $b == *_${k}_pay.* || $b == *_${k}_typ.* ]]; then echo ${e#*:}; return; fi
+  done
+  echo $need
+}
+memwait() {   # OUT -> 0 room, 1 none in time (OUT says so)
+  local need=$(memneed $1) t0=$(date +%s) f
+  [ "$need" -gt 0 ] 2> /dev/null || return 0
+  while f=$(gpu_free) && [ "${f:-0}" -lt $need ]; do
+    if [ "${ACCEPT_FREE_WAIT_S:-0}" -gt 0 ] && [ $(( $(date +%s) - t0 )) -ge $ACCEPT_FREE_WAIT_S ]; then
+      echo "TOOL FAULT: no room on the card: needs $need MiB free, $f free for ${ACCEPT_FREE_WAIT_S} s" > $1
+      log "TOOL FAULT: $(basename $1): no room on the card ($need MiB needed, $f free for ${ACCEPT_FREE_WAIT_S} s)"
+      return 1
+    fi
+    sleep 20
+  done
+}
+peakrun() {   # OUT CMD...
+  local out=$1; shift
+  if [ "${ACCEPT_PEAK:-0}" != 1 ]; then "$@" > $out 2>&1; return; fi
+  local u0=$(gpu_used) pk u p rc
+  pk=${u0:-0}
+  "$@" > $out 2>&1 &
+  p=$!
+  while kill -0 $p 2> /dev/null; do u=$(gpu_used); [ "${u:-0}" -gt $pk ] && pk=$u; sleep 3; done
+  wait $p
+  rc=$?
+  echo "$(( pk - ${u0:-0} )) MiB above the card's ${u0:-?} MiB at the start (card peak $pk MiB)" > ${out%.*}.peak
+  return $rc
+}
+drift_join() {   # OUT: the two halves (ACCEPT_DRIFT_SPLIT) as one file, only when both have all their commands
+  local o=$1 n1 n2 re='^\s*\(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\)\s*\|'
+  [ -f ${o%.txt}.h1.txt ] || return 0
+  n1=$(grep -cE "$re" ${o%.txt}.h1.txt) n2=$(grep -cE "$re" ${o%.txt}.h2.txt 2> /dev/null)
+  if [ "${n1:-0}" = 7 ] && [ "${n2:-0}" = 6 ]; then
+    cat ${o%.txt}.h1.txt ${o%.txt}.h2.txt > $o
+  else
+    echo "TOOL FAULT: drift in two halves: $n1 / ${n2:-0} of 7 / 6 commands measured" > $o
+  fi
 }
 
 tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   local tag=$1 CK=${CKOF[$1]} P=logs/checks/u_${r}_${KIND}_${name}_$1 cond X
+  # REUSE_TIER2=1 (2026-11-13, go2-depth: the stage-2 gate's tier 2 is the acceptance's tier 2): a candidate whose tier
+  # 2 this same script already judged (jobs/unified/students.sh's gate: BASELINE=1 on the same run and end, the same
+  # files) is not run again -- its verdict stands
+  if [ "${REUSE_TIER2:-0}" = 1 ] && [ $SMOKE != 1 ] && [ -s ${P}_verdict.txt ]; then
+    local v0=$(head -n 1 ${P}_verdict.txt)
+    if [[ "$v0" == PASS || "$v0" == FAIL* ]]; then
+      log "${CK} tier 2 reused from the stage-2 gate (${P}_verdict.txt)"
+      echo "$v0"
+      return
+    fi
+  fi
   if [ $SMOKE = 1 ]; then
     export U_PAYLOAD=0,0,0,0
     run ${P}_stand.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 8 $LIN $YAW
@@ -196,7 +262,16 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs 384
     # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
     # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)
-    pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $([ $KIND = depth ] && echo 384 || echo 768) $YAW $LIN
+    # ACCEPT_DRIFT_SPLIT=1 (2026-11-13, the stage-2 gates beside the students' training: 13 x 768 robots at once do not
+    # fit beside them): the commands in two halves, the same robots per command, joined into one file after the pool
+    local dn=$([ $KIND = depth ] && echo 384 || echo 768)
+    if [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then
+      rm -f ${P}_drift3$X.h1.txt ${P}_drift3$X.h2.txt
+      pool $pay ${P}_drift3$X.h1.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN --cmds 0-6
+      pool $pay ${P}_drift3$X.h2.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN --cmds 7-12
+    else
+      pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN
+    fi
     pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
     pool $pay ${P}_stand$X.txt $W $S/eval_standing.py --task $TF $CK --envs-per-group 768 $LIN $YAW
     pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96
@@ -210,6 +285,7 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     fi
   done
   wait
+  if [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then for X in "" _pay _typ; do drift_join ${P}_drift3$X.txt; done; fi
   # the map3 flights (unloaded): three shards each already, so one at a time after the pool
   ( export U_PAYLOAD=0,0,0,0
     run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
