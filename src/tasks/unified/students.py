@@ -2,8 +2,9 @@
 from one unified teacher v2, then fine-tuned with PPO plus behavior cloning toward it.
 
 Environment: the teacher's own (teacher_env.unified_teacher_env_cfg with student=...): the same terrain, commands,
-payload, randomization and constraint costs, the curriculum at its end (progress 1) and the constraint scales frozen
-at the teacher's final values (restored from its checkpoint by the runners). The teacher's scan mode is fixed:
+payload, randomization and constraint costs, the curriculum at its end (progress 1; the step-clocked schedules of the
+blind builder too: student_sched.at_end) and the constraint scales frozen at the teacher's final values (restored
+from its checkpoint by the runners). The teacher's scan mode is fixed:
   blind  scan off -- the teacher walks in its blind mode; the student sees the proprio terms only, as the group
          "actor" with the teacher's history: the deployed blind policies' input, so the blind deploy contract
          (jobs/export_policy.sh layout, robot_ctrl's blind controller, tinynav-sim's import) is unchanged
@@ -59,7 +60,7 @@ from src.tasks.velocity.rl.student_ppo import (
   StudentPpoAlgorithmCfg,
 )
 
-from . import diagnostics
+from . import diagnostics, student_sched
 from .models import PRIV_GROUP, PRIV_LATENT
 from .robots import URobot
 from .teacher_env import unified_teacher_env_cfg
@@ -84,6 +85,10 @@ CHECK_FRICTION = {"wheeled": (0.4, 1.0)}
 def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3"):
   assert kind in STUDENT_GROUPS, kind
   cfg = unified_teacher_env_cfg(robot, play=play, student=kind, terrain=terrain)
+  if terrain == "map3" and not play:
+    # the training build: the schedules on the environment's step clock at their end too (2026-11-13,
+    # student_sched.py: a student's clock starts at 0, so it trained under the teacher's first iterations' values)
+    student_sched.at_end(cfg)
   if terrain != "map3" and robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
     cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
   if kind == "depth":
