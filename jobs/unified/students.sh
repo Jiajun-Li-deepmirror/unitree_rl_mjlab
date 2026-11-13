@@ -20,15 +20,22 @@
 # 1% falls -> "STOP: needs a human", exit 3; 0-1% -> a warning in the log.
 # Exit 0 every kind has a pick, 3 a kind failed and nothing is left to try (a human decides), 4 a tool fault.
 # SMOKE=1 (jobs/unified/smoke_students.sh): runs named *_smoke, the acceptance in its smoke mode, no fallback.
+# STUDENT_PROBE=1 (2026-11-13, go2-depth: a student from a probe teacher, TEACHER= required): runs named *_probe, the
+# picks left alone, no acceptance, no fallback -- the stage-2 run is the output; read it with
+# BASELINE=1 CANDIDATES=first TN_GATE=skip bash jobs/unified/accept.sh R KIND RUN (tier 2 only: no pick, no delivery).
 set -u
 R=$1 VARIANT=${2:-full}
 r=${R,,}
 cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
-SMOKE=${SMOKE:-0}
+SMOKE=${SMOKE:-0} PROBE=${STUDENT_PROBE:-0}
 L=logs/jobs/unified_${r}_students.txt PICK=logs/jobs/unified_${r}_$VARIANT.pick
-log() { echo "$(date '+%m-%d %H:%M:%S') $R students: $([ $SMOKE = 1 ] && echo 'SMOKE ')$*" >> $L; }
+log() { echo "$(date '+%m-%d %H:%M:%S') $R students: $([ $SMOKE = 1 ] && echo 'SMOKE ')$([ $PROBE = 1 ] && echo 'PROBE ')$*" >> $L; }
+if [ $PROBE = 1 ]; then
+  [ -n "${TEACHER:-}" ] || { echo "students.sh: STUDENT_PROBE=1 needs TEACHER=<checkpoint>" >&2; exit 2; }
+  [ $SMOKE = 1 ] && { echo "students.sh: STUDENT_PROBE=1 and SMOKE=1 together" >&2; exit 2; }
+fi
 source jobs/unified/formal.env   # the formal run's parameters, frozen with the commit
 S1=${S1_ITERS:-$F_STUDENT_S1_ITERS} S2=${S2_ITERS:-$F_STUDENT_S2_ITERS} SEED=${SEED:-$F_STUDENT_SEED}
 ENVS=$([ -n "${NUM_ENVS:-}" ] && echo $(( NUM_ENVS / 2 )) || echo $F_STUDENT_ENVS_EACH)
@@ -46,7 +53,9 @@ TSEED=${TSEED:-x}
 newest() { ls -d logs/rsl_rl/$1/*_$2 2> /dev/null | sort | tail -n 1; }
 one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exit (4: a tool fault in training)
   local kind=$1 K=${1^} before run ck n1 n2
-  if [ $SMOKE = 1 ]; then n1=${kind}1_smoke n2=${kind}2_smoke; else n1=${kind}1_t${TSEED}_s$SEED n2=${kind}2_t${TSEED}_s$SEED; fi
+  if [ $SMOKE = 1 ]; then n1=${kind}1_smoke n2=${kind}2_smoke
+  elif [ $PROBE = 1 ]; then n1=${kind}1_probe_s$SEED n2=${kind}2_probe_s$SEED
+  else n1=${kind}1_t${TSEED}_s$SEED n2=${kind}2_t${TSEED}_s$SEED; fi
   before=$(newest ${r}_u_student_$kind $n1)
   $PY scripts/train.py Unitree-$R-U-Student-$K --env.scene.num-envs=$ENVS --agent.run-name=$n1 --agent.seed=$SEED \
     --agent.max-iterations=$S1 --agent.teacher-checkpoint=$T $SAVE > logs/jobs/unified_${r}_$n1.log 2>&1
@@ -69,6 +78,10 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
     return 4
   fi
   log "$kind stage 2 done: $run"
+  if [ $PROBE = 1 ]; then
+    log "$kind: probe -- no acceptance (read $run with BASELINE=1 CANDIDATES=first TN_GATE=skip jobs/unified/accept.sh)"
+    return 0
+  fi
   ACCEPT_SMOKE=$SMOKE bash jobs/unified/accept.sh $R $kind $run >> $L 2>&1
 }
 KINDS="${KINDS:-blind depth}"
@@ -76,7 +89,8 @@ TRIED=" $TSEED " WHY=""
 declare -A FINAL=()
 # a previous run's student picks are not this run's (accept.sh pairs the depth and the blind pick it finds)
 SFX=$([ $SMOKE = 1 ] && echo _smoke)
-for kind in $KINDS; do rm -f logs/jobs/unified_${r}_$kind$SFX.pick logs/jobs/unified_${r}_$kind$SFX.pick.*; done
+# (a probe makes no pick: the formal run's picks are not touched)
+[ $PROBE = 1 ] || for kind in $KINDS; do rm -f logs/jobs/unified_${r}_$kind$SFX.pick logs/jobs/unified_${r}_$kind$SFX.pick.*; done
 while true; do
   [ -f "$T" ] || { log "no teacher checkpoint $T"; exit 2; }
   T=$(cd $(dirname $T) && pwd)/$(basename $T)
@@ -100,6 +114,11 @@ while true; do
     FINAL[$kind]=${RC[$kind]}
   done
   log "done with teacher seed $TSEED ($(for kind in $KINDS; do echo -n "$kind exit ${RC[$kind]} "; done))"
+  if [ $PROBE = 1 ]; then   # no acceptance ran: training's own exit is the outcome
+    for kind in $KINDS; do [ "${RC[$kind]}" = 0 ] || { log "probe: $kind training ended with exit ${RC[$kind]}"; exit 4; }; done
+    log "probe done: the stage-2 runs above, no pick, no delivery"
+    exit 0
+  fi
   # the markers accept.sh left, read the same way whichever kind's run ran the pair test (doc/redesign.md 2.2.1;
   # go2-depth's review 11-12): over every kind accepted so far, this round's and earlier rounds'
   for kind in "${!FINAL[@]}"; do
