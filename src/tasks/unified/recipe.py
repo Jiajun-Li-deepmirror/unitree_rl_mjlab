@@ -40,6 +40,10 @@ COMMON: dict[str, str] = {
   "U_STAIR_SPEED_H": "1",       # the stairs speed over the ground, as the acceptance measures it
   "U_HEADING_OBS": "1",         # the line costs hold the heading the actor is shown ...
   "U_HEADING_LAG": "2",         # ... and the heading's lag behind the commands costs (weight -2)
+  "U_STAIRS_P": "0.0,0.15",     # the stairs share ramps in over progress 0-0.15 (the task's own: 0.3-0.8). The Go2W
+                                # from zero: progress 0.49 at 900 iterations against 0.08. Every robot's probes
+                                # started with it (Go2 uprobe_s4, go2-home's As2 uprobe_s1); the Go2's formal run
+                                # of 84e7965 without it: a stairs share of 3-7 % until 2000 iterations
 }
 
 KIND: dict[str, dict[str, str]] = {
@@ -51,14 +55,16 @@ KIND: dict[str, dict[str, str]] = {
     "U_BODY_CLEAR": "50",         # the bodies whose touch ends the episode keep clear of the steps
     "U_COM_SUPPORT": "15",        # at a stop on uneven ground the centre of mass, payload included, over the feet
                                   # (Go2's loaded falls on tier 2: 11 -> 5)
+    "U_ALIVE": "4",               # a living step pays +4 per second (the wheeled have it from their builder). The
+                                  # Go2 from zero without it (the formal run of 84e7965): the flat costs above put
+                                  # the first iterations' return below an ended episode's -4, and the policy ended
+                                  # its episodes by a body contact -- for 2000 iterations on the climbing columns
   },
   "wheeled": {
     "U_STAIR_APPROACH": "0",          # the stairs speed cost holds on a climbing column's level ground too (the Go2W
                                       # stood before the flight); not for the heavy class (the 0)
     "U_BODY_CLEAR": "50,0.06,0.10",   # as the legged, with the wheeled margin and reach (Go2W's loaded falls on tier
                                       # 2: 16 at the plain 50 -> 5)
-    "U_STAIRS_P": "0.0,0.15",         # the stairs share ramps in over progress 0-0.15 (the Go2W from zero: progress
-                                      # 0.49 at 900 iterations against 0.08); the legged keep the task's 0.3-0.8
   },
 }
 
@@ -67,10 +73,7 @@ ROBOT: dict[str, dict[str, str]] = {
   # the standing pose cost off the uneven ground: the heavy legged robot's loaded falls at the stops halve (179 -> 88,
   # go2-home's mAJ). Not for the others: the Go2's loaded falls tripled with it (62 against 20, s50 / s51), the
   # Go2W gained nothing (s38).
-  # The stairs share ramps in over progress 0-0.15, as the wheeled: every As2 probe descends from a start with it
-  # (go2-home's uprobe_s1; the timeline env_vars of mAJ / mAK / mAM carry it) -- the legged default (the task's
-  # 0.3-0.8) is untested under the As2's recipe, so the code keeps what the probes ran
-  "As2": {"U_STAND_POSE_EVEN": "1", "U_STAIRS_P": "0.0,0.15"},
+  "As2": {"U_STAND_POSE_EVEN": "1"},
 }
 
 # read by the runner when it starts (runner._entropy_by_q, _std_cap_by_q), not by the builders

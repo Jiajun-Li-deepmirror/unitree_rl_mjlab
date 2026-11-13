@@ -783,6 +783,12 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if lean:
     for t in other:
       del rewards[t]
+  v = os.environ.get("U_ALIVE")
+  if v and float(v) > 0.0 and "is_alive" not in rewards:   # the recipe's switch (_probe_switches): the legged
+    assert float(v) <= 10.0, f"U_ALIVE {v}: a living step's pay per second, 0-10"
+    # "u_": the unified code's own term, at its weight from the first iteration (quality_diff leaves the u_ terms
+    # alone -- as "is_alive" it would be a P-only term, brought in along the stairs quality from 0.001 x)
+    rewards["u_alive"] = RewardTermCfg(func=mdp.is_alive, weight=float(v))
   # the heavy robots' reward group (after the terms it reads): each flat item's costs at their configured weight on
   # the robots with >= 2/3 of the payload limit, whatever the light robots' multipliers (constraints.heavy_group)
   for item, (_, _, _, terms) in ucons.HEAVY_ITEMS.items():
@@ -1072,6 +1078,19 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          have -4 from the old flow's "speedw4", nothing changes for them). Go2 uprobe_s43 6596
                          (U_HEADING_OBS=1), tier 2: seen every forward command 90 % and more, blind (0.5, 0, 0) and
                          (1.0, 0, 0) and their arcs x 75-79 % (bar 80 %), the speed_lin multiplier at its cap.
+  Living pays (2026-11-13: the first Go2 teacher from zero under the legged recipe, the formal run of 84e7965, both
+  seeds. The flat speed deficit at -4 and the heading lag at -2 are at their largest before the policy walks: the
+  return runs at about -5 per second while an episode ended by a body contact costs -4 once. Illegal contacts 5 per
+  episode by 100 iterations, 0.6-1.9 without the two costs (go2-home's ZC, uprobe_s4); either cost alone does the
+  same (ZA, ZB). The habit stays on the climbing columns, where standing before the riser costs -1.85 per second
+  (uprobe_s4: +0.65, it stood there and learned to climb from it): at 300 iterations 99-100 % of the episodes there
+  end by the trunk's contact, most before the first riser, and at 2000 rows 4-9 still fail 84-99 % that way --
+  scripts/unified/up_stall_probe.py; read in _rewards):
+    U_ALIVE=<w>          a step that does not end the episode pays +<w> per second (the term u_alive:
+                         mdp.is_alive; 0-10), from the first iteration, for a robot without is_alive: the legged.
+                         The wheeled have is_alive at +4 from the blind builder ("living pays", 2026-10-23: the
+                         same pattern on the wheeled v7 teachers, illegal contacts 0.3 -> 3.5 per episode);
+                         nothing changes for them. 0: off.
   The gait clock (2026-11-13: the Go2 teacher's riser kicks stay at 0.41-0.49 a step in tier 2 from 5598 to 7095
   iterations, seen and blind alike, bar 0.31; read in _rewards):
     U_GAIT_EVEN=1        the legged gait clock is judged on even ground only: over uneven ground a robot under a
