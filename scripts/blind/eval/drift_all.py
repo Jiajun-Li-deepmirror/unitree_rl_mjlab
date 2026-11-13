@@ -109,6 +109,11 @@ for i, c in enumerate(CMDS):
   g = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
   g[i * n : (i + 1) * n] = True
   ok = g & ~fell
+  if not ok.any():   # every robot of this command fell (2026-11-14): a row of nan and its falls -- the judges read the
+    # falls; no quantile of nothing (it raised, and the test read as a tool fault instead of a fail)
+    nan3, nan2 = " ".join(f"{float('nan'):6.2f}" for _ in range(3)), " ".join(f"{float('nan'):5.2f}" for _ in range(2))
+    print(f"{str(c):>18} | {nan3}    | {nan3}  | {nan3}   | {nan2}        | {nan2}        | {int((fell & g).sum())}/{n}")
+    continue
   d = d_all[ok]
   rel = rel_all[ok]
   ax = torch.stack([torch.cos(yaw0[ok]), torch.sin(yaw0[ok])], 1)

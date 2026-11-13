@@ -330,6 +330,10 @@ def goal_cells(r, i, label, p, ms):
     bar = SIDE_DRIFT_BAR.get(r, 0.05) if sideways else 0.05
     if travel > 0 and max(abs(off[0]), abs(off[2])) > bar * travel:
       tags.append("跑偏")
+  # a fall in the drift test (2026-11-14; as the alternating spins judge theirs): every robot of a command fallen left
+  # nan readings, which no comparison above flags
+  if any(v["fell"] for c, v in d.items()):
+    tags.append("摔倒")
   verdict("g_drift", tags, not d)
   # Turning in place.
   spins = [v for c, v in d.items() if c[0] == c[1] == 0.0 and c[2] != 0.0]
