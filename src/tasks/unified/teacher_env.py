@@ -1041,7 +1041,13 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          no wheel roll (stop_anatomy on the Go2W: the wheels' roll 0.00 cm, the base over the
                          wheels 1.2-2.0 cm with the thighs still turning 0.02 rad from 2 to 6 s after the stop):
                          the posture settles out of the braking lean for seconds, and at 3 times the weight the
-                         hold charges 0.3 a second for a centimetre;
+                         hold charges 0.3 a second for a centimetre. A cap over 3 did not help (Go2W uprobe_s45,
+                         cap 10). A cap of 1-3 (2026-11-13 13:35): the delivered Go2W blind model on the same flat
+                         test (go2w_bl2_g14_13600: both costs at their weight, no multiplier) stops from
+                         -1.0 m/s in 0.74 s and creeps 0.86 cm, uprobe_s51 7991 in 0.42 s and 2.12 cm (forwards
+                         0.49 s / 0.43 cm against 0.35 s / 0.43-1.27 cm) -- does 3 times standing_speed buy the
+                         hard brake whose lean then settles as the creep the item measures (a loop that pins
+                         the multiplier at its cap)?
     U_CLOCK_FLOOR=<x>    the floor of the clock item's multiplier (1; it scales foot_gait on even ground), its cap
                          at least that. 2026-11-13, tier 2 of the Go2 uprobe_s59 8592: the gait clock is the one
                          flat item it misses -- the strafe (0, +-0.6, 0) 62-69 % in step and (0.6, +-0.4, 0)
@@ -1137,7 +1143,7 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
         c["max_scale"] = max(c["min_scale"], float(v))
   v = os.environ.get("U_CREEP_CAP")
   if v:
-    assert 3.0 <= float(v) <= 30.0, f"U_CREEP_CAP {v}: the creep item's cap, 3-30"
+    assert 1.0 <= float(v) <= 30.0, f"U_CREEP_CAP {v}: the creep item's cap, 1-30"
     for c in items:
       if c["name"] == "creep":
         c["max_scale"] = float(v)
