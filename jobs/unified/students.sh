@@ -272,7 +272,14 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
     tl $run s2_pick $ends end=$ends why=cap_smallest_gap
     log "STUDENT $kind S2 PICK a${F_S2_GATE_AVG_N}_$ends at the cap: hard items passed, quality gap $(echo "$HP" | grep -v '^$' | sort -g | head -n 1 | cut -d' ' -f1) (the smallest of the kept)"
   fi
-  REUSE_TIER2=$progress ACCEPT_SMOKE=$SMOKE bash jobs/unified/accept.sh $R $kind $run $ends >> $L 2>&1
+  # the final acceptance in a formal run (2026-11-14, go2-depth: the other kind's student may still be training beside
+  # it -- an unguarded acceptance, two tests at once, the drift's 13 x 768 robots at ~9-10 GB, could take that training
+  # down): one test at a time, the drift in halves, each test waiting for its need (the gates' table, per kind) up to
+  # F_FINAL_ACCEPT_WAIT_S, then a tool fault (not a fail: rerun); full size always (no ACCEPT_SMALL)
+  local guard=()
+  [ $progress = 1 ] && guard=(ACCEPT_JOBS=1 ACCEPT_DRIFT_SPLIT=1 ACCEPT_FREE_WAIT_S=$F_FINAL_ACCEPT_WAIT_S
+    "ACCEPT_NEED_MB=$([ $kind = depth ] && echo "$F_S2_GATE_NEED_MB_DEPTH" || echo "$F_S2_GATE_NEED_MB")")
+  env "${guard[@]}" REUSE_TIER2=$progress ACCEPT_SMOKE=$SMOKE bash jobs/unified/accept.sh $R $kind $run $ends >> $L 2>&1
 }
 KINDS="${KINDS:-blind depth}"
 TRIED=" $TSEED " WHY=""
