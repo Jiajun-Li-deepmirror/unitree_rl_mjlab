@@ -1024,6 +1024,47 @@ def loaded_fall(env: ManagerBasedRlEnv, scale: float = 3.0, term: str = "is_term
   return raw * w * (scale - 1.0) * frac.clamp(0.0, 1.0)
 
 
+def loaded_descent(env: ManagerBasedRlEnv, command_name: str = "twist", over: float = 1.0,
+                   pitch_free: float = 0.0872665, pitch_full: float = 0.3490659, over_free: float = 0.1,
+                   over_full: float = 0.5, min_vx: float = 0.2, min_pitch: float = 0.05) -> torch.Tensor:
+  """Reward term (U_LOADED_DESCENT=<w>[,<over>[,<free deg>[,<full deg>]]], 2026-11-13, the As2): a heavily loaded
+  robot going nose down on a stairs column. Two parts, each 0-1, added:
+    - the trunk's nose-down pitch (from the projected gravity, as scripts/unified/topple_probe.py reads it) above
+      `pitch_free` (5 deg), 1 from `pitch_full` (20 deg) on -- at any command, a stop on the flight included;
+    - `over` times: under a forward command (vx >= min_vx) with the nose down by min_pitch or more, the speed over
+      the ground along x above the command by more than `over_free` (m/s), 1 from `over_full` on. Not at the zero
+      command: there it would pay for braking hard, which is what tips a loaded robot over its front feet.
+  In full from the heavy class (HEAVY_FRAC of the payload limit) up, nothing up to the common payload (COMMON_FRAC),
+  linear in between: the acceptance judges the stairs speed unloaded and at the common payload and the full payload
+  on its falls alone, and the user (2026-11-12): with payload the robot must never fall, its abilities may lag the
+  unloaded ones. A climb pitches the nose up and costs nothing here.
+
+  Why (go2-home's topple_probe on the As2 teachers mAMc 5492, mAR1 / mAR2 5991, tier 2 at the payload limit): the
+  largest class of the loaded falls -- going down, the load in front -- is a forward topple under way, and the fall's
+  own price does not reach it (U_LOADED_FALL=3: 27 falls -> 27, while the classes it helped fell by a third and
+  more). The fallers' trunk is at 10.8 deg nose down two seconds before the fall (mAMc: 24 deg) against 6.5-7.5 deg
+  on the runs without a fall, at 23 deg a second before, and from then on the robot runs ahead of its command
+  (0.80 m/s at 0.66 commanded, 1.0-1.15 at the end) with the centre of mass beyond the front feet 29% of the last
+  second -- not the actuators (front torque ratio 0.28-0.38). The fall is paid once, at the end of a run-away that
+  is decided seconds earlier; this cost is on the two readings that come first, every step: it pays for a flatter
+  trunk on the way down (the rear legs folded, the load further behind the front feet) and for not letting the
+  descent speed up. A heavy robot that waits on the top platform instead stands on its four feet (stairs_park's
+  `heavy` 0 lets it)."""
+  out = torch.zeros(env.num_envs, device=env.device)
+  kg = getattr(env, "payload_kg", None)
+  if kg is None:
+    return out
+  frac = ((kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)).clamp(0.0, 1.0)
+  g = env.scene["robot"].data.projected_gravity_b
+  pitch = torch.atan2(g[:, 0], -g[:, 2])   # nose down > 0
+  lean = ((pitch - pitch_free) / (pitch_full - pitch_free)).clamp(0.0, 1.0)
+  command = env.command_manager.get_command(command_name)
+  fast = ((_yaw_frame_velocity(env)[:, 0] - command[:, 0] - over_free) / (over_full - over_free)).clamp(0.0, 1.0)
+  fast = torch.where((command[:, 0] >= min_vx) & (pitch >= min_pitch), fast, out)
+  stairs = env.command_manager.get_term(command_name).is_stair_env
+  return torch.where(stairs, frac * (lean + over * fast), out)
+
+
 def climbing_mask(env: ManagerBasedRlEnv, sensor_name: str, command_name: str = "twist", near: float = 0.15,
                   far: float = 0.45, half_width: float = 0.15, rise: float = 0.03) -> torch.Tensor:
   """Per robot: the ground ahead along the commanded direction (the height scan's hits `near`..`far` from the base,

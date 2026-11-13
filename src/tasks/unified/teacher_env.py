@@ -801,6 +801,16 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
                                              params={"scale": float(os.environ["U_LOADED_FALL"])})
+  if os.environ.get("U_LOADED_DESCENT"):   # a probe's switch (_probe_switches): reads no other term
+    v = [float(x) for x in os.environ["U_LOADED_DESCENT"].split(",")]
+    assert 1 <= len(v) <= 4 and 0.0 < v[0] <= 20.0 and (len(v) < 2 or 0.0 <= v[1] <= 3.0), \
+      f"U_LOADED_DESCENT {v}: <weight 0-20>[,<the speed part's share 0-3>[,<free deg>[,<full deg>]]]"
+    params = {} if len(v) < 2 else {"over": v[1]}
+    if len(v) >= 3:
+      free, full = v[2], (v[3] if len(v) == 4 else 20.0)
+      assert 0.0 <= free < full <= 45.0, f"U_LOADED_DESCENT {v}: 0 <= <free deg> < <full deg> <= 45"
+      params |= {"pitch_free": math.radians(free), "pitch_full": math.radians(full)}
+    rewards["u_loaded_descent"] = RewardTermCfg(func=ucons.loaded_descent, weight=-v[0], params=params)
   if os.environ.get("U_STAIR_SPEED_LOADED"):   # a probe's switch (_probe_switches), after stair_speed_deficit
     floor = float(os.environ["U_STAIR_SPEED_LOADED"])
     assert 0.0 <= floor < 1.0 and "stair_speed_deficit" in rewards, f"U_STAIR_SPEED_LOADED {floor}: 0 <= x < 1"
@@ -1096,7 +1106,15 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          of it on (23 cm); in full at the zero command, <moving> times it (0) under a command. On top of
                          standing_pose_load, not instead of it (the cost's docstring). Logs the items com_stop /
                          com_stop_heavy: that distance (m) at the stops on the flights, up to the common payload
-                         and in the heavy class."""
+                         and in the heavy class.
+    U_LOADED_DESCENT=<w>[,<over>[,<free deg>[,<full deg>]]]   the cost constraints.loaded_descent at the weight
+                         -<w> (0-20), set up in _rewards: on a stairs column, from the heavy class up (nothing up to
+                         the common payload), the trunk's nose-down pitch above <free deg> (5), 1 from <full deg>
+                         (20) on, at any command -- plus <over> (1; 0-3) times the speed over the ground above a
+                         forward command by more than 0.1 m/s, 1 from 0.5 m/s on, while the nose is down. The As2's
+                         largest class of loaded falls (going down, the load in front: a forward topple under way,
+                         27 falls with and without U_LOADED_FALL=3) starts with these two readings seconds before
+                         the fall (the cost's docstring). Logged as Episode_Reward/u_loaded_descent."""
   v = os.environ.get("U_Q_SCALE_MAX")
   if v:
     for c in items:
