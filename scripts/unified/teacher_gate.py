@@ -52,14 +52,19 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 
 def items_for(run: str) -> list[dict]:
-  """The constraint items of the run's robot and kind (from the experiment directory: <robot>_u_teacher)."""
+  """The constraint items of the run's robot and kind (from the experiment directory: <robot>_u_teacher), under the
+  robot's recipe (recipe.py: the items the training built -- stop_feet by direction, park_down, ...; U_RECIPE=0 for
+  a run from before the recipe was code: the environment's switches alone)."""
   sys.path.insert(0, os.getcwd())
+  from src.tasks.unified import recipe as urecipe
   from src.tasks.unified.robots import ROBOTS
   from src.tasks.unified.teacher_env import constraint_items
 
   exp = os.path.basename(os.path.dirname(os.path.abspath(run)))
   robot = next(r for r in ROBOTS.values() if exp == f"{r.key}_u_teacher")
-  return [c for c in constraint_items(robot.kind) if c.get("enforce", True)]
+  with urecipe.scope(robot):
+    items = constraint_items(robot.kind)
+  return [c for c in items if c.get("enforce", True)]
 
 
 def series(acc: EventAccumulator, tag: str) -> dict[int, float]:

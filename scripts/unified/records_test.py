@@ -536,13 +536,21 @@ def units(ok, out: Path) -> None:
   from torch.utils.tensorboard import SummaryWriter
   from src.tasks.unified.teacher_env import SURVIVE_BAR
 
-  def gate(name: str, survive: float, logged_bar: float, absent=(), bar_only=(), args=(), flat_until=None) -> str:
+  # (2026-11-13) the gate reads the items under the run's robot's recipe (recipe.py): the stand-in run is a Go2's,
+  # under the recipe; `plain` -- a run from before the recipe (the task without a switch), judged with U_RECIPE=0
+  from src.tasks.unified import recipe as urecipe
+  from src.tasks.unified.robots import ROBOTS as _ROBOTS
+  with urecipe.scope(_ROBOTS["Go2"]):
+    recipe_items = constraint_items("legged")
+
+  def gate(name: str, survive: float, logged_bar: float, absent=(), bar_only=(), args=(), flat_until=None,
+           plain: bool = False) -> str:
     run = out / "gate" / "go2_u_teacher" / name
     w = SummaryWriter(str(run))
     for it in range(0, 601):
       w.add_scalar("Curriculum/u_progress/p", 1.0, it)
       w.add_scalar("Curriculum/u_progress/q", 1.0, it)
-      for c in constraint_items("legged"):
+      for c in constraint_items("legged") if plain else recipe_items:
         if not c["enforce"] or c["name"] in absent:
           continue
         tag = f"Curriculum/u_constraints/{c['name']}/"
@@ -555,7 +563,8 @@ def units(ok, out: Path) -> None:
         w.add_scalar(tag + "bar", logged_bar if c["name"].startswith("survive") else c["target"], it)
     w.close()
     r = subprocess.run([sys.executable, str(ROOT / "scripts/unified/teacher_gate.py"), str(run), *args],
-                       capture_output=True, text=True, cwd=str(ROOT))
+                       capture_output=True, text=True, cwd=str(ROOT),
+                       env=os.environ | ({"U_RECIPE": "0"} if plain else {}))
     return r.stdout.strip() + r.stderr.strip()[-300:]
 
   # (the logged bar is ignored for a gate-only item: 0.99 would pass anything, 0.0 nothing)
@@ -574,6 +583,14 @@ def units(ok, out: Path) -> None:
   g = gate("no_reading", SURVIVE_BAR - 0.02, 0.0, bar_only=("stance",))
   ok(f"unit gate: an item the run has (its bar is logged) but never read stays unmeasured ({g})",
      g.startswith("NOT YET 600 ") and "stance unmeasured" in g and "not judged" not in g)
+  # (2026-11-13) the recipe in code: the gate judges a run on its robot's recipe items; a run from before the recipe
+  # is judged with U_RECIPE=0 (without it the recipe's own items would be "not judged": nothing of them in its log)
+  names = {c["name"] for c in recipe_items if c["enforce"]}
+  ok(f"unit gate: the stand-in run carries the recipe's items ({sorted(names & {'stop_feet_up', 'stop_feet_down', 'park_down'})})",
+     {"stop_feet_up", "stop_feet_down", "park_down"} <= names and "stop_feet" not in names)
+  g = gate("plain_off", SURVIVE_BAR - 0.02, 0.0, plain=True)
+  ok(f"unit gate: U_RECIPE=0 judges a run from before the recipe on the plain task's items ({g[:40]})",
+     g.startswith("PASS 500 ") and "not judged" not in g)
   # (2026-11-13) --pre: the stairs-quality items are read, not judged; the newest checkpoint that passes
   g = gate("pre", SURVIVE_BAR + 0.05, 0.99, args=("--pre",))
   ok(f"unit gate --pre: a stairs item over its bar does not hold the pre-pass, the newest checkpoint ({g[:60]})",

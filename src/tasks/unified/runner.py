@@ -28,7 +28,6 @@ later one started it at the step counter (the ramps jumped ahead by the time the
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -37,6 +36,7 @@ import torch
 from src.tasks.velocity.rl import MirrorVelocityOnPolicyRunner, VelocityOnPolicyRunner
 
 from . import diagnostics
+from . import recipe as urecipe
 from .constraints import eval_count
 from .curriculum import Q_IN, ramp
 
@@ -76,10 +76,30 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
     self._segments: list[dict] = []   # the stretches before this process's (from the checkpoint it resumed)
     self._segment = {"from": 0, "to": 0, "commit": self._commit}
     print(f"[unified] code {self._commit}")
+    self._recipe()
     self._split_eval(eval_count(env.num_envs))
     self._entropy_by_q()
     self._std_cap_by_q()
     diagnostics.attach(self)   # the training records (after the evaluation split: its hooks wrap what is there)
+
+  def _recipe(self) -> None:
+    """The run's robot and its recipe (recipe.py): the two switches this runner reads (_entropy_by_q, _std_cap_by_q)
+    come from the table unless the environment sets them itself. A teacher run whose experiment is no registered
+    robot's would train without them and say nothing -- it stops here instead (U_RECIPE=0: the environment alone,
+    whatever the experiment is called)."""
+    name = self.cfg.get("experiment_name")
+    robot = urecipe.of_experiment(name)
+    if robot is None and not urecipe.off():
+      raise RuntimeError(f"experiment {name!r} is no registered robot's (<robot>_u_teacher): its recipe is unknown. "
+                         "U_RECIPE=0 runs on the environment's switches alone")
+    self._switches = urecipe.runner_switches(robot)
+    rec = urecipe.record(robot)
+    if urecipe.off():
+      print("[unified] recipe: off (U_RECIPE=0) -- the environment's switches alone")
+    else:
+      print("[unified] recipe " + robot.name + ": " + " ".join(f"{k}={v}" for k, v in rec["switches"].items()))
+      if rec["explicit"]:
+        print("[unified] recipe: set by the environment: " + " ".join(f"{k}={v}" for k, v in rec["explicit"].items()))
 
   def _split_eval(self, k: int) -> None:
     """The first k robots evaluate the mean action (module docstring)."""
@@ -124,12 +144,12 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
           f"measured on them")
 
   def _entropy_by_q(self) -> None:
-    """U_ENTROPY_Q=<x> (a probe switch as teacher_env._probe_switches', off unless set): the entropy bonus goes from
+    """U_ENTROPY_Q=<x> (a switch as teacher_env._probe_switches', from the robot's recipe): the entropy bonus goes from
     the task's to x as the stairs quality q goes 0 -> Q_IN, with the P weights. The Go2W probes with a larger fall
     cost (2026-11-12, uprobe_s13 x5, uprobe_s16 x10): the rare large costs widen the advantages (their std 1.0 -> 1.8),
     the normalized advantages of everything else shrink against a bonus that stays, and the action std rose
     0.72 -> 1.00 in 450 iterations while the mean action's stairs readings improved."""
-    v = os.environ.get("U_ENTROPY_Q")
+    v = self._switches.get("U_ENTROPY_Q")
     if not v:
       return
     alg, e = self.alg, self.env.unwrapped
@@ -152,7 +172,7 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
     under the teacher's own flat rewards in nearly every phase (the gait clock on fast arcs, the pose on straight
     lines, the wheel targets at rest), so that gap is an optimum the noisy policy does not reach, not a price it
     declines to pay. The evaluation robots act with the mean action either way."""
-    v = os.environ.get("U_STD_CAP")
+    v = self._switches.get("U_STD_CAP")
     if not v:
       return
     alg, e = self.alg, self.env.unwrapped

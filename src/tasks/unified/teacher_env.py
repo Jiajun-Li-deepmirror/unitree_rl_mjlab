@@ -56,6 +56,7 @@ from . import constraints as ucons
 from . import curriculum as ucur
 from . import diagnostics
 from . import flat as uflat
+from . import recipe as urecipe
 from . import stick_slip
 from .models import PRIV_GROUP
 from .robots import URobot, base_env_cfg, unified_recipe
@@ -1197,8 +1198,15 @@ def _fixed_payload(cfg: ManagerBasedRlEnvCfg) -> None:
 
 def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = False,
                             student: str | None = None, terrain: str = "map3") -> ManagerBasedRlEnvCfg:
-  """student "blind" / "depth" (students.py): the teacher's environment with the scan fixed off / on, the curriculum
+  """The robot's task under its recipe (recipe.py, 2026-11-13: every U_ switch read below takes the robot's value
+  from the table unless the environment sets it itself; U_RECIPE=0 -- the environment alone, as the probes ran).
+  student "blind" / "depth" (students.py): the teacher's environment with the scan fixed off / on, the curriculum
   at its end (progress 1) and the constraint scales frozen at the teacher's (restored from its checkpoint)."""
+  with urecipe.scope(robot):
+    return _teacher_env_cfg(robot, play, lean, student, terrain)
+
+
+def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None, terrain: str) -> ManagerBasedRlEnvCfg:
   cfg = base_env_cfg(robot, play=play, terrain=terrain)
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
   _add_privileged(cfg)

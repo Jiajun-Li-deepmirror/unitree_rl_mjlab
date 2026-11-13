@@ -62,6 +62,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from . import recipe as urecipe
 from .constraints import HEAVY_FRAC, LIGHT_FRAC, MODES
 from .curriculum import (
   MAX_FAIL_RATE, PAY_CLASSES, Q_ROW, Q_SPAN_IT, SPLIT_MODES, STEPS_PER_IT, TIME_SPAN_IT, TIME_START_IT, UP_NAMES,
@@ -675,6 +676,7 @@ class Recorder:
       "start", r.current_learning_iteration, kind=self.kind, code=getattr(r, "_commit", None),
       run_dir=str(r.logger.log_dir), host=socket.gethostname(), pid=os.getpid(), argv=sys.argv,
       env_vars={k: v for k, v in sorted(os.environ.items()) if k.startswith(("U_", "UNIFIED_", "RESUME", "TRAIN_LOG"))},
+      recipe=urecipe.record(urecipe.of_experiment(cfg.get("experiment_name"))),   # the switches in effect (recipe.py)
       num_envs=env.num_envs, eval_envs=int(env.u_eval_mask.sum()) if getattr(env, "u_eval_mask", None) is not None else 0,
       iterations=kwargs.get("num_learning_iterations", args[0] if args else None),
       resumed=self.resume, segments=getattr(r, "_segments", []) + [getattr(r, "_segment", {})],
