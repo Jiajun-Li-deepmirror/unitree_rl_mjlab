@@ -78,6 +78,7 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
     print(f"[unified] code {self._commit}")
     self._split_eval(eval_count(env.num_envs))
     self._entropy_by_q()
+    self._std_cap_by_q()
     diagnostics.attach(self)   # the training records (after the evaluation split: its hooks wrap what is there)
 
   def _split_eval(self, k: int) -> None:
@@ -141,6 +142,35 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
 
     alg.update = updating
     print(f"[unified] U_ENTROPY_Q: the entropy bonus {base} -> {end} along the stairs quality")
+
+  def _std_cap_by_q(self) -> None:
+    """U_STD_CAP=<x> (a probe switch as teacher_env._probe_switches', off unless set): the action noise -- the
+    Gaussian's std, one per action -- is capped after every update, the cap going from the task's initial std to x
+    as the stairs quality q goes 0 -> Q_IN, with the P weights. What it asks (2026-11-13): the teachers at the end of
+    the probes act with a std of 0.47 (Go2, model_9091) / 0.50 (Go2W, model_7991), rising 4-6 % per 500 iterations at
+    the bonus of 0.002, against the delivered policies' 0.34 / 0.43 -- and the delivered Go2W behaviour earns MORE
+    under the teacher's own flat rewards in nearly every phase (the gait clock on fast arcs, the pose on straight
+    lines, the wheel targets at rest), so that gap is an optimum the noisy policy does not reach, not a price it
+    declines to pay. The evaluation robots act with the mean action either way."""
+    v = os.environ.get("U_STD_CAP")
+    if not v:
+      return
+    alg, e = self.alg, self.env.unwrapped
+    dist = alg.actor.distribution
+    end = float(v)
+    assert getattr(dist, "std_type", None) == "scalar" and 0.05 <= end <= 1.0, f"U_STD_CAP {v}: 0.05-1, a scalar std"
+    start = max(float(dist.std_param.detach().max()), end)   # the task's initial std (a checkpoint loads later)
+    update = alg.update
+
+    def updating(*a, **k):
+      out = update(*a, **k)
+      cap = start + (end - start) * ramp(float(getattr(e, "u_quality", 0.0)), 0.0, Q_IN)
+      with torch.no_grad():
+        dist.std_param.clamp_(max=cap)
+      return out
+
+    alg.update = updating
+    print(f"[unified] U_STD_CAP: the action std's cap {start} -> {end} along the stairs quality")
 
   def _parts(self) -> dict:
     env = self.env.unwrapped

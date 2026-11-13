@@ -934,6 +934,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          so the robots still try the rows they fail on;
     U_ENTROPY_Q=<x>      the entropy bonus along the stairs quality, the task's -> <x> (runner._entropy_by_q: with a
                          larger fall cost the action std rose 0.72 -> 1.00 in 450 iterations);
+    U_STD_CAP=<x>        a cap on the action noise (the Gaussian's std, per action) along the stairs quality, the
+                         task's initial std -> <x> (runner._std_cap_by_q: at the end of the probes the std sat at
+                         0.47 (Go2) / 0.50 (Go2W) and rose with the bonus at 0.002; the delivered policies' 0.34 /
+                         0.43);
     U_STAIRS_P=<a>,<b>   the progress over which the stairs share of the training robots goes from its start to its
                          end (curriculum.progress_stairs_share: 0.3,0.8 -- the from-zero Go2 teacher's climbing row
                          fell 2.0 -> 0.55 over iterations 400-2500 at the start share and rose only with the share);
