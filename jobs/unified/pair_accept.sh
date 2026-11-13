@@ -24,6 +24,8 @@ tag=$(basename $(dirname $DCK))_$(basename $DCK .pt)
 P=logs/checks/u_${r}_pair${SFX}_$tag
 SCALE=1.0 conds="unloaded loaded"
 [ $SMOKE = 1 ] && SCALE=0.05 conds="unloaded"
+# (a flow test's ACCEPT_TEST_DIV=<k>, jobs/unified/accept.sh: the scale 1/k)
+[ "${ACCEPT_TEST_DIV:-1}" -gt 1 ] 2> /dev/null && SCALE=$(awk -v d=$ACCEPT_TEST_DIV 'BEGIN { print 1.0 / d }')
 mkdir -p logs/checks
 t0=$(date +%s)
 log "camera-failure test: depth $DCK + blind $BCK ($conds)"

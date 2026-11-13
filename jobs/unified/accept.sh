@@ -238,6 +238,11 @@ run_sized() {   # OUT TEST FULL_N CMD... (the command's size argument written @N
   run $out "${@//@N@/$n}"
 }
 
+# ACCEPT_TEST_DIV=<k> (2026-11-14, a flow test's knob -- go2-depth's end-to-end check of the students' path at small
+# sizes; unset / 1: the acceptance's sizes): every tier-2 test's robots divided by k (at least 1); the camera-failure
+# pair test's scale 1/k. Not for a judgment: the readings of a divided test are not the acceptance's.
+tn() { local v=$(( $1 / ${ACCEPT_TEST_DIV:-1} )); echo $(( v < 1 ? 1 : v )); }
+
 tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   local tag=$1 CK=${CKOF[$1]} P=logs/checks/u_${r}_${KIND}_${name}_$1 cond X
   # REUSE_TIER2=1 (2026-11-13, go2-depth: the stage-2 gate's tier 2 is the acceptance's tier 2): a candidate whose tier
@@ -278,14 +283,14 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   for cond in $conds; do
     case $cond in unloaded) pay=0,0,0,0 X="" ;; loaded) pay=$PAY X=_pay ;; typical) pay=$typ X=_typ ;; esac
     U_PAYLOAD=$pay $PY scripts/unified/dr_report.py $TF > ${P}_dr$X.txt 2>&1
-    pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile 18 --metrics
-    pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs 768
-    pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs 384
+    pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile $(tn 18) --metrics
+    pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs $(tn 768)
+    pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs $(tn 384)
     # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
     # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)
     # ACCEPT_DRIFT_SPLIT=1 (2026-11-13, the stage-2 gates beside the students' training: 13 x 768 robots at once do not
     # fit beside them): the commands in two halves, the same robots per command, joined into one file after the pool
-    local dn=$([ $KIND = depth ] && echo 384 || echo 768)
+    local dn=$(tn $([ $KIND = depth ] && echo 384 || echo 768))
     if [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then
       rm -f ${P}_drift3$X.h1.txt ${P}_drift3$X.h2.txt
       pool $pay ${P}_drift3$X.h1.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN --cmds 0-6
@@ -293,16 +298,16 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     else
       pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN
     fi
-    pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs 768 $YAW
-    pool_sized $pay ${P}_stand$X.txt stand 768 $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
-    pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs 96
+    pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs $(tn 768) $YAW
+    pool_sized $pay ${P}_stand$X.txt stand $(tn 768) $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
+    pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs $(tn 96)
     if [ $cond = unloaded ]; then
-      pool_sized $pay ${P}_am.txt am 96 $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
-      pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd 48
+      pool_sized $pay ${P}_am.txt am $(tn 96) $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
+      pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd $(tn 48)
     fi
     # wheels down: unloaded and typical (doc/redesign.md 2.2)
     if [[ $R == *W ]] && [ $cond != loaded ]; then
-      pool $pay ${P}_gait$X.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd 96
+      pool $pay ${P}_gait$X.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd $(tn 96)
     fi
   done
   wait
@@ -310,8 +315,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   # the map3 flights (unloaded): three shards each already, so one at a time after the pool
   ( export U_PAYLOAD=0,0,0,0
     run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
-      --down-vx 0.5 --num-envs 192 --time-scale 1.6 --seed 0
-    run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs 192 \
+      --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
+    run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs $(tn 192) \
       --time-scale 1.6 --seed 0 )
   $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_verdict.txt 2>&1
   # the sizes run_sized used, when any test ran small (a detail line: the first line stays the verdict)
