@@ -59,6 +59,21 @@ KIND: dict[str, dict[str, str]] = {
                                   # Go2 from zero without it (the formal run of 84e7965): the flat costs above put
                                   # the first iterations' return below an ended episode's -4, and the policy ended
                                   # its episodes by a body contact -- for 2000 iterations on the climbing columns
+    # A robot told to stop on a flight stays there (tier 2 asks 90 % of every band; the Go2's formal teachers of
+    # 84e7965 walked on down the 15-18 cm flights: stayed 30 % at model_5200, at 1.35x the commanded speed). Three
+    # switches, one recipe part (2026-11-14):
+    "U_STAND_POSE_EVEN": "1",     # the standing pose cost acts on even ground only: on a flight it was the largest
+                                  # cost of a stop, and it pulled the robot off the steps
+    "U_DESCENT_SPEED": "10,1.1",  # going down a flight faster than 1.1x the command costs (weight 10)
+    "U_STOP_HOLD_Q": "1",         # both come in along the stairs quality, the P weights' own ramp: before the robots
+                                  # climb, the pose removal keeps them from climbing (go2-home's ZI / ZJ from a
+                                  # from-zero model_1500: the climbing row 0.10 against 1.17 at 3000)
+    # Evidence, the Go2 from the formal checkpoints: go2-home's pair ZK / ZC (1024 robots, 5000): stayed 99 % against
+    # 58 % without a load and 96 % against 39 % with the full one, the descents at 0.80-0.85x the command, the full
+    # payload's falls on 5-15 cm 7 against 23. The stop-place cost of the wheeled does not do it (3 / 8 / 20: the Go2
+    # is not held). As2 (go2-home's mAJ, the pose switch alone, on throughout): the loaded falls at the stops 179 ->
+    # 88; its line had the pose switch as the robot's own until this entry. Not the heavy class's fade
+    # (U_STAND_POSE_EVEN=1,<heavy>; G11: out).
   },
   "wheeled": {
     "U_STAIR_APPROACH": "0",          # the stairs speed cost holds on a climbing column's level ground too (the Go2W
@@ -76,12 +91,10 @@ KIND: dict[str, dict[str, str]] = {
 }
 
 # one robot's own, each with its reason
-ROBOT: dict[str, dict[str, str]] = {
-  # the standing pose cost off the uneven ground: the heavy legged robot's loaded falls at the stops halve (179 -> 88,
-  # go2-home's mAJ). Not for the others: the Go2's loaded falls tripled with it (62 against 20, s50 / s51), the
-  # Go2W gained nothing (s38).
-  "As2": {"U_STAND_POSE_EVEN": "1"},
-}
+# (None now: the As2's U_STAND_POSE_EVEN=1 is the legged kind's since 2026-11-14. The Go2's loaded falls tripled
+# with that switch alone and on throughout (62 against 20, s50 / s51): with the overspeed cost and along the stairs
+# quality they do not. The Go2W gained nothing from it (s38): not for the wheeled.)
+ROBOT: dict[str, dict[str, str]] = {}
 
 # read by the runner when it starts (runner._entropy_by_q, _std_cap_by_q), not by the builders
 RUNNER = ("U_ENTROPY_Q", "U_STD_CAP")

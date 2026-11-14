@@ -12,7 +12,9 @@ constraints.descent_overspeed, teacher_env._add_descent_speed).
   side      a sideways command, 1.35x ahead                               no cost, not read
   slope     pitched 30 deg down, 0.675 m/s along the slope                the ground covered counts: 1.17x, 0.07
 (B) On the built configurations (no GPU), per robot:
-  (1) the plain build: no u_descent_speed term, no descent_over item (no recipe carries the switch);
+  (1) the build with the switch empty (off, the recipe's entry too): no u_descent_speed term, no descent_over item;
+      the legged kind's recipe carries the switch since 2026-11-14 (10,1.1: its plain build has the term at -10),
+      the wheeled's does not;
   (2) with U_DESCENT_SPEED=8: the term at the weight -8, over 1.1x, on stair_speed_deficit's command and scan; one
       item descent_over, logged only (no terms, not enforced), its metric in constraints.CUSTOM;
       U_DESCENT_SPEED=5,1.2 read as written;
@@ -94,6 +96,7 @@ def main() -> int:
   os.environ["U_ROBOTS"] = ",".join(names)
   os.environ.pop("UNIFIED_TASKS", None)
   os.environ.pop("U_DESCENT_SPEED", None)
+  os.environ["U_STOP_HOLD_Q"] = ""   # (the legged recipe's ramp along the stairs quality: stop_hold_q_test.py's)
   sys.path.insert(0, os.getcwd())
   from src.tasks.unified import constraints as ucons
   from src.tasks.unified import recipe as urecipe
@@ -128,10 +131,18 @@ def main() -> int:
   for n in names:
     robot = ROBOTS[n]
     print(f"{n}:")
-    check("U_DESCENT_SPEED" not in urecipe.recipe(robot), "no recipe carries the switch")
-    cfg0, items0 = build(robot)
+    table = urecipe.recipe(robot).get("U_DESCENT_SPEED")
+    if robot.kind == "legged":
+      cfgt, itemst = build(robot)
+      rt = cfgt.rewards.get(term)
+      check(table == "10,1.1" and rt is not None and rt.weight == -10.0 and rt.params["over"] == 1.1
+            and len([i for i in itemst if i["name"] == "descent_over"]) == 1,
+            "the legged kind's recipe carries the switch (10,1.1): the plain build has the term at -10, over 1.1x")
+    else:
+      check(table is None, "the wheeled kind's recipe does not carry the switch")
+    cfg0, items0 = with_switch("", robot)
     check(term not in cfg0.rewards and not [i for i in items0 if i["name"] == "descent_over"],
-          "the plain build: no item, no term")
+          "the switch empty (off, the recipe's entry too): no item, no term")
     cfg1, items1 = with_switch("8", robot)
     new = [i for i in items1 if i["name"] == "descent_over"]
     check(len(new) == 1 and not new[0]["enforce"] and not new[0]["terms"] and new[0]["metric"] in ucons.CUSTOM

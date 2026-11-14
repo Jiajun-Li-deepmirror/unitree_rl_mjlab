@@ -35,15 +35,17 @@ from contextlib import contextmanager
 # the probes' command lines (S/launch/launch_branch.sh's arguments, the runs' timeline env_vars) -- NOT derived from
 # recipe.py: the test compares the two. Since 2026-11-13 (the Go2's formal run from zero under the probes' line ended
 # its episodes by body contacts) the legged lines carry U_ALIVE=4 and the Go2's U_STAIRS_P=0.0,0.15 as well: the line
-# a probe from zero is started with
+# a probe from zero is started with. Since 2026-11-14 the legged lines carry the stop-hold part too (the Go2's G13
+# arms' and go2-home's ZR's U_STAND_POSE_EVEN=1 U_DESCENT_SPEED=10,1.1 U_STOP_HOLD_Q=1)
 _PK = "U_Q_SCALE_MAX=1 U_TERMINATED_Q=10 U_ENTROPY_Q=0.002 U_METER_EMA=2400 U_FLAT_ONLY=1 U_PAYLOAD_STICKY=0.05"
 _LEGGED = (f"{_PK} U_STOP_FEET_DIR=3 U_STAIR_SPEED_H=1 U_HEADING_OBS=1 U_HEADING_LAG=2 U_FLAT_DIAG_AXIS=0.2 "
-           "U_FLAT_SPEED_W=4 U_STAIR_PARK=10 U_BODY_CLEAR=50 U_COM_SUPPORT=15 U_ALIVE=4")
+           "U_FLAT_SPEED_W=4 U_STAIR_PARK=10 U_BODY_CLEAR=50 U_COM_SUPPORT=15 U_ALIVE=4 "
+           "U_STAND_POSE_EVEN=1 U_DESCENT_SPEED=10,1.1 U_STOP_HOLD_Q=1")
 PROBE_LINES = {
   "Go2": f"{_LEGGED} U_STAIRS_P=0.0,0.15",
   "Go2W": f"{_PK} U_STAIR_SPEED_H=1 U_HEADING_OBS=1 U_HEADING_LAG=2 U_STAIR_APPROACH=0 U_BODY_CLEAR=50,0.06,0.10 "
           "U_STAIRS_P=0.0,0.15 U_STOP_PLACE=12",
-  "As2": f"{_LEGGED} U_STAND_POSE_EVEN=1 U_STAIRS_P=0.0,0.15",   # go2-home's mAM timeline env_vars (11-13 15:35)
+  "As2": f"{_LEGGED} U_STAIRS_P=0.0,0.15",   # go2-home's mAM line (11-13 15:35) + the legged kind's stop-hold part
 }
 
 

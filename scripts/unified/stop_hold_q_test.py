@@ -12,7 +12,8 @@ by_q; teacher_env._stop_hold_q).
     way in between; nothing on even ground at any q; without the field the same at every q (as before).
 (D) On the built configurations (no GPU), per robot: with U_STAND_POSE_EVEN=1,0 and U_DESCENT_SPEED=10,1.1,0,
     U_STOP_HOLD_Q=1 adds zero_by_q to u_flat_only and by_q to the overspeed cost and changes nothing else; =0 and
-    unset add no key; the switch without either of its two parts, or with another value, stops the build.
+    empty add no key (the legged kind's recipe has the switch since 2026-11-14: unset is the table's 1 there); the
+    switch without either of its two parts, or with another value, stops the build.
 
 Local: PYTHONPATH=$PWD python scripts/unified/stop_hold_q_test.py [--robots Go2,Go2W,As2]"""
 
@@ -174,10 +175,10 @@ def main() -> int:
   for n in names:
     robot = ROBOTS[n]
     print(f"{n}:")
-    plain = build(robot, **parts)
+    plain = build(robot, U_STOP_HOLD_Q="", **parts)   # (empty: the recipe table's entry off -- the legged kind has it)
     pose = "standing_pose_load" in plain.rewards
     check("zero_by_q" not in plain.rewards["u_flat_only"].params and "by_q" not in plain.rewards[term].params,
-          "without the switch: no zero_by_q, no by_q (as before)")
+          "without the switch (set empty: off, the recipe table's entry too): no zero_by_q, no by_q (as before)")
     off = build(robot, U_STOP_HOLD_Q="0", **parts)
     check(rest(off, {}) == rest(plain, {}), "U_STOP_HOLD_Q=0: the same build")
     on = build(robot, U_STOP_HOLD_Q="1", **parts)
