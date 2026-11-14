@@ -59,6 +59,10 @@ runs = int(sys.argv[3]) if len(sys.argv) > 3 else 4
 SEED0 = int(os.environ.get("SEED0", "0") or 0)
 WHEELED = get_robot(robot).wheeled
 ONLY = os.environ.get("ONLY")  # comma list of scenario names
+# comma list of scenario names left out (2026-11-15: tn_gate_unified.sh's MAP3_TYPICAL judges the map3 routes and the
+# others under different payloads). An unknown name in either list stops the run: a stale name would change the
+# judged set without a word.
+SKIP = os.environ.get("SKIP")
 
 # (name, scene, spawn (x, y, z hint), yaw, (seconds, vx), raster window x0 x1 y0 y1 zlo zhi res, climbing up?)
 SCEN = [
@@ -69,8 +73,15 @@ SCEN = [
   ("top_14_down", "pyramid", SCENES["pyramid"].spawns["top_14"][0], 0.0, (9.0, 0.4), (6.0, 18.0, 6.0, 18.0, -3.0, 3.0, 0.02), False),
   ("top_18n_down", "pyramid", SCENES["pyramid"].spawns["top_18_narrow"][0], 0.0, (9.0, 0.4), (22.0, 34.0, 6.0, 18.0, -3.0, 3.0, 0.02), False),
 ]
+_pick = {k: [n for n in (v or "").split(",") if n] for k, v in (("ONLY", ONLY), ("SKIP", SKIP))}
+for _k, _names in _pick.items():
+  _unknown = sorted(set(_names) - {s[0] for s in SCEN})
+  assert not _unknown, f"accept_stairs.py: {_k} names no scenario: {_unknown} (known: {[s[0] for s in SCEN]})"
 if ONLY:
-  SCEN = [s for s in SCEN if s[0] in ONLY.split(",")]
+  SCEN = [s for s in SCEN if s[0] in _pick["ONLY"]]
+if SKIP:
+  SCEN = [s for s in SCEN if s[0] not in _pick["SKIP"]]
+assert SCEN, "accept_stairs.py: ONLY / SKIP leave no scenario"
 _models = {}
 
 
