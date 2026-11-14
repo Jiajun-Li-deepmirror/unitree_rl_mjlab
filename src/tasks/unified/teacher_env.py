@@ -705,8 +705,9 @@ COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stair
 
 
 def _add_com_support(cfg: ManagerBasedRlEnvCfg) -> None:
-  """U_COM_SUPPORT=<w>[,<moving>] (a probe's switch, _probe_switches): the cost constraints.com_support at the weight
-  -w, under a command at <moving> times it (0 without it: the stops alone). Before _rewards / quality_diff: a cost
+  """U_COM_SUPPORT=<w>[,<moving>[,<moving blind>]] (a probe's switch, _probe_switches): the cost
+  constraints.com_support at the weight -w, under a command at <moving> times it (0 without it: the stops alone), for
+  the robots walking with the scan masked at <moving blind> times it (without the field: <moving>). Before _rewards / quality_diff: a cost
   the M keys do not have, so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint
   scales it). Every kind of robot: the feet's sites carry the same names on the wheeled (the wheels' centres)."""
   v = os.environ.get("U_COM_SUPPORT")
@@ -714,14 +715,17 @@ def _add_com_support(cfg: ManagerBasedRlEnvCfg) -> None:
     return
   from src.tasks.velocity.blind_env_cfg import FOOT_SITE_NAMES
 
-  w, _, moving = v.partition(",")
-  w, moving = float(w), float(moving or 0.0)
+  f = v.split(",")
+  assert 1 <= len(f) <= 3, f"U_COM_SUPPORT {v}: <weight>[,<the share under a command>[,<that share with the scan masked>]]"
+  w, moving = float(f[0]), float(f[1] if len(f) > 1 and f[1] else 0.0)
   assert 0.0 < w <= 30.0 and 0.0 <= moving <= 1.0, f"U_COM_SUPPORT {v}: <weight 0-30>[,<the share under a command 0-1>]"
   src = cfg.rewards["stair_speed_deficit"].params
-  cfg.rewards[COM_TERM] = RewardTermCfg(
-    func=ucons.com_support, weight=-w,
-    params={"asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES), "sensor_name": src["sensor_name"],
-            "command_name": src["command_name"], "moving": moving})
+  params = {"asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES), "sensor_name": src["sensor_name"],
+            "command_name": src["command_name"], "moving": moving}
+  if len(f) > 2:   # (no key without the field: the builds before it stay as they were)
+    params["moving_blind"] = float(f[2])
+    assert 0.0 <= params["moving_blind"] <= 1.0, f"U_COM_SUPPORT {v}: the share with the scan masked is 0-1"
+  cfg.rewards[COM_TERM] = RewardTermCfg(func=ucons.com_support, weight=-w, params=params)
 
 
 _M_WEIGHT_NOTED: set[tuple[str, str]] = set()   # (one line per robot and term, whatever the number of its tasks)
@@ -1253,7 +1257,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          pays 3.6 a second over descending) is in the cost's docstring.
   The falls with payload (2026-11-13: forwards at and after the stops on the descents, on the Go2, the Go2W and the
   As2 alike -- tier 2 with the acceptance's payload; read in _add_com_support and constraint_items):
-    U_COM_SUPPORT=<w>[,<moving>]   the cost constraints.com_support at the weight -<w> (0-30): over uneven ground,
+    U_COM_SUPPORT=<w>[,<moving>[,<moving blind>]]   the cost constraints.com_support at the weight -<w> (0-30;
+                         <moving blind>: the share under a command of the robots whose scan is masked this
+                         episode, <moving> without the field -- uprobe_s137: with the scan the 15-18 cm falls at
+                         8 kg 52 -> 10 of 1152, without it 46 -> 95): over uneven ground,
                          the whole robot's centre of mass (the payload with it) off the centre of its four feet /
                          wheels over the ground -- nothing within 0.12 of the support's size (Go2: 3 cm), 1 from 0.92
                          of it on (23 cm); in full at the zero command, <moving> times it (0) under a command. On top of
