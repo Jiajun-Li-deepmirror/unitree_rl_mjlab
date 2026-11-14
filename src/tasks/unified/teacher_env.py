@@ -353,6 +353,24 @@ def _flat_script_items(items: list[dict], c) -> list[dict]:
       stat="p90", max_scale=2.0),
   ]
   assert tuple(x["name"] for x in added) == FLAT_NEW
+  # -- the wheeled-flat probes (_probe_switches)
+  v = os.environ.get("U_FLAT_WHEELS")
+  if v and "wheels_down" in old:
+    # every wheel down on the straight commands as the acceptance judges it: per command bin, 98 % (gait_fb.py). Its
+    # multiplier starts at the floor <v> and never goes below it, so wheel_air_drivable keeps <v> times its P weight
+    # at the least on even ground (wheels_down's sat at 0.5; several items on one cost: the strongest)
+    x = float(v)
+    assert 1.0 <= x <= 6.0, f"U_FLAT_WHEELS {v}: the wheels_fast item's floor, 1-6"
+    added.append({**c("wheels_fast", "flat:wheels", "min", 0.98, 0.85, act, ["wheel_air_drivable"], {"worst": "min"},
+                      min_scale=x, max_scale=max(3.0, x)), "init_scale": x})
+  v = os.environ.get("U_LINE_SLOW")
+  if v:
+    on, *floor = v.split(",")
+    assert on == "1" and len(floor) <= 1, f"U_LINE_SLOW {v}: 1 or 1,<the side_drift item's floor>"
+    new["side_drift"]["params"] = {"bins": ["side", "side_slow"]}   # (the worst of the two bins)
+    if floor:
+      assert 0.5 <= float(floor[0]) <= 3.0, f"U_LINE_SLOW {v}: a floor of 0.5-3"
+      new["side_drift"]["min_scale"] = float(floor[0])
   logged = [{**{k: v for k, v in old[src].items() if k != "tight"}, "name": name, "target": None, "terms": [],
              "enforce": False}
             for name, src in (("clock_side", "clock"), ("side_drift_p90", "side_drift"),
@@ -1158,6 +1176,24 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
                          (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
     U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2);
+    U_FLAT_WHEELS=<x>    (wheeled) the flat scripts read the share of a straight command's last 4 s with all four
+                         wheels down ("wheels", bins fwd / fast / back) and a new item, wheels_fast, holds the
+                         worst bin at the acceptance's 98 % with wheel_air_drivable: its multiplier starts at <x>
+                         (1-6) and never goes below it (the shortfall of 0.1 alone moves a multiplier by 1.2x in
+                         600 iterations).
+                         2026-11-14, tier 2 of the Go2W formal seed 0 (170dd4c) 3600 / 4200: at 1.5 m/s the wheels
+                         are down 84-90 % of the time and 8-11 of 96 robots fall (bar 98 %, no fall) while the
+                         training's wheels_down item -- every straight command from 0.5 m/s pooled, target 0.75 --
+                         reads 0.78-0.87, "met", with its multiplier at the floor 0.5;
+    U_LINE_SLOW=1[,<x>]  the 10 s lines of the slow strafes (0, +-0.3) in a bin of their own (flat.flat_line_bin
+                         "side_slow"); side_drift reads the worse of the two sideways bins, its multiplier not
+                         below <x> (0.5-3; without it the item's own floor 0.5). The same gates: (0,
+                         +-0.3) 5.6-6.4 % of the distance (bar 5 %; a backward bias of 1 cm/s) while the pooled
+                         bin read 2-3 % and the side_drift cost relaxed to 0.62x;
+    U_CLOCK_SPLIT=1      the gait samples of the strafes from 0.45 m/s and of the gentle arcs from 0.75 m/s in
+                         bins of their own (flat.flat_gait_bin "side_fast", "arc_fast"); the clock item reads the
+                         worst bin as before. The same gates: (0, +-0.6) 63-72 % in step and the 1.0 m/s arcs
+                         61-67 % blind (bar 80 %) while their pooled bins read 0.79-0.92 and the item was "met";
     U_DR_LIGHT=1         the training task without the joint friction / damping / armature draws and without the
                          stick-slip (unified_teacher_env_cfg; the checks' -Flat / -Stairs tasks and the students'
                          tasks keep them, whatever the environment says). 2026-11-13: the delivered go2_blind_v4
@@ -1280,6 +1316,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     v = os.environ.get("U_FLAT_AXIS")
     if v and cfg.events["reset_base"].func is uflat.flat_reset_yaw:
       cfg.events["reset_base"].params["flat_share"] = float(v)
+    if any(c["name"] == "wheels_fast" for c in items):   # (U_FLAT_WHEELS, _flat_script_items)
+      cfg.rewards["u_flat"].params["wheels"] = "feet_ground_contact"   # (mdp.constraints' wheels_down's sensor)
+    if os.environ.get("U_LINE_SLOW"):
+      cfg.rewards["u_flat"].params["line_slow"] = True
+    if os.environ.get("U_CLOCK_SPLIT") == "1":
+      cfg.rewards["u_flat"].params["gait_split"] = True
   v = os.environ.get("U_FLAT_NEW_MAX")
   if v:
     for c in items:
