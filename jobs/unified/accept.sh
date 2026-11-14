@@ -217,7 +217,10 @@ fg_failed() {   # FIRST_LINE LABELS -> the judge's items of these labels that di
   [[ "$1" == *": "* ]] || { echo ""; return; }   # (PASS: nothing listed)
   while IFS= read -r it; do
     for l in $labels; do
-      if [[ "$it" == "$l："* ]] && [[ "$it" != *未测* ]] && [[ "$it" != *评测中* ]]; then out="$out${out:+；}$it"; fi
+      # (also the typical payload's items, accept_judge.py typical(): "常用负载 <label>：..." -- judged on the unloaded bars)
+      if [[ "$it" == "$l："* || "$it" == "常用负载 $l："* ]] && [[ "$it" != *未测* ]] && [[ "$it" != *评测中* ]]; then
+        out="$out${out:+；}$it"
+      fi
     done
   done <<< "${line//；/$'\n'}"
   echo "$out"
