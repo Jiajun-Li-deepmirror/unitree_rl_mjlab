@@ -235,6 +235,50 @@ def stairs_heading(path: str) -> tuple[float | None, float | None]:
   return (None, None) if m is None else (float(m.group(1)), float(m.group(2)))
 
 
+# The full payload's stairs falls per robot (2026-11-14, the user: "约 12:30 G11 的分档数据出来，或者到约 6000 步还卡在这一项
+# 时，再改用方案二"; go2-depth: only Go2 switches, Go2W stays): a robot listed here has its full-load falls judged on the
+# 5-15 cm bands only -- 15-18 cm (above Go2's rated ~16 cm step) measured and reported, not a fail; unloaded and the
+# typical payload are judged on every band as before. Every robot not listed: every band (the user's option 1, the
+# default). The teacher's stairs gate (stairs_gate.py) and the students' acceptance (judge below) read the same set.
+# U_JUDGE_LOADED_TOP_REPORTED="Go2,..." adds robots for a test run.
+LOADED_TOP_REPORTED: frozenset[str] = frozenset()
+LOADED_TOP_BAND = "15-18cm"
+
+
+def loaded_top_reported(r: str) -> bool:
+  return r in LOADED_TOP_REPORTED or r in {x for x in os.environ.get("U_JUDGE_LOADED_TOP_REPORTED", "").split(",") if x}
+
+
+def band_fall_counts(path: str) -> dict[tuple[str, str], int] | None:
+  """eval_stairs.py's falls (traverse + stop) per (band, direction), from its table's whole percents and its robots
+  per (band, direction): exact while those robots are at most 100 (one robot is then over 1 %); None otherwise, or
+  when the sum differs from the exact "falls:" count."""
+  t = txt(path)
+  m = re.search(r"(\d+) robots per \(band, direction\)", t)
+  rows = re.findall(r"^\s*([\d-]+cm)\s+(up|down)\s*\|\s*\d+%\s+(\d+)%.*\|\s*\d+%\s+(\d+)%", t, re.M)
+  if m is None or not rows or int(m.group(1)) > 100:
+    return None
+  n = int(m.group(1))
+  out = {(b, d): round(int(a) * n / 100) + round(int(c) * n / 100) for b, d, a, c in rows}
+  total = stairs_fall_counts(path)
+  if total is not None and sum(out.values()) != total:
+    return None
+  return out
+
+
+def loaded_falls(r: str, path: str) -> tuple[int | None, int | None]:
+  """The full payload's stairs falls as judged, and those on the top band only reported (None: none reported): every
+  band, unless the robot is in LOADED_TOP_REPORTED and the per-band counts can be read (else every band, as before)."""
+  total = stairs_falls(path)
+  if total is None or not loaded_top_reported(r):
+    return total, None
+  bands = band_fall_counts(path)
+  if bands is None:
+    return total, None
+  top = sum(v for (b, _d), v in bands.items() if b == LOADED_TOP_BAND)
+  return total - top, top
+
+
 def stairs_falls(path: str) -> int | None:
   """Any fall in eval_stairs (traverse or stop): the exact count of its "falls:" line, else (a file from before it)
   the table's whole percents of each row summed -- which read one or two robots of a row as 0%."""
@@ -434,10 +478,11 @@ def judge(argv: list[str]) -> int:
     bad.append("空载楼梯摔倒：未测")
   elif uf > 0:
     bad.append(f"空载楼梯：摔倒 {uf}")
-  # loaded stairs: 0 falls
-  lf = stairs_falls(f"{prefix}_stairs_pay.txt")
+  # loaded stairs: 0 falls (a robot in LOADED_TOP_REPORTED: on 5-15 cm; its 15-18 cm falls reported)
+  lf, ltop = loaded_falls(r, f"{prefix}_stairs_pay.txt")
   detail.append(f"负载楼梯：摔倒 {lf}" + ("（精确计数）" if stairs_fall_counts(f"{prefix}_stairs_pay.txt") is not None
-                                          else "（各档百分比之和）"))
+                                          else "（各档百分比之和）")
+                + (f"（只判 5–15 cm；15–18 cm 满载摔倒 {ltop}，只报告）" if ltop is not None else ""))
   lr = stairs_reach(f"{prefix}_stairs_pay.txt")
   if lr:
     detail.append(f"负载楼梯 各档（只出读数；停住不判）：{lr}")
