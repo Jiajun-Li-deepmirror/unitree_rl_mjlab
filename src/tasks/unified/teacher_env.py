@@ -648,24 +648,41 @@ def _add_stop_place(cfg: ManagerBasedRlEnvCfg) -> None:
     "command_threshold": ref.get("command_threshold", 0.1), "free": free, "full": full, "heavy": heavy})
 
 
+def _stand_pose_even() -> float | None:
+  """U_STAND_POSE_EVEN=1[,<heavy>]: None when off (unset, empty, 0), else the heavy class's share of it (1 without
+  the second field: every robot alike; constraints.flat_only's zero_heavy)."""
+  v = os.environ.get("U_STAND_POSE_EVEN")
+  if not v or v == "0":
+    return None
+  f = v.split(",")
+  assert f[0] == "1" and len(f) <= 2, f"U_STAND_POSE_EVEN {v}: 1[,<the heavy class's share 0-1>]"
+  heavy = float(f[1]) if len(f) > 1 else 1.0
+  assert 0.0 <= heavy <= 1.0, f"U_STAND_POSE_EVEN {v}: the heavy class's share, 0-1"
+  return heavy
+
+
 DESCENT_SPEED_TERM = "u_descent_speed"   # ("u_" prefix, as STOP_PLACE_TERM: at its weight from the first iteration)
 
 
 def _add_descent_speed(cfg: ManagerBasedRlEnvCfg) -> None:
-  """U_DESCENT_SPEED=<w>[,<over>] (a probe's switch, _probe_switches): the cost constraints.descent_overspeed at the
-  weight -w, on the speed over the ground above <over> x the command (1.1: the stairs speed cost's upper side) on
-  the descents. At its weight from the first iteration (no constraint scales it, the stairs quality does not bring
-  it in). The command and the scan are stair_speed_deficit's (in every robot's environment)."""
+  """U_DESCENT_SPEED=<w>[,<over>[,<heavy>]] (a probe's switch, _probe_switches): the cost
+  constraints.descent_overspeed at the weight -w, on the speed over the ground above <over> x the command (1.1: the
+  stairs speed cost's upper side) on the descents; the heavy class at <heavy> times it (1: every payload alike;
+  constraints.payload_fade). At its weight from the first iteration (no constraint scales it, the stairs quality
+  does not bring it in). The command and the scan are stair_speed_deficit's (in every robot's environment)."""
   v = os.environ.get("U_DESCENT_SPEED")
   if not v:
     return
   f = [float(x) for x in v.split(",")]
-  assert 1 <= len(f) <= 2 and 0.0 < f[0] <= 20.0, f"U_DESCENT_SPEED {v}: <weight 0-20>[,<over 1.0-1.3>]"
+  assert 1 <= len(f) <= 3 and 0.0 < f[0] <= 20.0, f"U_DESCENT_SPEED {v}: <weight 0-20>[,<over 1.0-1.3>[,<heavy 0-1>]]"
   over = f[1] if len(f) > 1 else 1.1
   assert 1.0 <= over <= 1.3, f"U_DESCENT_SPEED {v}: the free speed, 1.0-1.3 x the command"
   ref = cfg.rewards["stair_speed_deficit"].params
-  cfg.rewards[DESCENT_SPEED_TERM] = RewardTermCfg(func=ucons.descent_overspeed, weight=-f[0], params={
-    "command_name": ref["command_name"], "sensor_name": ref["sensor_name"], "over": over})
+  params = {"command_name": ref["command_name"], "sensor_name": ref["sensor_name"], "over": over}
+  if len(f) > 2:   # (the key only then: the two-field switch's build is as it was)
+    assert 0.0 <= f[2] <= 1.0, f"U_DESCENT_SPEED {v}: the heavy class's share, 0-1"
+    params["heavy"] = f[2]
+  cfg.rewards[DESCENT_SPEED_TERM] = RewardTermCfg(func=ucons.descent_overspeed, weight=-f[0], params=params)
 
 
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
@@ -860,15 +877,18 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     heavy_terms = sorted({t for _, _, _, ts in ucons.HEAVY_ITEMS.values() for t in ts if t in rewards})
     sensor = rewards["straight_drift"].params.get("uneven_sensor_name") if "straight_drift" in rewards else None
     params = {"sensor_name": sensor or "terrain_scan", "heavy_terms": heavy_terms}
-    if os.environ.get("U_STAND_POSE_EVEN") == "1" and "standing_pose_load" in rewards:   # a probe's switch
+    pose_even = _stand_pose_even()   # a probe's switch
+    if pose_even is not None and "standing_pose_load" in rewards:
       params["zero_terms"] = ("standing_pose_load",)
+      if pose_even < 1.0:   # (the key only then: the plain switch's build is as it was)
+        params["zero_heavy"] = pose_even
     if os.environ.get("U_FLAT_ONLY_KEEP"):   # a probe's switch (_probe_switches)
       keep = tuple(t for t in os.environ["U_FLAT_ONLY_KEEP"].split(",") if t)
       assert keep and all(t in rewards for t in keep) and not set(keep) & set(params.get("zero_terms", ())), \
         f"U_FLAT_ONLY_KEEP {keep}: reward terms of this build (and none of U_STAND_POSE_EVEN's)"
       params["keep_terms"] = keep
     rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params=params)
-  assert os.environ.get("U_STAND_POSE_EVEN") != "1" or os.environ.get("U_FLAT_ONLY") == "1", \
+  assert _stand_pose_even() is None or os.environ.get("U_FLAT_ONLY") == "1", \
     "U_STAND_POSE_EVEN goes with U_FLAT_ONLY=1 (its term takes the cost off the uneven ground)"
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
@@ -1055,9 +1075,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          formal teachers: after the zero command on a climbing 12-18 cm flight the robots rolled
                          back to the start platform (0 of 72 held on 15-18 cm at 4400), which no cost charged and
                          tier 2's stop run counted "ok" (_add_stop_place, constraints.stop_place).
-    U_DESCENT_SPEED=<w>[,<over>]   going down a flight faster than told costs: constraints.descent_overspeed at
-                         the weight -w on the speed over the ground above <over> x the command (1.1), over the
-                         robots the descent item reads. With it one logged item descent_over: the share of them
+    U_DESCENT_SPEED=<w>[,<over>[,<heavy>]]   going down a flight faster than told costs:
+                         constraints.descent_overspeed at the weight -w on the speed over the ground above <over> x
+                         the command (1.1), over the robots the descent item reads; the heavy class at <heavy>
+                         times it (1). With it one logged item descent_over: the share of them
                          above 1.2x. 2026-11-14, the Go2's formal teacher (84e7965, model_5200): 1.35x the
                          command down the 15-18 cm flights, and told to stop there it was 72 cm further 2 s later
                          (stayed within 0.50 m: 30 %; the stop-place cost alone did not hold it, 3 / 8 / 20).
@@ -1119,7 +1140,9 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          joints off the default pose, times 1 + payload / 8 kg) acts on even ground only
                          (constraints.flat_only's zero_terms, read in _rewards) -- on a flight it was the largest
                          cost of a loaded robot's stop (4.2-5.4 a second), and more than half of the full payload's
-                         falls in tier 2 were stops on a descent.
+                         falls in tier 2 were stops on a descent. U_STAND_POSE_EVEN=1,<heavy>: the heavy class at
+                         <heavy> times that removal, fading in from the common payload (constraints.payload_fade:
+                         the full-payload robots that held a stop on a 15-18 cm descent toppled, 2026-11-14).
   The heading on even ground (2026-11-13: tier 2 on the Go2 candidate, s34 model_6097 -- 12-17 deg off 10 s into a
   line to the right, line drift 15-19% against 5%, the compound commands' yaw at 46-86%; read in _rewards):
     U_HEADING_OBS=1      the line costs (straight_drift, side_drift) hold the heading the actor is shown -- the

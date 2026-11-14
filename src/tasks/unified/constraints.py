@@ -766,10 +766,14 @@ def _descent_over(env: ManagerBasedRlEnv, over: float = 1.2, **params) -> tuple[
   return (ratio > over).float(), mask
 
 
-def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, over: float = 1.1) -> torch.Tensor:
-  """Reward term (U_DESCENT_SPEED=<w>[,<over>], 2026-11-14): going down a flight faster than told. Per robot the
-  descent item reads (_stair_speed_h: pitched nose down on uneven ground under a forward command): how far its speed
-  over the ground along x exceeds `over` x the command, as a fraction of the command, at most 1. Every payload.
+def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, over: float = 1.1,
+                      heavy: float = 1.0) -> torch.Tensor:
+  """Reward term (U_DESCENT_SPEED=<w>[,<over>[,<heavy>]], 2026-11-14): going down a flight faster than told. Per
+  robot the descent item reads (_stair_speed_h: pitched nose down on uneven ground under a forward command): how far
+  its speed over the ground along x exceeds `over` x the command, as a fraction of the command, at most 1. Every
+  payload alike at `heavy` 1 (the default); below it the cost fades from the common payload to `heavy` times it in
+  the heavy class (payload_fade: with the cost on every payload the loaded falls of tier 2 went 9 -> 27 on seed 1,
+  s89 -> s93, and to 109 on seed 0, s92).
 
   The Go2's formal teacher of 84e7965 (model_5200, tier 2's traverse at 0.5 m/s): 0.99 / 1.06 / 1.10 / 1.35x the
   command down the 5-8 / 8-12 / 12-15 / 15-18 cm flights -- and told to stop on a 15-18 cm descent it was 72 cm
@@ -779,7 +783,7 @@ def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: st
   legged weight -2, scaled by the descent item -- an item that asks the mean ratio to be at least 0.9, which a robot
   too fast meets: at 1.35x that side cost 0.5 per second at most."""
   ratio, mask = _stair_speed_h(env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
-  return mask.float() * (ratio - over).clamp(min=0.0, max=1.0)
+  return mask.float() * (ratio - over).clamp(min=0.0, max=1.0) * payload_fade(env, heavy)
 
 
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
@@ -946,6 +950,26 @@ def payload_mask(env: ManagerBasedRlEnv, lo: float | None = None, hi: float | No
   return m
 
 
+def payload_fade(env: ManagerBasedRlEnv, heavy: float) -> torch.Tensor | float:
+  """Per robot the share of a cost (or of a cost's removal) by its payload: in full up to the common payload
+  (COMMON_FRAC of the limit), `heavy` times it from the heavy class (HEAVY_FRAC) up, linear in between -- the rule of
+  stairs_park, stop_place and the approach cost (each has it written out). 1.0 at `heavy` 1 and before the first
+  payload draw.
+
+  Why a recipe part fades for the heavy class (2026-11-14, the Go2's tier-2 gates of G7-G9, formal 84e7965
+  checkpoints + 700 iterations): every arm that made the robots hold their place after a stop on a 15-18 cm descent
+  (the standing pose cost off the flights, the overspeed cost) made the robots with the full payload hold it too --
+  and those toppled nose down 0-4 s after the stop (four feet at the stop 0.44-0.49): loaded falls 27 / 34 / 41 /
+  66 / 109 of 576 against the controls' 6-8 (seed 1) and 25-41 (seed 0); the gate asks at most 6. The acceptance
+  judges the stop's place and feet up to the common payload and the full payload on its falls alone, and the user
+  (2026-11-12): with payload the robot must never fall, what is physically out of reach with it is not required."""
+  kg = getattr(env, "payload_kg", None)
+  if heavy >= 1.0 or kg is None:
+    return 1.0
+  frac = (kg.float() / payload_limit(env) - COMMON_FRAC) / (HEAVY_FRAC - COMMON_FRAC)
+  return 1.0 - (1.0 - heavy) * frac.clamp(0.0, 1.0)
+
+
 def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
   """METRICS[metric] over the robots with a payload in [lo, hi] x the limit."""
   def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1087,7 +1111,11 @@ class flat_only:
   iterations) -- where the probe lineage's teachers read 97-100% from uprobe_s22's model_4498 on. That lineage
   learned its stop before this term existed (it came in at 4498): until then the creep item's multiplier (3x) scaled
   standing_position_hold and standing_speed on the flights too; a teacher from zero under this term has them at 1x
-  there, and no training reading counts the creep of a stop on a flight."""
+  there, and no training reading counts the creep of a stop on a flight.
+  `zero_heavy` (U_STAND_POSE_EVEN=1,<heavy>, 2026-11-14): the heavy class's share of the zero_terms' removal -- in
+  full up to the common payload, `zero_heavy` times it from the heavy class up, linear in between (payload_fade,
+  with the reason); the share that stays is the term at its calm weight, as without the switch. 1: every robot alike.
+  """
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     pass
@@ -1097,7 +1125,7 @@ class flat_only:
 
   def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, heavy_terms: list[str],
                min_frac: float = HEAVY_FRAC, zero_terms: tuple[str, ...] = (),
-               keep_terms: tuple[str, ...] = ()) -> torch.Tensor:
+               keep_terms: tuple[str, ...] = (), zero_heavy: float = 1.0) -> torch.Tensor:
     from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
     out = torch.zeros(env.num_envs, device=env.device)
     calm = getattr(getattr(env, "u_constraints", None), "calm", {})
@@ -1105,19 +1133,21 @@ class flat_only:
       return out
     uneven = uneven_terrain_mask(env, sensor_name)
     heavy = payload_mask(env, lo=min_frac)
-    for t in zero_terms:   # off the uneven ground, for every robot
+    gone = payload_fade(env, zero_heavy)   # the zero_terms' removal: 1 for every robot at zero_heavy 1
+    for t in zero_terms:   # off the uneven ground
       r = _raw(env, t)
       if r is not None:
-        out -= uneven.float() * r[0] * r[1]
+        out -= uneven.float() * gone * r[0] * r[1]
     for t, w_calm in calm.items():
-      if t in zero_terms or t in keep_terms:
+      if t in keep_terms or (t in zero_terms and zero_heavy >= 1.0):
         continue
       r = _raw(env, t)
       if r is None:
         continue
       raw, w = r
       on = uneven & ~heavy if heavy is not None and t in heavy_terms else uneven
-      out += on.float() * raw * (w_calm - w)
+      rest = 1.0 - gone if t in zero_terms else 1.0   # what the removal leaves is a flat item's term as the others
+      out += on.float() * rest * raw * (w_calm - w)
     return out
 
 
