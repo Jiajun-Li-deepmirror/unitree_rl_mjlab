@@ -103,6 +103,12 @@ def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
 # Keys left out of the base: the old constraint sets (the unified teacher has its own, constraints.py) and the
 # lower PPO entropy (the teacher trains from zero at the normal one).
 DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lowent")
+# U_REST_OLD=1 (a probe's switch, off unless set; teacher_env._probe_switches' docstring): a wheeled robot's stand as
+# the delivered Go2W's -- without "restlock" (pose and stand_still_even take the pose at the hold's lock as their
+# target) and "standtgt" (the leg-target hold). U_REST_OLD=even: that form on even ground only, the two keys' form
+# on uneven ground (rest.py; the keys stay in the build). U_REST_OLD=tilt[,<rad>]: as even, the ground told by the
+# base's tilt (rest.TILT) instead of the scan.
+REST_OLD_KEYS = ("restlock", "standtgt")
 
 
 def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys: str = "P") -> ManagerBasedRlEnvCfg:
@@ -113,7 +119,11 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
   from src.tasks.velocity.depth_env_cfg import apply_depth_teacher
 
   recipe = unified_recipe(robot)
-  keys = [k for k in recipe[keys] if k not in DROPPED_KEYS]
+  v = os.environ.get("U_REST_OLD")
+  tilt = _rest_tilt(v)
+  assert tilt is not None or v in (None, "", "0", "1", "even"), f"U_REST_OLD {v}: 1, even, tilt[,<rad>] or unset"
+  drop = DROPPED_KEYS + (REST_OLD_KEYS if v == "1" and robot.kind == "wheeled" else ())
+  keys = [k for k in recipe[keys] if k not in drop]
   env = {
     "BLIND_PILOT": ",".join(keys),
     "BLIND_PAYLOAD": robot.payload,          # no ramp: the progress curriculum scales the payload (curriculum.py)
@@ -130,4 +140,25 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     # terrain: "map3" trains; the acceptance's checks (2026-11-12) use the blind builder's "flat" and "stairs"
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
+  if (v == "even" or tilt is not None) and robot.kind == "wheeled" and terrain == "map3":
+    # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
+    # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
+    # built at import: uprobe_s120 stopped there at 17:15 on 2026-11-14 before this condition)
+    from . import rest
+
+    rest.apply_even(cfg, tilt)
   return cfg
+
+
+def _rest_tilt(v: str | None) -> float | None:
+  """U_REST_OLD=tilt[,<rad>]: the tilt from which the lock form counts (rest.TILT without the field); None for
+  every other value."""
+  f = (v or "").split(",")
+  if f[0] != "tilt":
+    return None
+  from . import rest
+
+  assert len(f) <= 2, f"U_REST_OLD {v}: tilt[,<rad>]"
+  tilt = float(f[1]) if len(f) > 1 else rest.TILT
+  assert 0.03 <= tilt <= 0.30, f"U_REST_OLD {v}: the tilt 0.03-0.30 rad"
+  return tilt

@@ -4,8 +4,9 @@ jobs/unified/accept.sh's files (one pooled run per test at 3x the robots: the "3
 FAIL: <item: reason; ...>, then the details.
 
 Unloaded (PREFIX_<kind>.txt, fixed 0 kg), judged as scripts/blind/acceptance/accept_tables.py's goal_cells judges them
-(the same parsers and bars) except: stop-feet against the fixed 0.9 (no deployed comparison), no luck rule, and the
-loaded-stand / posture goals replaced by the zero-command stance below. Items: flat speed, drift, spin, alternating
+(the same parsers and bars) except: stop-feet against the fixed 0.9 (no deployed comparison), no luck rule, the creep
+after a stop at the robot's own bar where it has one (STOP_CREEP_CM: the Go2W 1.5 cm), and the loaded-stand / posture
+goals replaced by the zero-command stance below. Items: flat speed, drift, spin, alternating
 spins, stop, march, gait clock, stairs (reach with / without operator, speed, stop, stop-feet), wheels down (wheeled),
 falls; plus
   zero-command stance  long_stand (60 s) and stop_then_move (after a 1.5 m/s stop): leg joints' deviation from the
@@ -247,6 +248,20 @@ LOADED_TOP_BAND = "15-18cm"
 
 def loaded_top_reported(r: str) -> bool:
   return r in LOADED_TOP_REPORTED or r in {x for x in os.environ.get("U_JUDGE_LOADED_TOP_REPORTED", "").split(",") if x}
+
+
+# The creep in the 4 s after a stop, per robot: the largest group mean in cm (2026-11-15, go2-depth -- the choice among
+# relax / accept / another direction for the Go2W's stand the user left to it; doc/redesign.md 2.5 item 16). Every robot
+# not listed: accept_tables.STOP_CREEP_BAR, 1.0 cm (doc/acceptance.md). The Go2W 1.5 cm: its stand has two forms by
+# the base's tilt (recipe.py's U_REST_OLD=tilt,0.20) -- the one that holds a stop on a 15-18 cm flight costs the flat
+# stops a few millimetres (uprobe_s150 / s157: the worst groups, the stops from 1.5 m/s and from an arc, 1.0-1.2 cm
+# with the scan and 1.2-1.45 cm with it masked; the form that reads 0.9 cm rolls on down a steep descent after the
+# stop command, uprobe_s114: 71 % / 46 % stay). Read by every unified judge -- the teacher's flat gate (flat_gate.py),
+# the students' acceptance without a load and with the typical payload (judge, typical below); the loaded creep is
+# reported, not judged, as before. Not the blind acceptance (accept_tables' own table is empty), not tinynav's tier
+# (it has no creep item).
+STOP_CREEP_CM: dict[str, float] = {"Go2W": 1.5}
+at.STOP_CREEP_ROBOT = dict(STOP_CREEP_CM)   # at import: every unified judge reads accept_tables through this module
 
 
 def band_fall_counts(path: str) -> dict[tuple[str, str], int] | None:

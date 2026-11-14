@@ -146,6 +146,19 @@ STOP_FEET_MARGIN = 0.05
 def stop_feet_bar(r, band, direction):
   dep = STOP_FEET_DEPLOYED.get(r, {}).get((band, direction))
   return STOP_FEET_BAR if dep is None else min(STOP_FEET_BAR, dep - STOP_FEET_MARGIN)
+
+
+# The creep in the 4 s after a stop: the largest group mean, cm (doc/acceptance.md: 1 cm, every robot). A robot's own
+# bar goes in STOP_CREEP_ROBOT; nothing here -- the blind acceptance judges every robot at 1.0. The unified judges
+# set theirs (scripts/unified/accept_judge.STOP_CREEP_CM).
+STOP_CREEP_BAR = 1.0
+STOP_CREEP_ROBOT: dict[str, float] = {}
+
+
+def stop_creep_bar(r):
+  return STOP_CREEP_ROBOT.get(r, STOP_CREEP_BAR)
+
+
 LOADSTAND_FALLS = 0
 LOADSTAND_SETTLE = 3.0   # s: falls before this are the spawn transient, not judged (see goal_cells)
 # One bar for every robot since 2026-11-10 (doc/acceptance.md, the user: "统一 0.25 m"); the per-robot bars above were
@@ -364,7 +377,7 @@ def goal_cells(r, i, label, p, ms):
   if "rest" in g:
     if g["rest"]["air"] > 1.0:
       tags.append("离地")
-    if max(v["creep"] for v in g.values()) > 1.0:
+    if max(v["creep"] for v in g.values()) > stop_creep_bar(r):
       tags.append("蠕动")
     if any(k in g and g[k]["stop_cm"] > 30.0 for k in ("fwd 1.0", "back 1.0")):
       tags.append("刹停远")

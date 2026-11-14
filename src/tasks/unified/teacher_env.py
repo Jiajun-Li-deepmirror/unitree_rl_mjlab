@@ -353,6 +353,24 @@ def _flat_script_items(items: list[dict], c) -> list[dict]:
       stat="p90", max_scale=2.0),
   ]
   assert tuple(x["name"] for x in added) == FLAT_NEW
+  # -- the wheeled-flat probes (_probe_switches)
+  v = os.environ.get("U_FLAT_WHEELS")
+  if v and "wheels_down" in old:
+    # every wheel down on the straight commands as the acceptance judges it: per command bin, 98 % (gait_fb.py). Its
+    # multiplier starts at the floor <v> and never goes below it, so wheel_air_drivable keeps <v> times its P weight
+    # at the least on even ground (wheels_down's sat at 0.5; several items on one cost: the strongest)
+    x = float(v)
+    assert 1.0 <= x <= 6.0, f"U_FLAT_WHEELS {v}: the wheels_fast item's floor, 1-6"
+    added.append({**c("wheels_fast", "flat:wheels", "min", 0.98, 0.85, act, ["wheel_air_drivable"], {"worst": "min"},
+                      min_scale=x, max_scale=max(3.0, x)), "init_scale": x})
+  v = os.environ.get("U_LINE_SLOW")
+  if v:
+    on, *floor = v.split(",")
+    assert on == "1" and len(floor) <= 1, f"U_LINE_SLOW {v}: 1 or 1,<the side_drift item's floor>"
+    new["side_drift"]["params"] = {"bins": ["side", "side_slow"]}   # (the worst of the two bins)
+    if floor:
+      assert 0.5 <= float(floor[0]) <= 3.0, f"U_LINE_SLOW {v}: a floor of 0.5-3"
+      new["side_drift"]["min_scale"] = float(floor[0])
   logged = [{**{k: v for k, v in old[src].items() if k != "tight"}, "name": name, "target": None, "terms": [],
              "enforce": False}
             for name, src in (("clock_side", "clock"), ("side_drift_p90", "side_drift"),
@@ -1186,6 +1204,24 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     U_FLAT_AXIS=<share>  how many of the evaluation robots on the flat column start along / across the strip
                          (flat.flat_reset_yaw, 0.75; 0: every start heading as drawn -- few 10 s lines fit);
     U_FLAT_NEW_MAX=<x>   the cap of the new flat items' multipliers (FLAT_NEW; 2);
+    U_FLAT_WHEELS=<x>    (wheeled) the flat scripts read the share of a straight command's last 4 s with all four
+                         wheels down ("wheels", bins fwd / fast / back) and a new item, wheels_fast, holds the
+                         worst bin at the acceptance's 98 % with wheel_air_drivable: its multiplier starts at <x>
+                         (1-6) and never goes below it (the shortfall of 0.1 alone moves a multiplier by 1.2x in
+                         600 iterations).
+                         2026-11-14, tier 2 of the Go2W formal seed 0 (170dd4c) 3600 / 4200: at 1.5 m/s the wheels
+                         are down 84-90 % of the time and 8-11 of 96 robots fall (bar 98 %, no fall) while the
+                         training's wheels_down item -- every straight command from 0.5 m/s pooled, target 0.75 --
+                         reads 0.78-0.87, "met", with its multiplier at the floor 0.5;
+    U_LINE_SLOW=1[,<x>]  the 10 s lines of the slow strafes (0, +-0.3) in a bin of their own (flat.flat_line_bin
+                         "side_slow"); side_drift reads the worse of the two sideways bins, its multiplier not
+                         below <x> (0.5-3; without it the item's own floor 0.5). The same gates: (0,
+                         +-0.3) 5.6-6.4 % of the distance (bar 5 %; a backward bias of 1 cm/s) while the pooled
+                         bin read 2-3 % and the side_drift cost relaxed to 0.62x;
+    U_CLOCK_SPLIT=1      the gait samples of the strafes from 0.45 m/s and of the gentle arcs from 0.75 m/s in
+                         bins of their own (flat.flat_gait_bin "side_fast", "arc_fast"); the clock item reads the
+                         worst bin as before. The same gates: (0, +-0.6) 63-72 % in step and the 1.0 m/s arcs
+                         61-67 % blind (bar 80 %) while their pooled bins read 0.79-0.92 and the item was "met";
     U_DR_LIGHT=1         the training task without the joint friction / damping / armature draws and without the
                          stick-slip (unified_teacher_env_cfg; the checks' -Flat / -Stairs tasks and the students'
                          tasks keep them, whatever the environment says). 2026-11-13: the delivered go2_blind_v4
@@ -1193,6 +1229,34 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          teacher lacks (stop creep 0.3-0.5 cm against 0.7-1.5, the strafe's gait clock 95 % against
                          68-79 %, stance p90 0.125 rad against 0.13-0.17) on the same reward settings -- do these
                          draws in training cost the flat precision?
+    U_REST_OLD=1         a wheeled robot's stand as the delivered Go2W's (robots.base_env_cfg, REST_OLD_KEYS):
+                         without the keys "restlock" and "standtgt" -- pose / stand_still_even pull to the default
+                         pose through the whole stand, no standing_target_hold. 2026-11-14, the formal Go2W of
+                         170dd4c on the flat gate: creep medians 1.2-1.8 cm after a 1.0 / 1.5 m/s stop (bar 1.0;
+                         the delivered 0.3-0.9) and a 60 s stand at p90 0.155-0.170 rad (bar 0.15), with the creep
+                         multiplier at its cap from 2000 on. The wheels do not roll; the legs come back from the
+                         braking lean for seconds. Is the pose the braking left -- which restlock makes the pose
+                         term's target at the lock -- what keeps the stand from coming to rest?
+                         (uprobe_s114, 600 iterations from the formal model_3600: yes on the flat -- the creep
+                         and the line drift pass, the flat gate's gap 0.15 -> 0.05 -- and the stairs gate loses
+                         the stop on a steep descent: blind, 15-18 cm down, 71 % stay, 46 % with the typical
+                         payload, against 100 % / 90 % for the control of the same length, uprobe_s111.)
+    U_REST_OLD=even      that stand on even ground only; on uneven ground the two keys' form -- the pose at the
+                         lock as the pose term's target, the leg targets held (rest.py: two classes around the
+                         shared kernels, the keys stay in the build). Does the flat keep s114's creep and the
+                         descent the control's stop?
+                         (uprobe_s131, 2048 robots: the stop stays on every flight, 100 %; the flat creep passes
+                         with the scan and fails with the scan masked, 1.10-1.66 cm against the bar's 1.0.)
+    U_REST_OLD=tilt[,<rad>]  as even, the ground told by the base's tilt instead of the scan: the lock form where
+                         the gravity direction is <rad> or more off the base's vertical (0.10), the delivered
+                         form below it (rest.lock_ground). A robot walking with its scan masked observes the tilt
+                         and not the ground: does the masked mode's flat creep pass too, the stop on the flights
+                         kept?
+    U_STAND_LONG=<lo>,<hi>  a plain stand on the flat lasts <lo>-<hi> s (the command's
+                         stand_resampling_time_range; marches and the stops on stairs keep their timing). The
+                         stands of the training data last 2-5 s, the acceptance reads the creep from 2 to 6 s and
+                         the long stand over 60 s: is the settling unpaid because the stand ends before it shows?
+                         (The B2W's first creep fix, "standlongw": 4-8 s.)
     U_CREEP_CAP=<x>      the cap of the creep item's multiplier (3; it scales standing_position_hold and
                          standing_speed). 2026-11-13, tier 2: the stop creep is the one flat item both robots
                          miss with the multiplier at its cap -- Go2 uprobe_s51 7095 a median of 1.07-1.51 cm after
@@ -1311,6 +1375,12 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     v = os.environ.get("U_FLAT_AXIS")
     if v and cfg.events["reset_base"].func is uflat.flat_reset_yaw:
       cfg.events["reset_base"].params["flat_share"] = float(v)
+    if any(c["name"] == "wheels_fast" for c in items):   # (U_FLAT_WHEELS, _flat_script_items)
+      cfg.rewards["u_flat"].params["wheels"] = "feet_ground_contact"   # (mdp.constraints' wheels_down's sensor)
+    if os.environ.get("U_LINE_SLOW"):
+      cfg.rewards["u_flat"].params["line_slow"] = True
+    if os.environ.get("U_CLOCK_SPLIT") == "1":
+      cfg.rewards["u_flat"].params["gait_split"] = True
   v = os.environ.get("U_FLAT_NEW_MAX")
   if v:
     for c in items:
@@ -1322,6 +1392,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["name"] == "creep":
         c["max_scale"] = float(v)
+  v = os.environ.get("U_STAND_LONG")
+  if v:
+    lo, hi = (float(x) for x in v.split(","))
+    assert 2.0 <= lo <= hi <= 12.0, f"U_STAND_LONG {v}: <lo>,<hi> seconds, 2-12"
+    cfg.commands["twist"].stand_resampling_time_range = (lo, hi)
   v = os.environ.get("U_CLOCK_FLOOR")
   if v:
     x, *rest = v.split(",")

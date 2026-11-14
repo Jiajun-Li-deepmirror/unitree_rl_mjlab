@@ -73,6 +73,9 @@ def scripts_on() -> bool:
 
 
 FLAT_FAST = 1.2        # a forward command from here on is "fast" (the acceptance's 1.5 m/s)
+FLAT_SIDE_FAST = 0.45  # a sideways command from here on is the acceptance's 0.6 m/s strafe (below: the 0.3 m/s one)
+FLAT_ARC_FAST = 0.75   # a gentle arc's forward command from here on is the acceptance's 1.0 m/s arc
+FLAT_WHEEL_BINS = ("fwd", "fast", "back")   # the "wheels" reading's bins: the straight commands (gait_fb.py's)
 FLAT_AXIS_MIN = 0.05   # an axis counts as commanded from here on (accept_matrix.py judges the axes with |c| >= 0.05)
 F_MOVE, F_GO, F_STOP, F_REST, F_LINE, F_STAND0, F_MARCH, F_STAND1 = range(8)
 # scripts/blind/eval/accept_matrix.py CMDS (the speed table; gait_clock.py's are the same 44)
@@ -131,13 +134,28 @@ def flat_bin(c) -> str:
   return "mix"
 
 
-def flat_line_bin(c) -> str:
+def flat_line_bin(c, slow: bool = False) -> str:
   """The bin of a 10 s line's command: forward at 1 m/s, forward slow, backward, sideways (both ways in one bin: the
-  statistic takes both tails)."""
+  statistic takes both tails). `slow` (U_LINE_SLOW=1): the strafes below FLAT_SIDE_FAST in a bin of their own,
+  "side_slow" -- pooled with the 0.6 m/s ones the Go2W's 0.3 m/s lines read 2-3 % where the acceptance's read 6 %."""
   vx, vy, _ = (float(v) for v in c)
   if abs(vy) >= FLAT_AXIS_MIN:
-    return "side"
+    return "side_slow" if slow and abs(vy) < FLAT_SIDE_FAST else "side"
   return "fwd" if vx >= 0.75 else "fwd_slow" if vx > 0.0 else "back"
+
+
+def flat_gait_bin(c, split: bool = False) -> str:
+  """The bin of a gait sample's command: flat_bin's. With `split` (U_CLOCK_SPLIT=1) the commands the acceptance's
+  gait clock fails leave the bins that pool them with easier ones: "side_fast", a pure strafe from FLAT_SIDE_FAST on
+  (out of "side": the 0.6 m/s ones), and "arc_fast", a gentle arc from FLAT_ARC_FAST on (out of "arc": the 1.0 m/s
+  ones). The other readings keep flat_bin's bins."""
+  b = flat_bin(c)
+  if split:
+    if b == "side" and abs(float(c[1])) >= FLAT_SIDE_FAST:
+      return "side_fast"
+    if b == "arc" and float(c[0]) >= FLAT_ARC_FAST:
+      return "arc_fast"
+  return b
 
 
 def flat_quantile_stat(stat: str) -> bool:
@@ -279,6 +297,11 @@ class flat_measure:
     self.plain_max = float(g("plain_max", 0.105))     # the worst hip within the reset's joint noise: a plain start
     self.march_min = float(g("march_min", 0.08))      # the worst hip at least this far out: the march script may run
     self.show_n = int(g("show_n", 4))                 # table(): a bin is shown from this many samples
+    # the wheeled-flat probes' three (teacher_env._probe_switches; all off unless the build sets them)
+    self.line_slow = bool(g("line_slow", False))      # U_LINE_SLOW=1: the slow strafes' lines in a bin of their own
+    self.gait_split = bool(g("gait_split", False))    # U_CLOCK_SPLIT=1: the fast strafes' / arcs' gait samples too
+    self.wheels = g("wheels", None)                   # U_FLAT_WHEELS=1: the contact sensor behind the "wheels" reading
+    self.show = FLAT_SHOW + ((("wheels", "mean", "wheels", True),) if self.wheels else ())
     self.rng = random.Random(int(g("seed", 0)))
     n, dev = env.num_envs, env.device
     zeros = lambda *shape, dtype=torch.float: torch.zeros(n, *shape, dtype=dtype, device=dev)   # noqa: E731
@@ -291,6 +314,7 @@ class flat_measure:
     self.ref0, self.ref_yaw = zeros(2), zeros()   # position and heading when the segment began
     self.ref = zeros(2)                     # the creep's reference position
     self.acc, self.acc_n = zeros(4), zeros()      # sums over the window: body vx, vy, wz, gait match; its steps
+    self.acc_w = zeros()                          # the window's steps with every wheel down (the "wheels" reading)
     self.peak, self.aux = zeros(), zeros()        # REST: the stance's running maximum; STOP: the stance 3 s in
     self.info: dict[int, dict] = {}         # robot -> {"script", "mode", "plain", "pre"} while under a script
     self.buf: dict[tuple, flat_samples] = {}   # (reading, mode, bin) -> samples
@@ -372,6 +396,13 @@ class flat_measure:
     _, stepping_only, max_vy, max_wz = self._gait_rule
     return abs(cmd[0]) <= 1.0 and (not stepping_only or abs(cmd[1]) > max_vy or abs(cmd[2]) > max_wz)
 
+  def _wheels_value(self, env: ManagerBasedRlEnv) -> torch.Tensor | None:
+    """Whether every wheel is on the ground this step (mdp.constraints' wheels_down, the acceptance's gait_fb.py);
+    None without the reading (`wheels`: the contact sensor's name)."""
+    if not self.wheels:
+      return None
+    return (env.scene[self.wheels].data.found > 0).all(dim=1).float()
+
   # -- the samples ----------------------------------------------------------------------------------------------
 
   def _add(self, reading: str, mode: str, bin_: str, value: float) -> None:
@@ -428,7 +459,7 @@ class flat_measure:
     """The per-bin view for the records: {"bins": {shown name: {"<bin>_<mode>": {"v", "n" (samples behind v), "total"
     (samples ever)}}}, "n_tags": the shown names whose counts are tags, "drops", "done", "scripted", "fault"}."""
     bins: dict[str, dict] = {}
-    for reading, stat, shown, _ in FLAT_SHOW:
+    for reading, stat, shown, _ in self.show:
       for (r, mode, b), buf in sorted(self.buf.items()):
         if r != reading:
           continue
@@ -436,7 +467,7 @@ class flat_measure:
                         self.max_age)
         if v is not None:
           bins.setdefault(shown, {})[f"{b}_{mode}"] = {"v": flat_stat(v, stat), "n": len(v), "total": buf.n}
-    return {"bins": bins, "n_tags": [shown for _, _, shown, n in FLAT_SHOW if n], "drops": dict(self.drops),
+    return {"bins": bins, "n_tags": [shown for _, _, shown, n in self.show if n], "drops": dict(self.drops),
             "done": {f"{g}/{b}_{m}": n for (g, m, b), n in sorted(self.tally.items())},
             "scripted": int(self.on.sum()), "fault": self.fault}
 
@@ -567,8 +598,8 @@ class flat_measure:
     info = {"script": "", "mode": mode, "plain": plain, "pre": None}
     seg = None
     if plain and self.rng.random() < self.line_prob:
-      seg = self._pick(r, mode, "line", F_LINE, FLAT_LINE_CMDS, flat_line_bin, self.line_steps, self.line_room,
-                       self.line_steps)
+      seg = self._pick(r, mode, "line", F_LINE, FLAT_LINE_CMDS, lambda c: flat_line_bin(c, self.line_slow),
+                       self.line_steps, self.line_room, self.line_steps)
       info["script"] = "line"
     if seg is None:
       can_march = (r["can_march"] and hip >= self.march_min
@@ -618,7 +649,9 @@ class flat_measure:
       if abs(cmd[a]) >= FLAT_AXIS_MIN:
         self._add(name, mode, b, r["acc"][a] / r["acc_n"] / cmd[a])
     if r["gait"] and self._gait_counts(env, cmd):
-      self._add("gait", mode, b, r["acc"][3] / r["acc_n"])
+      self._add("gait", mode, flat_gait_bin(cmd, self.gait_split), r["acc"][3] / r["acc_n"])
+    if r.get("wheels") and b in FLAT_WHEEL_BINS:   # the share of the window with all four wheels down (gait_fb.py)
+      self._add("wheels", mode, b, r["acc_w"] / r["acc_n"])
 
   def _emit_line(self, env, i: int, r: dict, whole: bool) -> None:
     """The line's drift and heading change in the frame of the start heading (drift_all.py:99-110, 320-331 of
@@ -629,7 +662,7 @@ class flat_measure:
     c0, s0 = math.cos(r["ref_yaw"]), math.sin(r["ref_yaw"])
     along, across = c0 * dx + s0 * dy, -s0 * dx + c0 * dy
     off, travel = (along, abs(across)) if abs(cmd[1]) >= FLAT_AXIS_MIN else (across, abs(along))
-    b = flat_line_bin(cmd)
+    b = flat_line_bin(cmd, self.line_slow)
     self._add("drift", mode, b, off / max(travel, 0.1))
     d = r["yaw"] - r["ref_yaw"]
     self._add("head", mode, b, math.degrees(math.atan2(math.sin(d), math.cos(d))))
@@ -703,6 +736,9 @@ class flat_measure:
     gait = self._gait_value(env)
     if gait is not None:
       self.acc[:, 3] += w * gait
+    wheels = self._wheels_value(env)
+    if wheels is not None:
+      self.acc_w += w * wheels
     self.acc_n += w
     # the creep's reference: 101 steps after the stop / 251 into the rest (eval_standing.py:135-136)
     take = ok & (((kind == F_STOP) & (k == self.stop_ref)) | ((kind == F_REST) & (k == self.rest_ref)))
@@ -727,16 +763,17 @@ class flat_measure:
             lost.float(), cand.float(), self.acc_n, self.peak, self.aux, self.ref_yaw,
             nan if hip is None else hip, nan if kg is None else kg.float() / payload_limit(env),
             nan if scan is None else scan.float(), (env.max_episode_length - env.episode_length_buf).float(), centre,
-            self.acc, self.cmd, self.ref, self.ref0]
+            self.acc, self.cmd, self.ref, self.ref0, self.acc_w]
     rows = torch.cat([c.reshape(env.num_envs, -1) for c in cols], dim=1)[idx].tolist()
     shared = {"dt": float(env.step_dt), "x_lo": half[1], "x_hi": half[2], "ranges": self._ranges(term),
-              "legs": kin["leg_max"] is not None, "gait": gait is not None,
+              "legs": kin["leg_max"] is not None, "gait": gait is not None, "wheels": wheels is not None,
               "can_march": hip is not None and getattr(term, "march", None) is not None}
     start, stop = [], []
     for i, v in zip(idx.tolist(), rows):
       r = {**shared, "x": v[0], "y": v[1], "yaw": v[2], "k": int(v[3]), "kind": int(v[4]), "acc_n": v[10],
            "peak": v[11], "aux": v[12], "ref_yaw": v[13], "hip": v[14], "load": v[15], "scan": v[16], "rem": int(v[17]),
-           "yc": v[18], "acc": v[19:23], "cmd": tuple(v[23:26]), "ref": v[26:28], "ref0": v[28:30]}
+           "yc": v[18], "acc": v[19:23], "cmd": tuple(v[23:26]), "ref": v[26:28], "ref0": v[28:30],
+           "acc_w": v[30]}
       seg = None
       if v[8]:      # fell under a script
         self._drop("fell")
@@ -777,6 +814,7 @@ class flat_measure:
       self.k[ids] = 0
       self.acc[ids] = 0.0
       self.acc_n[ids] = 0.0
+      self.acc_w[ids] = 0.0
       self.peak[ids] = 0.0
       self.aux[ids] = 0.0
       self.ref0[ids] = pos[ids]

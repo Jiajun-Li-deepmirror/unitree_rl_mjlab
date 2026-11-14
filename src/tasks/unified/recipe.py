@@ -99,6 +99,21 @@ KIND: dict[str, dict[str, str]] = {
                                       # model_1500: 100 % / 99 % at 2000, 100 % / 100 % at 2500 (s70: the stop ok 99 %, no
                                       # fall); 8 held 96 % / 51 % and came and went, 5 did not hold. Not for the
                                       # legged: no weight (3 / 8 / 20) holds the Go2 on a 15-18 cm descent
+    # The wheeled freeze (2026-11-15; the Go2W's probes from its formal model_3600, 600 iterations each, the last
+    # one -- uprobe_s157 -- with the three together):
+    "U_COM_SUPPORT": "15",            # the centre-of-mass cost while standing (no share under a command: with one
+                                      # the Go2W lost its steep ascent stop, s151): the full payload's falls on tier
+                                      # 2 28 -> 4-7 (s134 / s146 / s157), and with the tilt form below the stop on a
+                                      # 15-18 cm ascent stays (s150 without it: 64 % with the scan masked; s157 99 %)
+    "U_REST_OLD": "tilt,0.20",        # the stand by the base's tilt (rest.py): the lock form from 0.20 rad on (a robot
+                                      # standing on a flight -- the stop held on every band), the delivered form
+                                      # below it (flat ground: the creep after a stop 1.0-1.45 cm against 1.2-1.8
+                                      # with the lock form everywhere; without the lock form the stop on a steep
+                                      # descent is lost, s114: 71 % / 46 % stay). Not `even` (the scan: creep fails
+                                      # with the scan masked), not 0.10 (flat creep fails), not 0.05
+    "U_CLOCK_SPLIT": "1",             # the gait clock's fast strafes and gentle arcs in bins of their own
+                                      # (flat.flat_gait_bin): the clock item measures the commands the flat gate
+                                      # judges (pooled, the bins read 0.79-0.92 "met" while the gate failed them)
   },
 }
 

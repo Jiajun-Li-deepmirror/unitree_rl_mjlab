@@ -10,7 +10,8 @@ the training's readings at all.
 
 Judged in each scan mode as the students' acceptance judges them (scripts/unified/accept_judge.py: accept_tables'
 goal_cells, the same parsers and bars): flat speed, drift and heading, turning in place, alternating spins, stop, march,
-gait clock, falls, wheeled: wheels down; the zero-command stance (long_stand 60 s and stop_then_move: p90 deviation
+gait clock, falls, wheeled: wheels down (the creep after a stop at accept_judge.STOP_CREEP_CM's bar where the robot has
+one); the zero-command stance (long_stand 60 s and stop_then_move: p90 deviation
 <= accept_judge.POSTURE_BAR, no fall after the settle); and no fall in the gait-clock test either (go2-depth: "平地摔倒
 0"; the students' acceptance reads no falls there). Not here: the stairs (stairs_gate.py) and the loaded / typical
 conditions (the teacher's loaded behaviour is judged on the stairs gate's loaded run).
@@ -78,6 +79,9 @@ def judge(r: str, prefix: str) -> tuple[str, int]:
     for _kind, label, fn in pg.ITEMS:
       v = fn(pg.files(q, False))
       reads.append(f"{label} {'-' if v is None else f'{v:.2f}'}")
+    g = at.stand_vals(p)
+    if g:   # the judged creep: the largest group mean (the line above reads payload_gap's worst p90)
+      reads.append(f"停车蠕动（判：各组均值最大）{max(v['creep'] for v in g.values()):.2f} / 上限 {at.stop_creep_bar(r):g} cm")
     detail.append(f"{tag}: " + "，".join(reads))
   if bad:
     head, rc = f"FAIL (gap {0.01 * len(bad):.2f}): " + "；".join(bad + [f"未测 {m}" for m in missing]), 1
