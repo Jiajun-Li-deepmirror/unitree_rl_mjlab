@@ -706,8 +706,9 @@ def com_offset(env: ManagerBasedRlEnv, asset_cfg) -> tuple[torch.Tensor, torch.T
 
 
 def com_support(env: ManagerBasedRlEnv, asset_cfg, sensor_name: str, command_name: str = "twist",
-                free: float = 0.12, span: float = 0.80, moving: float = 0.0) -> torch.Tensor:
-  """Reward term (U_COM_SUPPORT=<w>[,<moving>], 2026-11-13): over uneven ground, the whole robot's centre of mass
+                free: float = 0.12, span: float = 0.80, moving: float = 0.0,
+                moving_blind: float | None = None) -> torch.Tensor:
+  """Reward term (U_COM_SUPPORT=<w>[,<moving>[,<moving blind>]], 2026-11-13): over uneven ground, the whole robot's centre of mass
   off the centre of its four feet / wheels (com_offset; over the ground, so along gravity). In units of the
   support's size: nothing within `free` of it (Go2: 3 cm), 1 from `free` + `span` on (23 cm), linear in between --
   a slope all the way from a robot at rest to one about to go over, so no flat part where the loaded ones stand. In
@@ -732,6 +733,15 @@ def com_support(env: ManagerBasedRlEnv, asset_cfg, sensor_name: str, command_nam
   feet 19 cm ahead of it. The cost pays for bringing the base back over the feet, wherever the payload sits, and
   the unloaded robot for the same posture at a smaller price (0.18 of the weight at 6.5 cm).
 
+  `moving_blind` (2026-11-14, the third field): the share under a command of the robots that walk this episode with
+  their scan masked (teacher_env.u_scan_mask; None: `moving` for them too). The large-sample measure of the 15-18 cm
+  flights with the acceptance's payload (768 robots x 3 seeds per scan mode, uprobe_s133 without a share under a
+  command against uprobe_s137 with 0.5): with the scan the falls go from 52 to 10 of 1152 (the descent stops' 41 to
+  2: a robot that walks with its weight over its feet stops there), without it from 46 to 95 -- the falls after the
+  stop go there too (all bands' stop runs, 2304: 36 to 12) and the walking ones come (the 15-18 cm descents'
+  traverses 14 to 48 of 288; all bands' approaches to the stop 4 to 42; the loaded 15-18 cm descent at x0.98 of the
+  command against x0.78). A robot that cannot see the treads pays the same price for a stance it cannot place.
+
   Stores each robot's distance (m) as env.u_com_offset for the logged readings (_com_stop)."""
   from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
 
@@ -739,7 +749,12 @@ def com_support(env: ManagerBasedRlEnv, asset_cfg, sensor_name: str, command_nam
   env.u_com_offset = dist
   out = ((dist / size.clamp(min=1e-3) - free) / span).clamp(0.0, 1.0)
   out = torch.where(uneven_terrain_mask(env, sensor_name), out, torch.zeros_like(out))
-  if moving < 1.0:
+  on = getattr(env, "u_scan_on", None) if moving_blind is not None else None
+  if on is not None:
+    share = torch.where(on > 0.5, torch.full_like(out, moving), torch.full_like(out, moving_blind))
+    stand = env.command_manager.get_command(command_name).abs().sum(dim=1) == 0.0
+    out = torch.where(stand, out, share * out)
+  elif moving < 1.0:
     stand = env.command_manager.get_command(command_name).abs().sum(dim=1) == 0.0
     out = torch.where(stand, out, moving * out)
   return out
