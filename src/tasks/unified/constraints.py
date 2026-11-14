@@ -767,13 +767,14 @@ def _descent_over(env: ManagerBasedRlEnv, over: float = 1.2, **params) -> tuple[
 
 
 def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, over: float = 1.1,
-                      heavy: float = 1.0) -> torch.Tensor:
+                      heavy: float = 1.0, by_q: bool = False) -> torch.Tensor:
   """Reward term (U_DESCENT_SPEED=<w>[,<over>[,<heavy>]], 2026-11-14): going down a flight faster than told. Per
   robot the descent item reads (_stair_speed_h: pitched nose down on uneven ground under a forward command): how far
   its speed over the ground along x exceeds `over` x the command, as a fraction of the command, at most 1. Every
   payload alike at `heavy` 1 (the default); below it the cost fades from the common payload to `heavy` times it in
   the heavy class (payload_fade: with the cost on every payload the loaded falls of tier 2 went 9 -> 27 on seed 1,
-  s89 -> s93, and to 109 on seed 0, s92).
+  s89 -> s93, and to 109 on seed 0, s92). `by_q` (U_STOP_HOLD_Q=1): times quality_in -- nothing while the stairs
+  quality is 0, in full from q = Q_IN on (quality_in, with the reason).
 
   The Go2's formal teacher of 84e7965 (model_5200, tier 2's traverse at 0.5 m/s): 0.99 / 1.06 / 1.10 / 1.35x the
   command down the 5-8 / 8-12 / 12-15 / 15-18 cm flights -- and told to stop on a 15-18 cm descent it was 72 cm
@@ -783,7 +784,8 @@ def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: st
   legged weight -2, scaled by the descent item -- an item that asks the mean ratio to be at least 0.9, which a robot
   too fast meets: at 1.35x that side cost 0.5 per second at most."""
   ratio, mask = _stair_speed_h(env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
-  return mask.float() * (ratio - over).clamp(min=0.0, max=1.0) * payload_fade(env, heavy)
+  out = mask.float() * (ratio - over).clamp(min=0.0, max=1.0) * payload_fade(env, heavy)
+  return out * quality_in(env) if by_q else out
 
 
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
@@ -970,6 +972,20 @@ def payload_fade(env: ManagerBasedRlEnv, heavy: float) -> torch.Tensor | float:
   return 1.0 - (1.0 - heavy) * frac.clamp(0.0, 1.0)
 
 
+def quality_in(env: ManagerBasedRlEnv) -> float:
+  """How far the stairs quality has brought the P weights in: 0 while q (env.u_quality, curriculum.progress) is 0, 1
+  from q = Q_IN on, linear in between -- quality_terms' k. For the recipe parts that hold a robot's place at a stop
+  on a flight (U_STOP_HOLD_Q=1: flat_only's zero_by_q, descent_overspeed's by_q): they must not act before the robots
+  climb.
+
+  Why (2026-11-14, go2-home's pair ZI / ZJ: the Go2 from a from-zero model_1500 to 3000, progress 0.59, q 0
+  throughout): with the standing pose cost off the flights from 1500 on the climbing row stood at 0.10 at 3000
+  against the control's 1.17, the 12-15 cm ascents were crossed by 0 % against 43 % (8-12 cm: 38 % against 90 %),
+  and with the full payload the stops on the 12-15 cm descents stayed 53 % against 95 % -- where the same switch
+  from a checkpoint at q 1 (the formal model_4500) holds 93-97 % of the stops on 15-18 cm (s88, s92-s95)."""
+  return ramp(float(getattr(env, "u_quality", 0.0)), 0.0, Q_IN)
+
+
 def by_payload(metric: str, lo: float | None = None, hi: float | None = None):
   """METRICS[metric] over the robots with a payload in [lo, hi] x the limit."""
   def f(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1115,6 +1131,9 @@ class flat_only:
   `zero_heavy` (U_STAND_POSE_EVEN=1,<heavy>, 2026-11-14): the heavy class's share of the zero_terms' removal -- in
   full up to the common payload, `zero_heavy` times it from the heavy class up, linear in between (payload_fade,
   with the reason); the share that stays is the term at its calm weight, as without the switch. 1: every robot alike.
+  `zero_by_q` (U_STOP_HOLD_Q=1, 2026-11-14): the zero_terms' removal times quality_in (with the reason) -- none
+  while the stairs quality is 0 (the term at its calm weight on the uneven ground, as without the switch), in full
+  from q = Q_IN on.
   """
 
   def __init__(self, cfg, env: ManagerBasedRlEnv):
@@ -1125,7 +1144,8 @@ class flat_only:
 
   def __call__(self, env: ManagerBasedRlEnv, sensor_name: str, heavy_terms: list[str],
                min_frac: float = HEAVY_FRAC, zero_terms: tuple[str, ...] = (),
-               keep_terms: tuple[str, ...] = (), zero_heavy: float = 1.0) -> torch.Tensor:
+               keep_terms: tuple[str, ...] = (), zero_heavy: float = 1.0,
+               zero_by_q: bool = False) -> torch.Tensor:
     from src.tasks.velocity.mdp.rewards import uneven_terrain_mask
     out = torch.zeros(env.num_envs, device=env.device)
     calm = getattr(getattr(env, "u_constraints", None), "calm", {})
@@ -1134,12 +1154,15 @@ class flat_only:
     uneven = uneven_terrain_mask(env, sensor_name)
     heavy = payload_mask(env, lo=min_frac)
     gone = payload_fade(env, zero_heavy)   # the zero_terms' removal: 1 for every robot at zero_heavy 1
+    if zero_by_q:   # ... and none of it before the stairs quality starts
+      gone = gone * quality_in(env)
+    whole = zero_heavy >= 1.0 and not zero_by_q   # the removal is every robot's, in full, at every step
     for t in zero_terms:   # off the uneven ground
       r = _raw(env, t)
       if r is not None:
         out -= uneven.float() * gone * r[0] * r[1]
     for t, w_calm in calm.items():
-      if t in keep_terms or (t in zero_terms and zero_heavy >= 1.0):
+      if t in keep_terms or (t in zero_terms and whole):
         continue
       r = _raw(env, t)
       if r is None:

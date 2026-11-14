@@ -661,6 +661,19 @@ def _stand_pose_even() -> float | None:
   return heavy
 
 
+def _stop_hold_q() -> bool:
+  """U_STOP_HOLD_Q=1: the recipe parts that hold a robot's place at a stop on a flight -- U_STAND_POSE_EVEN's
+  removal, U_DESCENT_SPEED's cost -- come in along the stairs quality (constraints.quality_in, with the reason).
+  With neither of the two the switch has nothing to act on: the build stops."""
+  v = os.environ.get("U_STOP_HOLD_Q")
+  if not v or v == "0":
+    return False
+  assert v == "1", f"U_STOP_HOLD_Q {v}: 1, or unset"
+  assert _stand_pose_even() is not None or os.environ.get("U_DESCENT_SPEED"), \
+    "U_STOP_HOLD_Q=1 goes with U_STAND_POSE_EVEN or U_DESCENT_SPEED (it brings their parts in along the stairs quality)"
+  return True
+
+
 DESCENT_SPEED_TERM = "u_descent_speed"   # ("u_" prefix, as STOP_PLACE_TERM: at its weight from the first iteration)
 
 
@@ -669,7 +682,8 @@ def _add_descent_speed(cfg: ManagerBasedRlEnvCfg) -> None:
   constraints.descent_overspeed at the weight -w, on the speed over the ground above <over> x the command (1.1: the
   stairs speed cost's upper side) on the descents; the heavy class at <heavy> times it (1: every payload alike;
   constraints.payload_fade). At its weight from the first iteration (no constraint scales it, the stairs quality
-  does not bring it in). The command and the scan are stair_speed_deficit's (in every robot's environment)."""
+  does not bring it in) -- with U_STOP_HOLD_Q=1 times constraints.quality_in instead: nothing before the stairs
+  quality starts. The command and the scan are stair_speed_deficit's (in every robot's environment)."""
   v = os.environ.get("U_DESCENT_SPEED")
   if not v:
     return
@@ -682,6 +696,8 @@ def _add_descent_speed(cfg: ManagerBasedRlEnvCfg) -> None:
   if len(f) > 2:   # (the key only then: the two-field switch's build is as it was)
     assert 0.0 <= f[2] <= 1.0, f"U_DESCENT_SPEED {v}: the heavy class's share, 0-1"
     params["heavy"] = f[2]
+  if _stop_hold_q():   # (the key only then)
+    params["by_q"] = True
   cfg.rewards[DESCENT_SPEED_TERM] = RewardTermCfg(func=ucons.descent_overspeed, weight=-f[0], params=params)
 
 
@@ -882,6 +898,8 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
       params["zero_terms"] = ("standing_pose_load",)
       if pose_even < 1.0:   # (the key only then: the plain switch's build is as it was)
         params["zero_heavy"] = pose_even
+      if _stop_hold_q():   # (the key only then)
+        params["zero_by_q"] = True
     if os.environ.get("U_FLAT_ONLY_KEEP"):   # a probe's switch (_probe_switches)
       keep = tuple(t for t in os.environ["U_FLAT_ONLY_KEEP"].split(",") if t)
       assert keep and all(t in rewards for t in keep) and not set(keep) & set(params.get("zero_terms", ())), \
@@ -890,6 +908,7 @@ def _rewards(cfg: ManagerBasedRlEnvCfg, kind: str, items: list[dict], lean: bool
     rewards["u_flat_only"] = RewardTermCfg(func=ucons.flat_only, weight=1.0, params=params)
   assert _stand_pose_even() is None or os.environ.get("U_FLAT_ONLY") == "1", \
     "U_STAND_POSE_EVEN goes with U_FLAT_ONLY=1 (its term takes the cost off the uneven ground)"
+  _stop_hold_q()   # (its own checks, in every build)
   if os.environ.get("U_LOADED_FALL"):   # a probe's switch (_probe_switches), after is_terminated
     rewards["u_loaded_fall"] = RewardTermCfg(func=ucons.loaded_fall, weight=1.0,
                                              params={"scale": float(os.environ["U_LOADED_FALL"])})
@@ -1143,6 +1162,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          falls in tier 2 were stops on a descent. U_STAND_POSE_EVEN=1,<heavy>: the heavy class at
                          <heavy> times that removal, fading in from the common payload (constraints.payload_fade:
                          the full-payload robots that held a stop on a 15-18 cm descent toppled, 2026-11-14).
+    U_STOP_HOLD_Q=1      the parts that hold a robot's place at a stop on a flight (U_STAND_POSE_EVEN's removal,
+                         U_DESCENT_SPEED's cost) come in along the stairs quality: times constraints.quality_in --
+                         0 while q is 0, in full from q = Q_IN on, the P weights' own ramp. 2026-11-14, go2-home's
+                         ZI / ZJ: the pose removal from a from-zero model_1500 on (q 0) held the climbing row at
+                         0.10 against 1.17 at 3000; from a checkpoint at q 1 it holds the stops (93-97 %).
   The heading on even ground (2026-11-13: tier 2 on the Go2 candidate, s34 model_6097 -- 12-17 deg off 10 s into a
   line to the right, line drift 15-19% against 5%, the compound commands' yaw at 46-86%; read in _rewards):
     U_HEADING_OBS=1      the line costs (straight_drift, side_drift) hold the heading the actor is shown -- the
