@@ -3,6 +3,7 @@
 # 一个是平地内容，一个是楼梯内容 ... 两个视频里分上下，上面是没有负载，下面是有负载。其他的验收视频生成脚本可以删除了，统一使用一个";
 # "机器的初始位置和画面上下两个（负重和无负重）最好统一角度"). The one acceptance-video script, blind and depth alike:
 #   KIND blind  SRC = a blind package dir (model_N.pt, blind_pilot.txt, blind_params.txt); OUT default SRC/videos
+#   KIND ublind / udepth / uteacher  SRC = a unified student's / teacher's checkpoint; OUT required
 #   KIND depth  SRC = a depth student checkpoint, its environment as its chain built it (jobs/v2_robot.sh: the
 #               package's pilot + the V2 extras - V2_DROP + V2_MORE); OUT required
 # Two videos in OUT, each two clips stacked (tools/go2_depth/video/stack_compare.py): on top without a payload, below
@@ -64,7 +65,14 @@ case $KIND in
     unset U_PAYLOAD   # the check tasks' payload: 0 kg for the unloaded clips; --payload for the loaded ones
     RUN=("$PY" jobs/unified/u_eval.py) TF=Unitree-$R-U-Student-${K^}-Flat TS=Unitree-$R-U-Student-${K^}-Stairs
     TAGW=U${K^^} ;;
-  *) echo "accept_videos.sh: KIND blind, depth, ublind or udepth" >&2; exit 2 ;;
+  uteacher)   # a unified teacher (2026-11-14, the user: "如果老师模型通过的话，给我看一下他的验收视频"): SRC = its
+    # checkpoint, OUT required; its own check tasks (the privileged teacher's observations), the same two videos
+    CK=$SRC OUT=${4:?accept_videos.sh $KIND: OUT} T=${5:-$R 老师（新流程） $(basename $(dirname $SRC)) $(basename $SRC .pt)}
+    L=${LOG:-logs/jobs/unified_${r}_videos.txt}
+    export UNIFIED_TASKS=1 BLIND_PILOT="(the unified recipe)"
+    unset U_PAYLOAD
+    RUN=("$PY" jobs/unified/u_eval.py) TF=Unitree-$R-U-Teacher-Flat TS=Unitree-$R-U-Teacher-Stairs TAGW=UTEACHER ;;
+  *) echo "accept_videos.sh: KIND blind, depth, ublind, udepth or uteacher" >&2; exit 2 ;;
 esac
 # a training's payload ramp (BLIND_PAYLOAD ...,ramp=N in run_env.sh) is not the robot's: evaluations see the full payload
 export BLIND_PAYLOAD=$(echo "${BLIND_PAYLOAD:-}" | sed -E 's/,ramp=[0-9]+//')
