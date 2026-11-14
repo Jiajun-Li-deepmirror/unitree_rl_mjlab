@@ -105,7 +105,8 @@ def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
 DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lowent")
 # U_REST_OLD=1 (a probe's switch, off unless set; teacher_env._probe_switches' docstring): a wheeled robot's stand as
 # the delivered Go2W's -- without "restlock" (pose and stand_still_even take the pose at the hold's lock as their
-# target) and "standtgt" (the leg-target hold).
+# target) and "standtgt" (the leg-target hold). U_REST_OLD=even: that form on even ground only, the two keys' form
+# on uneven ground (rest.py; the keys stay in the build).
 REST_OLD_KEYS = ("restlock", "standtgt")
 
 
@@ -118,7 +119,7 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
 
   recipe = unified_recipe(robot)
   v = os.environ.get("U_REST_OLD")
-  assert v in (None, "", "0", "1"), f"U_REST_OLD {v}: 1 or unset"
+  assert v in (None, "", "0", "1", "even"), f"U_REST_OLD {v}: 1, even or unset"
   drop = DROPPED_KEYS + (REST_OLD_KEYS if v == "1" and robot.kind == "wheeled" else ())
   keys = [k for k in recipe[keys] if k not in drop]
   env = {
@@ -137,4 +138,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     # terrain: "map3" trains; the acceptance's checks (2026-11-12) use the blind builder's "flat" and "stairs"
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
+  if v == "even" and robot.kind == "wheeled":
+    from . import rest
+
+    rest.apply_even(cfg)   # (the M and the P build alike: no difference for teacher_env.quality_diff)
   return cfg

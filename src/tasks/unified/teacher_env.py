@@ -1209,6 +1209,14 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          multiplier at its cap from 2000 on. The wheels do not roll; the legs come back from the
                          braking lean for seconds. Is the pose the braking left -- which restlock makes the pose
                          term's target at the lock -- what keeps the stand from coming to rest?
+                         (uprobe_s114, 600 iterations from the formal model_3600: yes on the flat -- the creep
+                         and the line drift pass, the flat gate's gap 0.15 -> 0.05 -- and the stairs gate loses
+                         the stop on a steep descent: blind, 15-18 cm down, 71 % stay, 46 % with the typical
+                         payload, against 100 % / 90 % for the control of the same length, uprobe_s111.)
+    U_REST_OLD=even      that stand on even ground only; on uneven ground the two keys' form -- the pose at the
+                         lock as the pose term's target, the leg targets held (rest.py: two classes around the
+                         shared kernels, the keys stay in the build). Does the flat keep s114's creep and the
+                         descent the control's stop?
     U_STAND_LONG=<lo>,<hi>  a plain stand on the flat lasts <lo>-<hi> s (the command's
                          stand_resampling_time_range; marches and the stops on stairs keep their timing). The
                          stands of the training data last 2-5 s, the acceptance reads the creep from 2 to 6 s and
