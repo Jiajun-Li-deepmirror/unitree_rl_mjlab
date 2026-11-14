@@ -53,8 +53,13 @@ KIND: dict[str, dict[str, str]] = {
     "U_FLAT_SPEED_W": "4",        # the flat speed deficit at the weight -4 (the wheeled have it)
     "U_STAIR_PARK": "10",         # standing on a descending column under a forward command costs
     "U_BODY_CLEAR": "50",         # the bodies whose touch ends the episode keep clear of the steps
-    "U_COM_SUPPORT": "15",        # at a stop on uneven ground the centre of mass, payload included, over the feet
-                                  # (Go2's loaded falls on tier 2: 11 -> 5)
+    "U_COM_SUPPORT": "15,0.5",    # on uneven ground the centre of mass, payload included, over the feet: in full
+                                  # at a stop (Go2's loaded falls on tier 2: 11 -> 5), at half under a command
+                                  # (the 8 kg falls on the 15-18 cm flights, 1152 episodes per scan mode: 5.30 /
+                                  # 3.30 % -> 2.69 / 2.26 %, uprobe_s140 / s141). Not the full share under a command
+                                  # (s153: 6 unloaded and 11 typical-payload falls walking blind, nose-up body
+                                  # strikes on the climb) and not the weight 30 (s152: four feet at a 15-18 cm
+                                  # descent stop 0.58)
     "U_ALIVE": "4",               # a living step pays +4 per second (the wheeled have it from their builder). The
                                   # Go2 from zero without it (the formal run of 84e7965): the flat costs above put
                                   # the first iterations' return below an ended episode's -4, and the policy ended
@@ -68,6 +73,13 @@ KIND: dict[str, dict[str, str]] = {
     "U_STOP_HOLD_Q": "1",         # both come in along the stairs quality, the P weights' own ramp: before the robots
                                   # climb, the pose removal keeps them from climbing (go2-home's ZI / ZJ from a
                                   # from-zero model_1500: the climbing row 0.10 against 1.17 at 3000)
+    "U_ITEM_FLOOR": "leg_contact:3,descent:2",   # two stairs-quality items start at a multiplier above 1:
+                                  # leg_contact 3 -- with the stop-hold part the robots rested a calf on a step at a
+                                  # descent stop (four feet down 0.5-0.7 on 12-18 cm; uprobe_s133: back above the
+                                  # bars, the blind falls with it; 2 does not do it, 6 costs the climb);
+                                  # descent 2 -- walking with the scan masked the descents fell to 0.78x of the
+                                  # command under floor 3 alone (bar 0.8x; go2-home's ZRd2 -> ZRe2 from zero:
+                                  # 0.91-0.96x, uprobe_s140 / s141 the same)
     # Evidence, the Go2 from the formal checkpoints: go2-home's pair ZK / ZC (1024 robots, 5000): stayed 99 % against
     # 58 % without a load and 96 % against 39 % with the full one, the descents at 0.80-0.85x the command, the full
     # payload's falls on 5-15 cm 7 against 23. The stop-place cost of the wheeled does not do it (3 / 8 / 20: the Go2

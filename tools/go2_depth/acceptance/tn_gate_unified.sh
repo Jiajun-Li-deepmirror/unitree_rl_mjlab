@@ -16,7 +16,9 @@
 #                route on fresh seeds (accept_stairs.py SEED0), and it passes when the bound over both is <= 5%
 #                (1 of 96). (Was 7 runs per route, falls <= 5%: 2 of 42 passed, a bound of 14%.)
 #                Wheeled: slide-back <= 5% in each stage too
-#      STEEP_TYPICAL (2026-11-15, the user's option b; empty = off, every route under the walking payload as above):
+#      STEEP_TYPICAL (2026-11-15, the user's option b; unset = Go2, set empty = off: every route under the walking
+#                payload as above. Go2 by default since the legged freeze: its trigger fired -- the 15-18 cm
+#                full-load falls of the freezable arms stay at 2-3 % in both scan modes, target 0.5 %):
 #                a comma list of robots (Go2,Go2W) whose loaded stage judges the 15-18 cm routes (STEEP_ROUTES: the
 #                two map3 routes and the pyramid's two 18 cm ones) under the typical payload's mass at the walking
 #                payload's mount point (Go2 / Go2-W: 4 kg at x +0.15, z +0.20 -- inside the typical payload's mount
@@ -39,7 +41,7 @@ PY=/home/dm/miniconda3/envs/unitree_rl_mjlab/bin/python
 TNL=${TN_LOCK:-$C/tinynav_$P.lock}
 OUT=$C/accept_unified.txt
 LOADED_RUNS=${LOADED_RUNS:-10} LOADED_MORE=${LOADED_MORE:-6} FALL_RATE_BAR=0.05
-STEEP_TYPICAL=${STEEP_TYPICAL:-} STEEP_ROUTES=map3_up,map3_down,pit_18n_up,top_18n_down
+STEEP_TYPICAL=${STEEP_TYPICAL-Go2} STEEP_ROUTES=map3_up,map3_down,pit_18n_up,top_18n_down
 # FALLS RUNS: 0 when the falls' one-sided 95% upper bound (Clopper-Pearson) is within FALL_RATE_BAR
 cp_ok() { $PY -c "import sys; from scipy.stats import beta; f, n, b = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]); \
 sys.exit(0 if n > 0 and (1.0 if f >= n else beta.ppf(0.95, f + 1, n - f)) <= b else 1)" $1 $2 $FALL_RATE_BAR; }
