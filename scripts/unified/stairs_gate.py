@@ -235,12 +235,18 @@ def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) 
     path = f"{prefix}_pay.txt"
     t = aj.txt(path)
     pf = aj.stairs_fall_counts(path) if t else None
+    ptop = None
+    if pf is not None and hasattr(aj, "loaded_falls"):
+      # (a robot in aj.LOADED_TOP_REPORTED, the user's option 2: judged on 5-15 cm, the 15-18 cm falls reported)
+      pf, ptop = aj.loaded_falls(r, path)
     if pf is None:
       missing.append(f"loaded: no falls line ({path})")
     else:
       sp, so = speeds(t), stop_ok(t)
       sm = aj.stairs_metrics(path)
-      detail.append(f"loaded (scan on): falls {pf} (<= {pay_falls}); stop ok {so}; speed "
+      detail.append(f"loaded (scan on): falls {pf} (<= {pay_falls})"
+                    + (f" judged on 5-15 cm, 15-18 cm {ptop} reported" if ptop is not None else "")
+                    + f"; stop ok {so}; speed "
                     + " ".join(f"{d} x{v:.2f}" for d, v in sp.items()) + "; "
                     + ", ".join(f"{k} {v:.3f}" for k, v in sm.items() if k in ("kicks", "slips", "mid", "slide_back"))
                     + " (reported)")
