@@ -138,8 +138,11 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     # terrain: "map3" trains; the acceptance's checks (2026-11-12) use the blind builder's "flat" and "stairs"
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
-  if v == "even" and robot.kind == "wheeled":
+  if v == "even" and robot.kind == "wheeled" and terrain == "map3":
+    # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
+    # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
+    # built at import: uprobe_s120 stopped there at 17:15 on 2026-11-14 before this condition)
     from . import rest
 
-    rest.apply_even(cfg)   # (the M and the P build alike: no difference for teacher_env.quality_diff)
+    rest.apply_even(cfg)
   return cfg

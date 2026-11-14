@@ -7,7 +7,8 @@
     even ground, passes every other parameter on unchanged, and without a hold_term calls the kernel once;
     target_hold_uneven gives the kernel's value on uneven ground and 0 on even ground and keeps the mask's
     parameters to itself.
-(B) On the built configurations (no GPU): Go2W with U_REST_OLD=even has the same terms in the same order at the
+(B) On the built configurations (no GPU; the play build, the check terrains flat / stairs and the import with
+    UNIFIED_TASKS=1 -- every task built -- included): Go2W with U_REST_OLD=even has the same terms in the same order at the
     same weights as the plain build; pose and standing_target_hold are the two classes (the target hold with the
     pose term's scan sensor), stand_still_even is without its hold_term, every other term's function and parameters
     are the plain build's, the observations and commands too; the blind student's build takes the switch as well;
@@ -112,6 +113,14 @@ def main() -> int:
       for k in env:
         os.environ.pop(k)
 
+  def teacher_build(name, play=False, terrain="map3", **env):
+    os.environ.update(env)
+    try:
+      return teacher_env.unified_teacher_env_cfg(ROBOTS[name], play=play, terrain=terrain)
+    finally:
+      for k in env:
+        os.environ.pop(k)
+
   def sig(cfg, skip=()):
     return {k: (v.weight, getattr(v.func, "__name__", repr(v.func)), repr(sorted(v.params.items(), key=repr)))
             for k, v in cfg.rewards.items() if k not in skip}
@@ -155,6 +164,24 @@ def main() -> int:
     build("Go2W", U_REST_OLD="2"); check(False, "another value stops the build")
   except AssertionError:
     check(True, "another value stops the build")
+  # every task is built at import (src/tasks/unified/__init__.py): the play build and the check terrains' builds
+  # must build with the switch too (uprobe_s120 stopped at the flat build, 2026-11-14 17:15)
+  play = teacher_build("Go2W", play=True, U_REST_OLD="even")
+  check(play.rewards["pose"].func is rest.pose_lock_uneven, "the play build takes the switch too")
+  for terrain in ("flat", "stairs"):
+    for is_play in (False, True):
+      got = teacher_build("Go2W", play=is_play, terrain=terrain, U_REST_OLD="even")
+      want = teacher_build("Go2W", play=is_play, terrain=terrain)
+      check(sig(got) == sig(want) and "standing_target_hold" not in got.rewards,
+            f"the check terrain {terrain}{' (play)' if is_play else ''}: no lock terms there, the plain build")
+  print("the registration (UNIFIED_TASKS=1, every task built):")
+  import subprocess
+
+  for value in ("even", "1"):
+    env = dict(os.environ, UNIFIED_TASKS="1", U_REST_OLD=value, CUDA_VISIBLE_DEVICES="")
+    done = subprocess.run([sys.executable, "-c", "import src.tasks.unified"], env=env, capture_output=True, text=True)
+    last = (done.stderr.strip().splitlines() or [""])[-1][:160]
+    check(done.returncode == 0, f"U_REST_OLD={value}: the import builds every task" + ("" if done.returncode == 0 else f" -- {last}"))
   print("Go2:")
   check(sig(build("Go2", U_REST_OLD="even")) == sig(build("Go2")), "the legged robot: the switch changes nothing")
   print("PASS" if ok else "FAIL")
