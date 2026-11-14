@@ -16,15 +16,16 @@
 #                route on fresh seeds (accept_stairs.py SEED0), and it passes when the bound over both is <= 5%
 #                (1 of 96). (Was 7 runs per route, falls <= 5%: 2 of 42 passed, a bound of 14%.)
 #                Wheeled: slide-back <= 5% in each stage too
-#      MAP3_TYPICAL (2026-11-15, the user's option b; empty = off, every route under the walking payload as above):
-#                a comma list of robots (Go2,Go2W) whose loaded stage judges the two map3 routes under the typical
-#                payload's mass at the walking payload's mount point (Go2 / Go2-W: 4 kg at x +0.15, z +0.20 -- inside
-#                the typical payload's mount box, at its front / top end; the two loads differ in mass only) and the
-#                other routes under the walking payload as before: the same count of runs, one bound over all of
-#                them (wheeled: slide-back <= 5% in each of the two judged parts). The map3 routes under the
-#                walking payload are run too, LOADED_RUNS each: reported in the verdict and the log, not judged.
-#                The pyramid's routes stay under the walking payload (its 18 cm ones too): the user's words name
-#                map3.
+#      STEEP_TYPICAL (2026-11-15, the user's option b; empty = off, every route under the walking payload as above):
+#                a comma list of robots (Go2,Go2W) whose loaded stage judges the 15-18 cm routes (STEEP_ROUTES: the
+#                two map3 routes and the pyramid's two 18 cm ones) under the typical payload's mass at the walking
+#                payload's mount point (Go2 / Go2-W: 4 kg at x +0.15, z +0.20 -- inside the typical payload's mount
+#                box, at its front / top end; the two loads differ in mass only) and the pyramid's two 14 cm routes
+#                under the walking payload as before: the same count of runs, one bound over all of them (wheeled:
+#                slide-back <= 5% in each of the two judged parts). The 15-18 cm routes under the walking payload
+#                are run too, LOADED_RUNS each: reported in the verdict and the log, not judged. (The user's
+#                wording, relayed 2026-11-15 00:12: every 15-18 cm route at 4 kg, the pyramid's 14 cm ones at 8 kg
+#                -- as plan 2 does in the mjlab gate: the full load on 15-18 cm is reported, not judged.)
 #   roll, map3 flights and the corner payload are not run (doc/redesign.md 2.4: the records are gone).
 # The verdict (PASS / FAIL: ...) goes back as <name>.verdict; log $C/accept_unified.txt.
 set -u
@@ -38,7 +39,7 @@ PY=/home/dm/miniconda3/envs/unitree_rl_mjlab/bin/python
 TNL=${TN_LOCK:-$C/tinynav_$P.lock}
 OUT=$C/accept_unified.txt
 LOADED_RUNS=${LOADED_RUNS:-10} LOADED_MORE=${LOADED_MORE:-6} FALL_RATE_BAR=0.05
-MAP3_TYPICAL=${MAP3_TYPICAL:-} MAP3_ROUTES=map3_up,map3_down
+STEEP_TYPICAL=${STEEP_TYPICAL:-} STEEP_ROUTES=map3_up,map3_down,pit_18n_up,top_18n_down
 # FALLS RUNS: 0 when the falls' one-sided 95% upper bound (Clopper-Pearson) is within FALL_RATE_BAR
 cp_ok() { $PY -c "import sys; from scipy.stats import beta; f, n, b = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3]); \
 sys.exit(0 if n > 0 and (1.0 if f >= n else beta.ppf(0.95, f + 1, n - f)) <= b else 1)" $1 $2 $FALL_RATE_BAR; }
@@ -88,14 +89,14 @@ PYEOF
     fi
     PAY=$(bash "$HERE/../../../jobs/accept_payload.sh" $R) || PAY=0,0,0,0
     # the loaded stage's judged parts "<log suffix>|<payload>|<accept_stairs.py's route choice>|<label>", and the
-    # reported one (MAP3_TYPICAL)
+    # reported one (STEEP_TYPICAL)
     parts=("pay|$PAY||") info="" PAYT=""
-    if [[ ",$MAP3_TYPICAL," == *",$R,"* ]]; then
+    if [[ ",$STEEP_TYPICAL," == *",$R,"* ]]; then
       TYP=$(bash "$HERE/../../../jobs/accept_payload.sh" $R typical 2> /dev/null) || TYP=""
-      [ -n "$TYP" ] || { verdict $q "FAIL: MAP3_TYPICAL names $R, which has no typical payload (tool fault)"; continue; }
+      [ -n "$TYP" ] || { verdict $q "FAIL: STEEP_TYPICAL names $R, which has no typical payload (tool fault)"; continue; }
       PAYT=${TYP%%,*},${PAY#*,}
-      parts=("pay|$PAY|SKIP=$MAP3_ROUTES|" "payt|$PAYT|ONLY=$MAP3_ROUTES|map3 ${TYP%%,*} kg")
-      info="payinfo|$PAY|ONLY=$MAP3_ROUTES|"
+      parts=("pay|$PAY|SKIP=$STEEP_ROUTES|" "payt|$PAYT|ONLY=$STEEP_ROUTES|15-18 cm ${TYP%%,*} kg")
+      info="payinfo|$PAY|ONLY=$STEEP_ROUTES|"
     fi
     fails=()
     ( flock 9; cd $WT
@@ -151,17 +152,17 @@ PYEOF
       done
     done
     [ -n "$missing" ] || cp_ok $pf $total || fails+=("负载：摔倒 $pf/$total（95% 上界 $(cp_up $pf $total)）")
-    # MAP3_TYPICAL: the map3 routes under the walking payload -- in the verdict and the log, not judged
+    # STEEP_TYPICAL: the 15-18 cm routes under the walking payload -- in the verdict and the log, not judged
     note="" infoline=""
     if [ -n "$info" ]; then
       infoline=$(grep "^TOTAL" $C/accept_unified/${n}_payinfo.log 2> /dev/null | tail -n 1)
       fi_=$(falls_of $C/accept_unified/${n}_payinfo.log) ri=$(routes_of $C/accept_unified/${n}_payinfo.log)
-      note="（map3 两条路线按常用负载 ${PAYT%%,*} kg 判；map3 上 ${PAY%%,*} kg 只报告：摔倒 ${fi_:-未出结果}/$(( ${ri:-0} * LOADED_RUNS ))）"
+      note="（15–18 cm 的路线（map3 两条、金字塔 18 cm 两条）按常用负载 ${PAYT%%,*} kg 判；这些路线上 ${PAY%%,*} kg 只报告：摔倒 ${fi_:-未出结果}/$(( ${ri:-0} * LOADED_RUNS ))）"
     fi
     if [ ${#fails[@]} = 0 ]; then v="PASS$note"; else v="FAIL: ${fails[*]}$note"; fi
     verdict $q "$v"
     { echo "  stairs: $st"
-      echo "  payload ($PAY$([ -z "$info" ] || echo "; MAP3_TYPICAL: $MAP3_ROUTES at $PAYT"); falls $pf/$total, bound $(cp_up $pf $total)):"
+      echo "  payload ($PAY$([ -z "$info" ] || echo "; STEEP_TYPICAL: $STEEP_ROUTES at $PAYT"); falls $pf/$total, bound $(cp_up $pf $total)):"
       for line in "${lines[@]}"; do echo "    $line"; done
       [ -z "$info" ] || echo "    reported, not judged: ${infoline:-no result}"; } >> $OUT
   done
