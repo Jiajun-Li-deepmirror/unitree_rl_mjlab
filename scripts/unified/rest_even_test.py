@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """rest_even_test.py -- U_REST_OLD=even: a wheeled robot's stand as the delivered Go2W's on even ground, the lock form
 (restlock + standtgt) on uneven ground (go2-depth 2026-11-14; src/tasks/unified/rest.py, robots.base_env_cfg).
+U_REST_OLD=tilt[,<rad>]: the same two forms, the ground told by the base's tilt instead of the scan (the cases
+marked lock_tilt / tilt below).
 
 (A) The two classes around the shared kernels, the kernels' own __call__ and the uneven mask replaced (CPU, no
     simulator): pose_lock_uneven gives the kernel's value with the lock on uneven ground and the one without it on
@@ -79,6 +81,20 @@ def class_cases(rest) -> list[tuple[bool, str]]:
     ok(torch.allclose(got, torch.tensor([0.3, 0.0, 0.3, 0.0])), f"target hold: the kernel's cost on uneven ground, 0 on even: {got.tolist()}")
     ok(calls == [{"command_name": "twist", "tau_s": 1.0}], "target hold: the kernel gets its own parameters only")
     ok(masks == [("scan", 0.45, 0.05)], "target hold: the mask at the kernel's default radius and threshold")
+
+    # U_REST_OLD=tilt: the ground told by the base's tilt (0.10 rad: sin 0.0998), the scan mask not asked
+    grav = torch.tensor([[0.20, 0.0, -0.98], [0.05, 0.0, -1.0], [0.0, 0.15, -0.99], [0.05, 0.05, -1.0]])
+    env = SimpleNamespace(scene={"robot": SimpleNamespace(data=SimpleNamespace(projected_gravity_b=grav))})
+    calls.clear(); masks.clear()
+    got = pose(env, sensor_name="scan", hold_term="standing_position_hold", std_standing=1, lock_tilt=0.10)
+    ok(got.tolist() == [2.0, 1.0, 2.0, 1.0], f"pose, lock_tilt: the lock's value where the base is tilted (pitch or roll): {got.tolist()}")
+    ok(not masks and all("lock_tilt" not in c for c in calls), "pose, lock_tilt: no scan mask, the kernel does not get the field")
+    got = pose(env, sensor_name="scan", hold_term="standing_position_hold", std_standing=1, lock_tilt=0.25)
+    ok(got.tolist() == [1.0] * 4, "pose, lock_tilt 0.25: none of the four is tilted that far")
+    calls.clear(); masks.clear()
+    got = hold(env, sensor_name="scan", command_name="twist", tau_s=1.0, lock_tilt=0.10)
+    ok(torch.allclose(got, torch.tensor([0.3, 0.0, 0.3, 0.0])), f"target hold, lock_tilt: the cost where the base is tilted: {got.tolist()}")
+    ok(not masks and calls == [{"command_name": "twist", "tau_s": 1.0}], "target hold, lock_tilt: no scan mask, the kernel's own parameters only")
   finally:
     (old_rew.variable_posture_terrain_aware.__call__, old_rew.standing_target_hold.__call__,
      old_rew.uneven_terrain_mask) = keep
@@ -164,6 +180,40 @@ def main() -> int:
     build("Go2W", U_REST_OLD="2"); check(False, "another value stops the build")
   except AssertionError:
     check(True, "another value stops the build")
+  # U_REST_OLD=tilt[,<rad>]: the even build with lock_tilt on the two terms, nothing else
+  tilt = build("Go2W", U_REST_OLD="tilt")
+
+  def no_tilt(cfg):
+    return {k: (v.weight, getattr(v.func, "__name__", repr(v.func)),
+                repr(sorted(((a, b) for a, b in v.params.items() if a != "lock_tilt"), key=repr)))
+            for k, v in cfg.rewards.items()}
+
+  check(list(tilt.rewards) == list(even.rewards) and no_tilt(tilt) == no_tilt(even),
+        "U_REST_OLD=tilt: the even build's terms, weights, functions and other parameters")
+  check(tilt.rewards["pose"].params.get("lock_tilt") == rest.TILT
+        and tilt.rewards["standing_target_hold"].params.get("lock_tilt") == rest.TILT
+        and [k for k, v in tilt.rewards.items() if "lock_tilt" in v.params] == ["pose", "standing_target_hold"]
+        or sorted(k for k, v in tilt.rewards.items() if "lock_tilt" in v.params) == ["pose", "standing_target_hold"]
+        and tilt.rewards["pose"].params.get("lock_tilt") == rest.TILT
+        and tilt.rewards["standing_target_hold"].params.get("lock_tilt") == rest.TILT,
+        f"U_REST_OLD=tilt: lock_tilt {rest.TILT} on pose and standing_target_hold only")
+  check("lock_tilt" not in even.rewards["pose"].params and "lock_tilt" not in even.rewards["standing_target_hold"].params,
+        "U_REST_OLD=even: no lock_tilt (the scan mask, as before)")
+  wide = build("Go2W", U_REST_OLD="tilt,0.15")
+  check(wide.rewards["pose"].params.get("lock_tilt") == 0.15 and wide.rewards["standing_target_hold"].params.get("lock_tilt") == 0.15,
+        "U_REST_OLD=tilt,0.15: the tilt from the field")
+  check(obs(tilt) == obs(plain) and repr(tilt.commands["twist"]) == repr(plain.commands["twist"]),
+        "U_REST_OLD=tilt: observations and command unchanged")
+  stu = build("Go2W", student="blind", U_REST_OLD="tilt")
+  check(stu.rewards["pose"].params.get("lock_tilt") == rest.TILT, "U_REST_OLD=tilt: the blind student's build takes it too")
+  for bad in ("tilt,0.5", "tilt,0.01", "tilt,0.1,2", "tilted"):
+    try:
+      build("Go2W", U_REST_OLD=bad); check(False, f"U_REST_OLD={bad} stops the build")
+    except AssertionError:
+      check(True, f"U_REST_OLD={bad} stops the build")
+  for terrain in ("flat", "stairs"):
+    got = teacher_build("Go2W", terrain=terrain, U_REST_OLD="tilt")
+    check(sig(got) == sig(teacher_build("Go2W", terrain=terrain)), f"U_REST_OLD=tilt, the check terrain {terrain}: the plain build")
   # every task is built at import (src/tasks/unified/__init__.py): the play build and the check terrains' builds
   # must build with the switch too (uprobe_s120 stopped at the flat build, 2026-11-14 17:15)
   play = teacher_build("Go2W", play=True, U_REST_OLD="even")
@@ -177,13 +227,14 @@ def main() -> int:
   print("the registration (UNIFIED_TASKS=1, every task built):")
   import subprocess
 
-  for value in ("even", "1"):
+  for value in ("even", "1", "tilt"):
     env = dict(os.environ, UNIFIED_TASKS="1", U_REST_OLD=value, CUDA_VISIBLE_DEVICES="")
     done = subprocess.run([sys.executable, "-c", "import src.tasks.unified"], env=env, capture_output=True, text=True)
     last = (done.stderr.strip().splitlines() or [""])[-1][:160]
     check(done.returncode == 0, f"U_REST_OLD={value}: the import builds every task" + ("" if done.returncode == 0 else f" -- {last}"))
   print("Go2:")
-  check(sig(build("Go2", U_REST_OLD="even")) == sig(build("Go2")), "the legged robot: the switch changes nothing")
+  check(sig(build("Go2", U_REST_OLD="even")) == sig(build("Go2")) and sig(build("Go2", U_REST_OLD="tilt")) == sig(build("Go2")),
+        "the legged robot: the switch changes nothing (even, tilt)")
   print("PASS" if ok else "FAIL")
   return 0 if ok else 1
 

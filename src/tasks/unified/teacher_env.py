@@ -1217,6 +1217,13 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          lock as the pose term's target, the leg targets held (rest.py: two classes around the
                          shared kernels, the keys stay in the build). Does the flat keep s114's creep and the
                          descent the control's stop?
+                         (uprobe_s131, 2048 robots: the stop stays on every flight, 100 %; the flat creep passes
+                         with the scan and fails with the scan masked, 1.10-1.66 cm against the bar's 1.0.)
+    U_REST_OLD=tilt[,<rad>]  as even, the ground told by the base's tilt instead of the scan: the lock form where
+                         the gravity direction is <rad> or more off the base's vertical (0.10), the delivered
+                         form below it (rest.lock_ground). A robot walking with its scan masked observes the tilt
+                         and not the ground: does the masked mode's flat creep pass too, the stop on the flights
+                         kept?
     U_STAND_LONG=<lo>,<hi>  a plain stand on the flat lasts <lo>-<hi> s (the command's
                          stand_resampling_time_range; marches and the stops on stairs keep their timing). The
                          stands of the training data last 2-5 s, the acceptance reads the creep from 2 to 6 s and
