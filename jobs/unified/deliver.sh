@@ -21,4 +21,6 @@ else
   $PY scripts/unified/export_student.py $R $KIND $CK $PKG >> $L 2>&1 && log "UNIFIED DELIVERY $PKG (exported here)" \
     || { log "TOOL FAULT: export for $PKG failed"; exit 4; }
 fi
-LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos
+# (the videos run in this tree: accept_videos.sh's own default root is depth_fe, a tree elsewhere -- UNIFIED_ROOT --
+# would read its relative checkpoint there and write the videos into depth_fe's logs/pkg)
+ACCEPT_ROOT=$PWD LOG=$L bash jobs/accept_videos.sh u$KIND $R $CK $PKG/videos

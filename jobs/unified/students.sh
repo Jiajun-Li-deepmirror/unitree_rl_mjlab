@@ -85,11 +85,13 @@ for x in kv:
 print(json.dumps(d, ensure_ascii=False))
 PYEOF
 }
-s2_gate_run() {   # -n|-x KIND RUN K: the students' tier 2 on the average at K, one gate per card (-n: skip, exit 75,
-  # when another runs; -x: wait for it), one test at a time with its memory need free (jobs/unified/accept.sh)
-  local how=$1 kind=$2 run=$3 k=$4
+s2_gate_run() {   # -n|-x KIND RUN K [FAILFAST]: the students' tier 2 on the average at K, one gate per card (-n: skip,
+  # exit 75, when another runs; -x: wait for it), one test at a time with its memory need free (jobs/unified/accept.sh);
+  # FAILFAST 1 (the gates during training, F_S2_GATE_FAILFAST; never the cap's): accept.sh ACCEPT_FAILFAST=1 -- the first
+  # group judged first, the gate ending there when it does not pass
+  local how=$1 kind=$2 run=$3 k=$4 ff=${5:-0}
   ( flock $how 9 || { log "STUDENT $kind S2 GATE $k: skipped (another gate runs on this card)"; exit 75; }
-    BASELINE=1 CANDIDATES=avg AVG_N=$F_S2_GATE_AVG_N TN_GATE=skip ACCEPT_JOBS=1 ACCEPT_PEAK=1 ACCEPT_DRIFT_SPLIT=1 \
+    ACCEPT_FAILFAST=$ff BASELINE=1 CANDIDATES=avg AVG_N=$F_S2_GATE_AVG_N TN_GATE=skip ACCEPT_JOBS=1 ACCEPT_PEAK=1 ACCEPT_DRIFT_SPLIT=1 \
       ACCEPT_NEED_MB="$([ $kind = depth ] && echo "$F_S2_GATE_NEED_MB_DEPTH" || echo "$F_S2_GATE_NEED_MB")" ACCEPT_FREE_WAIT_S=$F_S2_GATE_WAIT_S \
       ACCEPT_SMALL="$([ $kind = depth ] && echo "${F_S2_GATE_SMALL_DEPTH:-}")" \
       bash jobs/unified/accept.sh $R $kind $run $k >> $L 2>&1 ) 9> logs/jobs/unified_s2gate.lock
@@ -115,7 +117,7 @@ s2_gate_read() {   # KIND RUN K END -> GATE_OUT (pass | hard | fail | fault), GA
         tl $run s2_gate $k verdict=PASS end=$e gap=$GATE_GAP "quality=${q#* }"
       fi ;;
     FAIL*) GATE_OUT=fail; log "STUDENT $kind S2 GATE $k: $(echo "$v" | cut -c1-300)${note}"
-           tl $run s2_gate $k verdict=FAIL end=$e "why=$(echo "$v" | cut -c1-300)" ;;
+           tl $run s2_gate $k verdict=FAIL end=$e failfast=$([ -f ${P}_failfast.txt ] && echo 1 || echo 0) "why=$(echo "$v" | cut -c1-300)" ;;
     *) GATE_OUT=fault; log "STUDENT $kind S2 GATE $k: no verdict (${v:-none}; a tool fault, training goes on)${note}"
        tl $run s2_gate $k verdict=FAULT end=$e "why=${v:-none}" ;;
   esac
@@ -216,7 +218,7 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
             tl $run2 s2_gate $Kg verdict=skipped "why=$n checkpoints"; continue; fi
           ge=$(ls $run2/model_*.pt | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | awk -v k=$Kg '$1 <= k' | tail -n 1)
           # a student's first gate waits for the card (go2-depth: each student one full reading early); later ones skip
-          s2_gate_run $([ $gfirst = 1 ] && printf %s -x || printf %s -n) $kind $run2 $Kg &   # (echo -n prints nothing)
+          s2_gate_run $([ $gfirst = 1 ] && printf %s -x || printf %s -n) $kind $run2 $Kg ${F_S2_GATE_FAILFAST:-0} &   # (echo -n prints nothing)
           gpid=$! gk=$Kg
           log "STUDENT $kind S2 GATE $Kg: started on a${F_S2_GATE_AVG_N}_$ge$([ $gfirst = 1 ] && echo ' (its first: waits for the card if another gate runs)')"
           break
@@ -253,7 +255,9 @@ one() {   # KIND: stage 1, stage 2, then the acceptance; returns accept.sh's exi
     # the cap: the last average is one of the candidates compared (go2-depth) -- its tier 2 (which the acceptance runs
     # anyway) as a gate when no gate judged it yet; the other kind may still be training beside it
     last=$(ls $run/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n | tail -n 1)
-    if [ -n "$last" ] && [ ! -s logs/checks/u_${r}_${kind}_$(basename $run)_a${F_S2_GATE_AVG_N}_${last}_verdict.txt ]; then
+    # (a gate that stopped early on the first group -- its _failfast.txt -- is no judgment of the whole table: run again)
+    local cP=logs/checks/u_${r}_${kind}_$(basename $run)_a${F_S2_GATE_AVG_N}_${last}
+    if [ -n "$last" ] && { [ ! -s ${cP}_verdict.txt ] || [ -f ${cP}_failfast.txt ]; }; then
       log "STUDENT $kind S2 GATE $last (the cap's last average): started"
       s2_gate_run -x $kind $run $last
       s2_gate_read $kind $run $last $last
