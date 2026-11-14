@@ -211,6 +211,17 @@ peakrun() {   # OUT CMD...
   echo "$(( pk - ${u0:-0} )) MiB above the card's ${u0:-?} MiB at the start (card peak $pk MiB)" > ${out%.*}.peak
   return $rc
 }
+fg_failed() {   # FIRST_LINE LABELS -> the judge's items of these labels that did not pass ("" when none did not): an
+  # item listed with a reason other than "未测" / "评测中" (not read yet: not a fail), the judge's own MISSING words
+  local line=${1#*: } labels=$2 it l out=""
+  [[ "$1" == *": "* ]] || { echo ""; return; }   # (PASS: nothing listed)
+  while IFS= read -r it; do
+    for l in $labels; do
+      if [[ "$it" == "$l："* ]] && [[ "$it" != *未测* ]] && [[ "$it" != *评测中* ]]; then out="$out${out:+；}$it"; fi
+    done
+  done <<< "${line//；/$'\n'}"
+  echo "$out"
+}
 drift_join() {   # OUT: the two halves (ACCEPT_DRIFT_SPLIT) as one file, only when both have all their commands
   local o=$1 n1 n2 re='^\s*\(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\)\s*\|'
   [ -f ${o%.txt}.h1.txt ] || return 0
@@ -248,7 +259,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   # REUSE_TIER2=1 (2026-11-13, go2-depth: the stage-2 gate's tier 2 is the acceptance's tier 2): a candidate whose tier
   # 2 this same script already judged (jobs/unified/students.sh's gate: BASELINE=1 on the same run and end, the same
   # files) is not run again -- its verdict stands
-  if [ "${REUSE_TIER2:-0}" = 1 ] && [ $SMOKE != 1 ] && [ -s ${P}_verdict.txt ]; then
+  # (never a gate that stopped early -- ${P}_failfast.txt: its table is not whole)
+  if [ "${REUSE_TIER2:-0}" = 1 ] && [ $SMOKE != 1 ] && [ -s ${P}_verdict.txt ] && [ ! -f ${P}_failfast.txt ]; then
     local v0=$(head -n 1 ${P}_verdict.txt)
     if [[ "$v0" == PASS || "$v0" == FAIL* ]]; then
       log "${CK} tier 2 reused from the stage-2 gate (${P}_verdict.txt)"
@@ -280,38 +292,74 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
     ( export U_PAYLOAD=$1; shift; run "$@" ) &
   }
+  # ACCEPT_FAILFAST=1 (2026-11-14, go2-depth: jobs/unified/students.sh's gates during training, never the cap's gate
+  # nor the acceptance): the first group -- drift3, spin_alt and march in every condition, and clock -- runs first,
+  # whole, and is judged on its own by accept_judge.py (its bars and rules unchanged; the items not run yet read
+  # "评测中"). An item of the group not passed ends the gate there: FAIL, the rest untested -- the verdict says so and
+  # ${P}_failfast.txt marks it (never reused; the cap's gate runs that end again in full). The group passed: the rest
+  # of tier 2, the group's files kept (the same checkpoint and sizes), then the whole judgment as always.
+  local FG_LABELS="跑偏 交替原地转 原地踏步 步态节奏"
+  rm -f ${P}_failfast.txt
+  t2_tests() {   # first | rest | all
+  local part=$1
   for cond in $conds; do
     case $cond in unloaded) pay=0,0,0,0 X="" ;; loaded) pay=$PAY X=_pay ;; typical) pay=$typ X=_typ ;; esac
+    if [ $part != first ]; then
     U_PAYLOAD=$pay $PY scripts/unified/dr_report.py $TF > ${P}_dr$X.txt 2>&1
     pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile $(tn 18) --metrics
     pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs $(tn 768)
     pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs $(tn 384)
+    fi
     # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
     # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)
     # ACCEPT_DRIFT_SPLIT=1 (2026-11-13, the stage-2 gates beside the students' training: 13 x 768 robots at once do not
     # fit beside them): the commands in two halves, the same robots per command, joined into one file after the pool
     local dn=$(tn $([ $KIND = depth ] && echo 384 || echo 768))
-    if [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then
+    if [ $part = rest ]; then :
+    elif [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then
       rm -f ${P}_drift3$X.h1.txt ${P}_drift3$X.h2.txt
       pool $pay ${P}_drift3$X.h1.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN --cmds 0-6
       pool $pay ${P}_drift3$X.h2.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN --cmds 7-12
     else
       pool $pay ${P}_drift3$X.txt $W $S/drift_all.py --task $TF $CK --num-envs $dn $YAW $LIN
     fi
+    if [ $part != rest ]; then
     pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs $(tn 768) $YAW
-    pool_sized $pay ${P}_stand$X.txt stand $(tn 768) $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
     pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs $(tn 96)
+    [ $cond = unloaded ] && pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd $(tn 48)
+    fi
+    if [ $part != first ]; then
+    pool_sized $pay ${P}_stand$X.txt stand $(tn 768) $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
     if [ $cond = unloaded ]; then
       pool_sized $pay ${P}_am.txt am $(tn 96) $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
-      pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd $(tn 48)
     fi
     # wheels down: unloaded and typical (doc/redesign.md 2.2)
     if [[ $R == *W ]] && [ $cond != loaded ]; then
       pool $pay ${P}_gait$X.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd $(tn 96)
     fi
+    fi
   done
   wait
-  if [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then for X in "" _pay _typ; do drift_join ${P}_drift3$X.txt; done; fi
+  if [ $part != rest ] && [ "${ACCEPT_DRIFT_SPLIT:-0}" = 1 ]; then for X in "" _pay _typ; do drift_join ${P}_drift3$X.txt; done; fi
+  }
+  if [ "${ACCEPT_FAILFAST:-0}" = 1 ]; then
+    t2_tests first
+    $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_first.txt 2>&1
+    local fl=$(fg_failed "$(head -n 1 ${P}_first.txt)" "$FG_LABELS")
+    if [ -n "$fl" ]; then
+      { echo "FAIL: （先判先停：第一组不过，其余未测）$fl"
+        echo "  先判先停（门，训练中）：第一组（跑偏 drift3、交替原地转 spin_alt、原地踏步 march、步态节奏 clock）整组测完、有不通过的，其余项没有测 —— 这不是整张表；上限门和最终验收整张重测。第一组的判定全文：${P}_first.txt"
+      } > ${P}_verdict.txt
+      echo "first group failed: $fl" > ${P}_failfast.txt
+      log "${CK} tier 2 stopped early: the first group did not pass (${fl:0:200}); the rest untested"
+      head -n 1 ${P}_verdict.txt
+      return
+    fi
+    log "${CK} tier 2: the first group passed (${P}_first.txt) -- the rest of tier 2"
+    t2_tests rest
+  else
+    t2_tests all
+  fi
   # the map3 flights (unloaded): three shards each already, so one at a time after the pool
   ( export U_PAYLOAD=0,0,0,0
     run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
