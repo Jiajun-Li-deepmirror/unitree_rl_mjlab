@@ -1201,6 +1201,19 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          teacher lacks (stop creep 0.3-0.5 cm against 0.7-1.5, the strafe's gait clock 95 % against
                          68-79 %, stance p90 0.125 rad against 0.13-0.17) on the same reward settings -- do these
                          draws in training cost the flat precision?
+    U_REST_OLD=1         a wheeled robot's stand as the delivered Go2W's (robots.base_env_cfg, REST_OLD_KEYS):
+                         without the keys "restlock" and "standtgt" -- pose / stand_still_even pull to the default
+                         pose through the whole stand, no standing_target_hold. 2026-11-14, the formal Go2W of
+                         170dd4c on the flat gate: creep medians 1.2-1.8 cm after a 1.0 / 1.5 m/s stop (bar 1.0;
+                         the delivered 0.3-0.9) and a 60 s stand at p90 0.155-0.170 rad (bar 0.15), with the creep
+                         multiplier at its cap from 2000 on. The wheels do not roll; the legs come back from the
+                         braking lean for seconds. Is the pose the braking left -- which restlock makes the pose
+                         term's target at the lock -- what keeps the stand from coming to rest?
+    U_STAND_LONG=<lo>,<hi>  a plain stand on the flat lasts <lo>-<hi> s (the command's
+                         stand_resampling_time_range; marches and the stops on stairs keep their timing). The
+                         stands of the training data last 2-5 s, the acceptance reads the creep from 2 to 6 s and
+                         the long stand over 60 s: is the settling unpaid because the stand ends before it shows?
+                         (The B2W's first creep fix, "standlongw": 4-8 s.)
     U_CREEP_CAP=<x>      the cap of the creep item's multiplier (3; it scales standing_position_hold and
                          standing_speed). 2026-11-13, tier 2: the stop creep is the one flat item both robots
                          miss with the multiplier at its cap -- Go2 uprobe_s51 7095 a median of 1.07-1.51 cm after
@@ -1333,6 +1346,11 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     for c in items:
       if c["name"] == "creep":
         c["max_scale"] = float(v)
+  v = os.environ.get("U_STAND_LONG")
+  if v:
+    lo, hi = (float(x) for x in v.split(","))
+    assert 2.0 <= lo <= hi <= 12.0, f"U_STAND_LONG {v}: <lo>,<hi> seconds, 2-12"
+    cfg.commands["twist"].stand_resampling_time_range = (lo, hi)
   v = os.environ.get("U_CLOCK_FLOOR")
   if v:
     x, *rest = v.split(",")

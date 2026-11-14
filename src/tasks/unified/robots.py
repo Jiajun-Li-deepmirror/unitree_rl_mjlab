@@ -103,6 +103,10 @@ def _factory(robot: URobot) -> Callable[..., ManagerBasedRlEnvCfg]:
 # Keys left out of the base: the old constraint sets (the unified teacher has its own, constraints.py) and the
 # lower PPO entropy (the teacher trains from zero at the normal one).
 DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lowent")
+# U_REST_OLD=1 (a probe's switch, off unless set; teacher_env._probe_switches' docstring): a wheeled robot's stand as
+# the delivered Go2W's -- without "restlock" (pose and stand_still_even take the pose at the hold's lock as their
+# target) and "standtgt" (the leg-target hold).
+REST_OLD_KEYS = ("restlock", "standtgt")
 
 
 def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys: str = "P") -> ManagerBasedRlEnvCfg:
@@ -113,7 +117,10 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
   from src.tasks.velocity.depth_env_cfg import apply_depth_teacher
 
   recipe = unified_recipe(robot)
-  keys = [k for k in recipe[keys] if k not in DROPPED_KEYS]
+  v = os.environ.get("U_REST_OLD")
+  assert v in (None, "", "0", "1"), f"U_REST_OLD {v}: 1 or unset"
+  drop = DROPPED_KEYS + (REST_OLD_KEYS if v == "1" and robot.kind == "wheeled" else ())
+  keys = [k for k in recipe[keys] if k not in drop]
   env = {
     "BLIND_PILOT": ",".join(keys),
     "BLIND_PAYLOAD": robot.payload,          # no ramp: the progress curriculum scales the payload (curriculum.py)
