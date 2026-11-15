@@ -79,6 +79,9 @@ export BLIND_PAYLOAD=$(echo "${BLIND_PAYLOAD:-}" | sed -E 's/,ramp=[0-9]+//')
 log() { echo "$(date '+%m-%d %H:%M:%S') $*" >> $L; }
 PAY=$(bash jobs/accept_payload.sh $R) || { log "$R $TAGW VIDEOS FAILED no payload for $R"; exit 1; }
 TX="--r1-top-y 5.6"; case $R in B2|B2W) TX="--r1-top-y 5.6 --r1-turn-x -9.3" ;; esac
+# a teacher's scan casts down from 8 m above the robot: map3 without what it reads as ceilings (2026-11-15: on map3 as
+# built the Go2 teacher stood in front of L0's first step and fell)
+[ $KIND = uteacher ] && TX="$TX --teacher-scan"
 mkdir -p $OUT
 echo $$ > $OUT.pid
 trap 'rm -f $OUT.pid' EXIT
@@ -108,4 +111,6 @@ for c in "flat:${r}_flat:平地" "map3:${r}_map3:map3 楼梯"; do
 done
 m=$(( ($(date +%s) - t0) / 60 ))
 if [ -n "$bad" ]; then log "$R $TAGW VIDEOS FAILED after $m min:$bad${out:+; made$out}"; exit 1; fi
-log "$R $TAGW VIDEOS $OUT:$out (after $m min)"
+# a tour that ended in a fall still makes its clip: say so in the log line
+falls=$(grep -h -o -E "falls [1-9][0-9]*" $OUT/map3.log $OUT/map3_pay.log 2> /dev/null | tr '\n' ' ')
+log "$R $TAGW VIDEOS $OUT:$out (after $m min)${falls:+ -- map3 tour (unloaded, loaded): $falls}"

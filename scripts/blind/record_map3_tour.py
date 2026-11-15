@@ -16,7 +16,7 @@ depth students alike, through jobs/accept_videos.sh).
 
 go2-depth additions (2026-11-06, the user: use these scripts for the acceptance videos and add the tests they miss):
 --stair-stops (stop 2 s halfway up L0 and halfway down R1, then go on: the stairs stop item), --payload kg,x,y,z (the
-payload acceptance's point mass on the base), --max-accel / --max-yaw-accel (command acceleration limits, default
+payload acceptance's point mass on the base), --teacher-scan (a privileged-scan teacher: tour_teacher_boxes), --max-accel / --max-yaw-accel (command acceleration limits, default
 2.0 m/s^2 / 3.0 rad/s^2 as tinynav-sim's teleop; 0 = none), --contact-goes-on (a base / thigh touching the stairs no longer ends the
 tour, only fell_over does; the touches are counted on screen: the Go2W g14 13600 with 12 kg touched the first steps of
 L0 with its body at 3.7 s, upright).
@@ -89,6 +89,57 @@ def make_route(r1_top_y: float, r1_turn_x: float | None = None, stair_stops: boo
     ("L0 下楼", "follow", ((-10.34, 5.60), 90.0, 0.4)),
     ("站立", "pause", 2.0),
   ]
+
+
+# The tour's walking surfaces (map3 box name prefixes): the spawn landing, L0, the landing between the flights, R1 and
+# R1's top landing.
+TOUR_WALK = ("landing_F1_turn", "step_L0_", "landing_F2_south", "step_R1_", "landing_F2_F3_turn_east")
+CEILING_GAP = 1.0      # m: a box this far above one of the tour's walking surfaces is a ceiling to a top-down scan
+CEILING_MARGIN = 0.1   # m around the walking surface's outline
+
+
+def _cut(part, lo, hi):
+  """An axis-aligned box (low corner, high corner) minus the column over the rectangle lo-hi: up to four boxes."""
+  a, b = part
+  if a[0] >= hi[0] or b[0] <= lo[0] or a[1] >= hi[1] or b[1] <= lo[1]:
+    return [part]
+  out = []
+  if a[0] < lo[0]:
+    out.append((a.copy(), np.array([lo[0], b[1], b[2]])))
+  if b[0] > hi[0]:
+    out.append((np.array([hi[0], a[1], a[2]]), b.copy()))
+  x0, x1 = max(a[0], lo[0]), min(b[0], hi[0])
+  if a[1] < lo[1]:
+    out.append((np.array([x0, a[1], a[2]]), np.array([x1, lo[1], b[2]])))
+  if b[1] > hi[1]:
+    out.append((np.array([x0, hi[1], a[2]]), np.array([x1, b[1], b[2]])))
+  return [(p, q) for p, q in out if min(q[0] - p[0], q[1] - p[1]) > 0.02]
+
+
+def tour_teacher_boxes(boxes):
+  """--teacher-scan (go2-depth 2026-11-15): map3 as a privileged-scan teacher can read it along the whole tour.
+
+  The teacher's scan casts down from 8 m above the robot (depth_env_cfg.SCAN_Z_OFFSET), so on map3 as built it reads
+  the storeys above as a ceiling all round (the first unified teacher video, Go2 ufull_s0 model_5200: the teacher
+  stood in front of L0's first step for 8 s and fell; with the payload it sank on the spot). eval_map3.teacher_boxes
+  for the tour's highest walking surface, R1's top landing: the storeys above it go, the rails are cut, the well and
+  the east slot are filled. What that leaves above the tour's own walking surfaces -- R1's top landing reaches over
+  the spawn landing (its west part and the bridge), L1's first steps hang over L0's -- is cut away where it lies over
+  them. Nothing the robot touches changes: the tour's physics are map3's, the clip shows the stairwell without the
+  storeys above. A camera sees ceilings for real: students run on map3 as built."""
+  walk = [(s, p) for n, s, p in boxes if n.startswith(TOUR_WALK)]
+  top = max(p[2] + s[2] for s, p in walk)
+  scenario = eval_map3.Scenario("tour", SPAWN, SPAWN_YAW, [], f"climb:{top - SPAWN[2]:.3f}")
+  out = []
+  for name, size, pos in eval_map3.teacher_boxes(boxes, scenario):
+    parts = [(pos - size, pos + size)]
+    if not name.startswith(("rail",) + TOUR_WALK):
+      for ws, wp in walk:
+        if pos[2] - size[2] >= wp[2] + ws[2] + CEILING_GAP:
+          lo, hi = wp[:2] - ws[:2] - CEILING_MARGIN, wp[:2] + ws[:2] + CEILING_MARGIN
+          parts = [q for part in parts for q in _cut(part, lo, hi)]
+    out += [(name, (hi - lo) / 2, (hi + lo) / 2) for lo, hi in parts]
+  return out
 
 
 def fixed_payload(cfg, spec):
@@ -216,6 +267,8 @@ def main() -> None:
   p.add_argument("--seed", type=int, default=0)
   p.add_argument("--stair-stops", action="store_true", help="stop 2.5 s halfway up L0 and halfway down R1")
   p.add_argument("--payload", default=None, help="kg,x,y,z: a fixed point mass on the base")
+  p.add_argument("--teacher-scan", action="store_true",
+                 help="a privileged-scan teacher: map3 without what its top-down scan reads as ceilings (tour_teacher_boxes)")
   # Comparable clips (2026-11-11, the user: the unloaded and loaded videos from the same start at the same angle): an
   # exact start (the scenario's spawn and heading, the default joint pose; the eval config spreads it +-5 cm / +-3 deg)
   # and a chase camera turning with the route's heading (the same in every clip), not the robot's.
@@ -230,7 +283,10 @@ def main() -> None:
     args.title = f"{args.title}  载荷 {args.payload.split(',')[0]} kg"
 
   scenario = eval_map3.Scenario("tour", SPAWN, SPAWN_YAW, [(600.0, 0.0, 0.0, 0.0)], "track")
-  cfg = eval_map3.make_env_cfg(scenario, eval_map3.load_map3_boxes(), 1, args.seed, args.task)
+  boxes = eval_map3.load_map3_boxes()
+  if args.teacher_scan:
+    boxes = tour_teacher_boxes(boxes)
+  cfg = eval_map3.make_env_cfg(scenario, boxes, 1, args.seed, args.task)
   if not args.random_start:
     pr = cfg.events["reset_base"].params["pose_range"]
     yaw0 = 0.5 * (pr["yaw"][0] + pr["yaw"][1])
