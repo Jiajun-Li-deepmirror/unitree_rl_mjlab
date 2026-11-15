@@ -260,6 +260,9 @@ def chain_zh(text: str) -> str | None:
      lambda m: (f"老师到上限：硬项全过、质量目标没全到，选定种子 {m[2]}，{base(m[1])}" if "every hard item passed" in m[3]
                 else f"老师到上限没过门：选定判过的检查点里最好的，种子 {m[2]}，{base(m[1])}" if "below the gate" in m[3]
                 else f"老师通过：选定种子 {m[2]}，{base(m[1])}")),
+    # a pick made by hand before the cap (go2-depth 2026-11-15: the Go2's model_5200): not the chain's own pass
+    (r"HAND PICK by go2-depth \(seed (\d+): (\S+)\): ",
+     lambda m: f"老师人工选点（没有等到上限，不是老师链自己判通过的）：选定种子 {m[1]}，{base(m[2])}；老师链和各种子已手动停止，检查点都保留；没有备用种子"),
     (r"PASS \(seed (\d+): .*?\); kept for a fallback: seeds (.+?) \(", lambda m: f"老师链完成：种子 {m[1]} 通过；备用种子 {m[2]}"),
     (r"seeds (.+?) stopped \(seed (\d+) passed", lambda m: f"种子 {m[1]} 已停（种子 {m[2]} 通过；检查点都保留）"),
     (r"seed (\d+) stopped at its pick", lambda m: f"种子 {m[1]} 在选定的检查点停下"),
@@ -268,7 +271,9 @@ def chain_zh(text: str) -> str | None:
     (r"no seed passed", lambda m: "老师链结束：没有种子通过"),
     (r"waiting for the teacher's pick", lambda m: "学生等待进程已启动，等老师通过"),
     (r"the waiter started (\S+ \S+) \(old code\) stopped", lambda m: f"旧版学生等待进程（{m[1]} 启动）已停，用户同意；新版在学生冒烟测试通过后启动"),
-    (r"teacher (\S+) \(seed (\d+), code (\w+)\); kinds (.+?); stage 1 (\d+) it, stage 2 (\d+) it, (\d+) robots each",
+    (r"teacher stop check: STOPCHECK PASS .*?pooled worst \w+ (\d+)/(\d+) .*?creep worst ([\d.]+)cm",
+     lambda m: f"老师平地停车检查通过：最差的一组 {m[2]} 次里摔 {m[1]} 次，停车蠕动最大 {m[3]} cm"),
+    (r"teacher (\S+) \(seed (\d+), code (\w+)(?:, formal\.env \w+)?\); kinds (.+?); stage 1 (\d+) it, stage 2 (\d+) it, (\d+) robots each",
      lambda m: f"学生开训：老师种子 {m[2]}（{base(m[1])}），{m[4]}；阶段 1 {m[5]} 步，阶段 2 {m[6]} 步，每种 {m[7]} 台机器人"),
     (r"(blind|depth) stage (\d) done", lambda m: f"{KIND_ZH[m[1]]}学生阶段 {m[2]} 完成"),
     (r"TOOL FAULT: (.*)", lambda m: f"工具故障（不算未通过）：{m[1]}"),
@@ -508,7 +513,8 @@ def main() -> int:
     teachers = [(run, row) for run, row in mine if row["role"] == "teacher"]
     pick = d["picks"].get(f"unified_{key}_full.pick")
     if pick:
-      t_cell = "已通过，选定 " + "/".join(pick.split("/")[-2:])
+      hand = any("HAND PICK" in l for l in d["logs"].get(f"unified_{key}.txt", []))
+      t_cell = ("人工选定（没有等到上限） " if hand else "已通过，选定 ") + "/".join(pick.split("/")[-2:])
     elif any(row["status"] in ("training", "stalled") for _, row in teachers):
       t_cell = "训练中：" + "；".join(f"{row['run'].replace('老师 ', '')} 第 {row['iter']} 步" for _, row in teachers
                                   if row["status"] in ("training", "stalled")) + f"（上限 {teachers[0][1]['max']} 步）"
@@ -528,7 +534,8 @@ def main() -> int:
       elif mine_k:
         cells[kind] = "训练结束，验收中" if d["procs"].get("accept") else "训练结束"
       else:
-        cells[kind] = "等老师通过" if d["procs"].get("students") else "没有开始（没有等待进程）"
+        cells[kind] = (("老师已选定，准备开训" if pick else "等老师通过") if d["procs"].get("students")
+                       else "没有开始（没有等待进程）")
     acc = "；".join(f"{KIND_ZH[k]}：{(chain_zh(last_line[('accept', k)]) or last_line[('accept', k)])[:120]}"
                    for k in ("blind", "depth") if ("accept", k) in last_line)
     deliv = [e["text"] for e in events if e["robot"] == R and e["text"].startswith("交付包已生成")]
