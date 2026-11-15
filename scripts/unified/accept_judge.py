@@ -329,8 +329,11 @@ def stairs_falls(path: str) -> int | None:
 # Go2 students of 93a857f, the Go2W of 2c808e7) were not trained for it and report it -- FLIGHT_HEADING_JUDGED lists
 # the robots judged (U_JUDGE_FLIGHT_HEADING="Go2,..." adds robots for a test run). The meander (the slow weaving,
 # peak-to-peak) and the calf contacts per flight: reported, no bar.
+# 2026-11-16 (go2-depth): the Go2 judged from its teacher v2 on (the user's option 甲 by default: U_DESCENT_LEG=6 +
+# U_FLIGHT_HEADING=5,0.07 trained; uprobe_s178's avg4 read <= 5.6 deg up and down). The Go2W not: its version of
+# 77a29ea was trained without the heading cost (the user's option C by default for problem 1) and reports it.
 FLIGHT_HEADING_BAR_DEG = 8.0
-FLIGHT_HEADING_JUDGED: frozenset[str] = frozenset()
+FLIGHT_HEADING_JUDGED: frozenset[str] = frozenset({"Go2"})
 
 
 def flight_heading_judged(r: str) -> bool:
