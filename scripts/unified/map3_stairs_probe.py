@@ -158,6 +158,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   fell = torch.zeros(n, dtype=torch.bool, device=dev)
   fell_stop = torch.zeros(n, dtype=torch.bool, device=dev)
   fell_land = torch.zeros(n, dtype=torch.bool, device=dev)
+  fell_phase = torch.full((n,), -1, dtype=torch.long, device=dev)
   s_stop = torch.full((n,), float("nan"), device=dev)
   disp1, disp3, back_min = s_stop.clone(), s_stop.clone(), torch.zeros(n, device=dev)
   v_acc, v_n = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
@@ -207,6 +208,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
       obs, _, dones, extras = venv.step(policy(obs))
     terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
     new_fall = terminated & ~fell
+    fell_phase = torch.where(new_fall, phase, fell_phase)
     fell_stop |= new_fall & (phase == 1)
     fell_land |= new_fall & (phase >= 4) & (phase <= 6)
     fell |= terminated
@@ -248,10 +250,21 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "disp2": np_(disp3 - disp1), "back_min": np_(back_min),
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
-          "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand)}
+          "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase)}
+
+
+PHASES = ("climb to mid", "mid stop", "climb on", "onto landing", "stand", "turn", "stand 2", "done")
 
 
 def report(rows) -> None:
+  print("== where each robot ended (alive) and where the fallen fell, per flight ==")
+  for r in rows:
+    alive = r["fell_phase"] < 0
+    end = {PHASES[k]: int(((r["phase"] == k) & alive).sum()) for k in range(len(PHASES))}
+    falls = {PHASES[k]: int((r["fell_phase"] == k).sum()) for k in range(len(PHASES))}
+    print(f"{r['name']:10s} ended: " + ", ".join(f"{k} {v}" for k, v in end.items() if v)
+          + " | fell in: " + (", ".join(f"{k} {v}" for k, v in falls.items() if v) or "none"))
+
   print("\n== (c) the mid-flight stop on the climb: braking (0-1 s after the zero command) and drift (1-3 s); held = "
         "drift within +-5 cm ==")
   allv = {q: [] for q in ("disp2", "back_min", "v", "brake")}
