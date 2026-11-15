@@ -7,8 +7,8 @@ On the built configurations (no GPU), per robot:
   (1) with the switches off (U_STEER= U_FAST_SIDE= in the environment: an empty value wins over the recipe's; every
       build below starts from it): the command's steering share, |wz| range, slow share and fast-side share as the old
       flow's keys set them (printed); the plain build: the recipe's own fast-side share where the robot's recipe
-      carries U_FAST_SIDE (the wheeled kind's, 0.1, since 2026-11-15), the old flow's where it does not; no recipe
-      carries U_STEER;
+      carries U_FAST_SIDE (none does: the wheeled kind's 0.1 of 2026-11-15 went out the next day, uprobe_s182), the
+      old flow's where it does not; no recipe carries U_STEER;
   (2) U_STEER=0.3: the steering share 0.3, its |wz| range and slow share as before; U_STEER=0.3,0.25,0.1: the largest
       |wz| 0.25 (the smallest kept) and the slow share 0.1; U_FAST_SIDE=0.1: the fast-side share 0.1; both together:
       both;

@@ -142,13 +142,13 @@ KIND: dict[str, dict[str, str]] = {
                                       # 16.5); the heading cost that would take it back does not hold the loaded
                                       # stop (U_FLIGHT_HEADING 5 / 15, uprobe_s164 / s170: out) -- the climb's
                                       # heading is reported, not judged, in this version
-    "U_FAST_SIDE": "0.1",             # the fast strafes' share of the flat commands 3.2 -> 12.8 %: the one item the
-                                      # mean of that seed's last 8 checkpoints fails in the flat gate is the gait
-                                      # clock on (0, +-0.6, 0), 79 / 80 % at the bar 80 %. uprobe_s180, the mean of
-                                      # its last 4 checkpoints, 96 robots per command: 86 / 85 % in both scan modes,
-                                      # no judged command under 85 %, the stairs gate passed (no fall, the full
-                                      # payload's 3). The share 0.2 (uprobe_s181) lifts the strafes to 88-92 % and
-                                      # drops the fast gentle arcs under the bar (77 % at (1.0, 0, 0.15), scan off)
+    # (U_FAST_SIDE, the fast strafes' share of the flat commands, is not in the recipe. Alone at 0.1 it lifts the
+    # one item the mean of the last 8 checkpoints fails in the flat gate, the gait clock on (0, +-0.6, 0), from
+    # 79 / 80 % to 86 / 85 % (uprobe_s180). With the pitch cost above it gains nothing: that cost and the mean of
+    # the last 4 checkpoints alone read 85-88 % on the strafes and 83-90 % on the fast gentle arcs and pass both
+    # tier-2 gates (uprobe_s169); with the share added the strafes stay at 85-87 % and the arcs (1.0, 0, +-0.1..0.2)
+    # drop to 73-79 % with the scan on, 4 of the 31 judged commands under the bar 80 % (uprobe_s182). The share
+    # 0.2 drops them too (77 % at (1.0, 0, 0.15), uprobe_s181).)
   },
 }
 
