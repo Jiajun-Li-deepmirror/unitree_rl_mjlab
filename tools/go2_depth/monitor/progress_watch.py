@@ -68,9 +68,15 @@ def read(port: str, train_log: str, chain_log: str) -> dict:
          "echo GPU $(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits | head -n 1 | tr -d ' '); "
          "echo NOW $(date +%s); ")
   m = re.match(r"logs/jobs/unified_([a-z0-9]+)_u", train_log)
-  if m:   # every seed's records of this robot's teacher, the runs written to in the last RECORDS_H hours
-    cmd += (f"for f in $(find logs/rsl_rl/{m.group(1)}_u_teacher -maxdepth 3 -name status.json -mmin -{RECORDS_H * 60} "
-            "2>/dev/null | sort); do echo STATUS $(cat $f); done")
+  if m:   # every seed's records of this robot's teacher and students, the runs written to in the last RECORDS_H hours
+    r = m.group(1)
+    # the stage after the teacher: its pick, the students' chain (2026-11-15: the Go2's students were not watched)
+    cmd += (f"echo PICKED $(test -s logs/jobs/unified_{r}_full.pick && echo 1); "
+            f"echo STUD $(ps -eo args | grep -c '[j]obs/unified/students.sh'); "
+            f"echo SPICKS $(ls logs/jobs/unified_{r}_blind.pick logs/jobs/unified_{r}_depth.pick 2>/dev/null | wc -l); "
+            f"echo SLINE $(tail -n 1 logs/jobs/unified_{r}_students.txt 2>/dev/null | cut -c1-200); ")
+    cmd += (f"for f in $(find logs/rsl_rl/{r}_u_teacher logs/rsl_rl/{r}_u_student_* -maxdepth 3 -name status.json "
+            f"-mmin -{RECORDS_H * 60} 2>/dev/null | sort); do echo STATUS $(cat $f); done")
   out = {"STATUS": []}
   for line in remote(port, cmd).splitlines():
     k, _, v = line.partition(" ")
@@ -143,7 +149,8 @@ def main() -> int:
     it = int(r["ITER"]) if r.get("ITER", "").isdigit() else None
     h_it = track(f"{name}/iter", it)
     line = f"{name}: iteration {it} ({h_it * 60:.0f} min unchanged)"
-    if kind != "checks" and it is not None and h_it * 60 >= ITER_STALL_MIN:
+    picked = r.get("PICKED") == "1"   # the teacher is over: its log and gate stand still by design, the students run
+    if kind != "checks" and it is not None and h_it * 60 >= ITER_STALL_MIN and not picked:
       alarms.append(f"STALL {name}: iteration {it} unchanged for {h_it * 60:.0f} min (trainings alive: {r.get('ALIVE')})")
     if kind == "unified":
       p = r.get("P") or None
@@ -152,10 +159,16 @@ def main() -> int:
       line += f", p {p} ({h_p:.1f} h), level {r.get('LEVEL')}, gate '{r.get('GATE')}' ({h_gate:.1f} h)"
       if r.get("Q"):   # the stairs quality stage (curriculum.py): q and the climbing row it waits for
         line += f", q {r['Q']}, climbing row {r.get('UP')}"
-      if it is not None and it >= P_GRACE_IT and h_p >= P_STALL_H and (p is None or float(p) < 1.0):
+      if not picked and it is not None and it >= P_GRACE_IT and h_p >= P_STALL_H and (p is None or float(p) < 1.0):
         alarms.append(f"SLOW {name}: progress p {p} has not risen for {h_p:.1f} h (iteration {it}, level {r.get('LEVEL')})")
-      if h_gate >= GATE_STALL_H:
+      if not picked and h_gate >= GATE_STALL_H:
         alarms.append(f"SLOW {name}: gate verdict unchanged for {h_gate:.1f} h: {r.get('GATE')}")
+      if picked:   # the students' stage: their runs are the seed lines below (DEAD / ALERT / FAULT / ENDED from the records)
+        h_s = track(f"{name}/students", r.get("SLINE"))
+        line += f"; teacher picked, students.sh {r.get('STUD')}, student picks {r.get('SPICKS')} of 2, last line ({h_s:.1f} h) '{(r.get('SLINE') or '')[15:135]}'"
+        if r.get("STUD", "0") == "0" and r.get("SPICKS", "0") != "2":
+          alarms.append(f"DEAD {name}: the teacher is picked, no students.sh runs and {r.get('SPICKS')} of 2 student picks exist "
+                        f"(last line: {(r.get('SLINE') or '')[:140]})")
     else:
       h_ck = track(f"{name}/check", r.get("CHECK"))
       line += f", last check '{(r.get('CHECK') or '')[:90]}' ({h_ck:.1f} h)"
