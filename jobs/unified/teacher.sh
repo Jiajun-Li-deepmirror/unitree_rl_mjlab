@@ -6,7 +6,7 @@
 #   SEEDS    F_TEACHER_SEEDS (jobs/unified/formal.env: "0 1"); PARALLEL (F_TEACHER_PARALLEL: 1) trains them side by
 #            side on this GPU at NUM_ENVS / seeds robots each (NUM_ENVS default F_TEACHER_ENVS_PER_SEED x seeds), else
 #            one after the other at NUM_ENVS
-#   ITERS    the cap (F_TEACHER_ITERS: 12000); a seed stops at its cap or when another seed has passed
+#   ITERS    the cap (F_TEACHER_ITERS: 6000 since 11-15, was 12000); a seed stops at its cap or when another seed has passed
 # STAIRS_GATE (F_STAIRS_GATE, 1; 2026-11-13, go2-depth's design): the gate in two parts -- teacher_gate.py --pre (the
 # curriculum done and the flat items, by the training's readings) gives "PRE-PASS K"; then tier-2's own stairs test on
 # model_K (jobs/unified/stairs_gate.sh: both scan modes, unloaded, ~5 min) passes or not (scripts/unified/stairs_gate.py:
