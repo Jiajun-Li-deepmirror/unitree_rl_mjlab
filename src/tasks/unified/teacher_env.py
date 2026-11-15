@@ -1390,6 +1390,26 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          stands of the training data last 2-5 s, the acceptance reads the creep from 2 to 6 s and
                          the long stand over 60 s: is the settling unpaid because the stand ends before it shows?
                          (The B2W's first creep fix, "standlongw": 4-8 s.)
+    U_STEER=<p>[,<w>[,<s>]]  the command draw's steering arcs on the flat (velocity_command: a moving command
+                         replaced by (vx, 0, wz) with a gentle turn): their share of the flat commands <p>
+                         (0.05-0.5; steer_prob: the wheeled 0.2 from the old flow, the legged none), the largest
+                         |wz| <w> rad/s (0.1-0.6; steer_wz_range, 0.4) and the share <s> of them drawn slow,
+                         0.1-0.3 m/s (0-0.5; steer_slow_prob, the wheeled 0.25). The training robots' exposure,
+                         not the reading: the flat scripts' robots do not train. The students train on the
+                         teacher's commands (the same switch).
+                         2026-11-15, the Go2W formal (2c808e7) seed 1 4500, tier 2 flat by hand: the gait clock is
+                         the one item left, 9 of 31 commands -- the arcs (1.0, 0, +-0.1..0.2) 62-69 % in step at
+                         1-1.7 touchdowns a second (bar 80 %; the wheeled step on every arc above 0.03 rad/s,
+                         "arcstep") -- with the clock's multiplier at its cap 3 from ~3800 on and the "arc_fast"
+                         bin at 0.68-0.79 (seed 0: 0.82-0.90 by 5000). The gate's arcs (forward 0.75-1.25 m/s,
+                         |wz| <= 0.25) are 2.0 % of the flat commands at the curriculum's end; 0.3,0.25,0.1 makes
+                         them 6.4 % (scratchpad probe/cmd_mix.py). Is the clock on the fast arcs a matter of
+                         exposure?
+    U_FAST_SIDE=<p>      <p> of the flat commands (0.02-0.3) walk sideways at 75-100 % of the vy limit, either way
+                         (the command's fast_side_prob; the old flow's "stopside" gives the legged 0.15, the
+                         wheeled none). The same gate: the strafes (0, +-0.6, 0) 71-75 % in step with the
+                         "side_fast" bin at 0.70-0.75 (seed 0: 0.85-0.86); a strafe from 0.45 m/s is 3.2 % of the
+                         flat commands, 12.8 % at 0.1.
     U_CREEP_CAP=<x>      the cap of the creep item's multiplier (3; it scales standing_position_hold and
                          standing_speed). 2026-11-13, tier 2: the stop creep is the one flat item both robots
                          miss with the multiplier at its cap -- Go2 uprobe_s51 7095 a median of 1.07-1.51 cm after
@@ -1530,6 +1550,22 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
     lo, hi = (float(x) for x in v.split(","))
     assert 2.0 <= lo <= hi <= 12.0, f"U_STAND_LONG {v}: <lo>,<hi> seconds, 2-12"
     cfg.commands["twist"].stand_resampling_time_range = (lo, hi)
+  v = os.environ.get("U_STEER")
+  if v:
+    f = [float(x) for x in v.split(",")]
+    assert 1 <= len(f) <= 3 and 0.05 <= f[0] <= 0.5, f"U_STEER {v}: <share 0.05-0.5>[,<|wz| max>[,<slow share>]]"
+    twist = cfg.commands["twist"]
+    twist.steer_prob = f[0]
+    if len(f) > 1:
+      assert max(0.1, twist.steer_wz_range[0]) <= f[1] <= 0.6, f"U_STEER {v}: the largest |wz|, 0.1-0.6 rad/s"
+      twist.steer_wz_range = (twist.steer_wz_range[0], f[1])
+    if len(f) > 2:
+      assert 0.0 <= f[2] <= 0.5, f"U_STEER {v}: the slow arcs' share of the steering commands, 0-0.5"
+      twist.steer_slow_prob = f[2]
+  v = os.environ.get("U_FAST_SIDE")
+  if v:
+    assert 0.02 <= float(v) <= 0.3, f"U_FAST_SIDE {v}: the fast strafes' share of the flat commands, 0.02-0.3"
+    cfg.commands["twist"].fast_side_prob = float(v)
   v = os.environ.get("U_CLOCK_FLOOR")
   if v:
     x, *rest = v.split(",")
