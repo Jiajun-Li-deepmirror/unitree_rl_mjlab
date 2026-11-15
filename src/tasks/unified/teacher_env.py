@@ -1306,6 +1306,10 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          the Go2W's videos: "在平台的时候会出现前面是墙然后做抬腿翻越动作" -- the unified recipe has
                          none of the four (endwall cost the Go2W 3-8 % of its climbing speed on 2026-11-09 and was
                          left to the deployed wall guard; the B2W's top-landing steps went 2.0 -> 0.3 with it).
+    U_MODEL=legacy       no probe's and no recipe's: an evaluation's switch, read by robots.base_env_cfg -- the robot
+                         without the table's model=uros, for a policy of the old flow (trained on the model as
+                         it was before 2026-11-11) under the unified checks. A training with it stops
+                         (robots.no_training_on_legacy).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight

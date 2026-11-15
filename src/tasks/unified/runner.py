@@ -39,6 +39,7 @@ from . import diagnostics
 from . import recipe as urecipe
 from .constraints import eval_count
 from .curriculum import Q_IN, ramp
+from .robots import no_training_on_legacy
 
 
 def code_version() -> str:
@@ -71,6 +72,7 @@ class UnifiedTeacherRunner(VelocityOnPolicyRunner):
       "mirror_loss_coeff": self.MIRROR_LOSS_COEFF,
     }
     train_cfg = {**train_cfg, "algorithm": {**train_cfg["algorithm"], "symmetry_cfg": symmetry_cfg}}
+    no_training_on_legacy(log_dir)   # U_MODEL=legacy: an evaluation's switch (robots.py)
     super().__init__(env, train_cfg, log_dir, device)
     self._commit = code_version()
     self._segments: list[dict] = []   # the stretches before this process's (from the checkpoint it resumed)

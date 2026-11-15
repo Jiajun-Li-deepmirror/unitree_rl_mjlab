@@ -62,7 +62,7 @@ from src.tasks.velocity.rl.student_ppo import (
 
 from . import diagnostics, student_sched
 from .models import PRIV_GROUP, PRIV_LATENT
-from .robots import URobot
+from .robots import URobot, no_training_on_legacy
 from .teacher_env import unified_teacher_env_cfg
 
 STUDENT_GROUPS = {"blind": ("actor",), "depth": ("proprio", "proprio_history", "depth")}
@@ -416,6 +416,7 @@ def _export_blind(runner, path: str, filename: str) -> None:
 class UStudentDistillationRunner(DepthDistillationRunner):
   def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
     teacher_checkpoint = train_cfg.get("teacher_checkpoint", "")
+    no_training_on_legacy(log_dir)   # U_MODEL=legacy: an evaluation's switch (robots.py)
     super().__init__(env, train_cfg, log_dir, device)
     restore_teacher_curriculum(self.env, teacher_checkpoint, device)
     diagnostics.attach(self, kind="student")   # the training records (<run>/records/, diagnostics.py)
@@ -430,6 +431,7 @@ class UStudentDistillationRunner(DepthDistillationRunner):
 class UStudentPpoRunner(DepthStudentPpoRunner):
   def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device: str = "cpu") -> None:
     teacher_checkpoint = train_cfg.get("teacher_checkpoint", "")
+    no_training_on_legacy(log_dir)   # U_MODEL=legacy: an evaluation's switch (robots.py)
     super().__init__(env, train_cfg, log_dir, device)
     restore_teacher_curriculum(self.env, teacher_checkpoint, device)
     diagnostics.attach(self, kind="student")   # the training records (<run>/records/, diagnostics.py)

@@ -61,7 +61,8 @@ ROBOTS: dict[str, URobot] = {
 
 def unified_recipe(robot: URobot) -> dict:
   """jobs/recipes/unified.py's recipe for the robot (read, not changed): "T" / "M" / "P" key lists and "env", the
-  robot's BLIND_PARAMS (leg gains, leg hold, stairs share cap; empty for Go2 / Go2W)."""
+  robot's BLIND_PARAMS (model=uros for every robot since 2026-11-11 -- U_MODEL below; leg gains, leg hold and
+  stairs share cap where the robot has them)."""
   spec = importlib.util.spec_from_file_location("_unified_recipe", REPO / "jobs" / "recipes" / "unified.py")
   assert spec and spec.loader
   mod = importlib.util.module_from_spec(spec)
@@ -119,6 +120,38 @@ ADD_NEEDS = {"endwallshort": "endwall", "topflat30": "topflat"}   # a key that o
 ADD_WHEELED = ("topflat", "topflat30")                            # a cost on the wheels: nothing on a legged robot
 ADD_RECIPE_NEEDS = {"endwall": "longexit"}   # the wall stands at the flight's exit: 0.5 m past the last riser without
                                              # longexit (1.4 m with it), inside the command's stop distance
+# U_MODEL=legacy (an evaluation's switch, off unless set; no recipe carries it): the robot as the old flow's packages
+# were trained on it -- without the table's model=uros (src/assets/robots/uros.py: the unitree_ros-aligned model file
+# and actuator limits, every robot's since 2026-11-11; its rule: a checkpoint is always evaluated and exported on the
+# model it trained on). The policies deployed in tinynav-sim and every package without model= in a blind_params.txt
+# are the legacy model's; converted for the unified checks (scripts/unified/baseline_ckpt.py copies weights alone)
+# they ran on a robot they never trained on -- 2026-11-15, the delivered Go2W blind g14 at 8 kg up map3: 477 first
+# falls of 896 robots, 326 of them on the first step (the aligned Go2W's calf torque limit is 35.55 Nm against 45,
+# its calf 0.80 kg against 0.241, its wheel 0.52 kg against 0.98), against none at 12 kg in its own acceptance.
+# The robot's other parameters (leg gains, leg hold, stairs share cap) stay. A training with it stops
+# (no_training_on_legacy): the unified pipeline trains on the aligned model alone.
+MODEL_SWITCH = "U_MODEL"
+
+
+def legacy_model() -> bool:
+  v = os.environ.get(MODEL_SWITCH)
+  assert v in (None, "", "legacy"), f"{MODEL_SWITCH} {v}: legacy or unset"
+  return v == "legacy"
+
+
+def model_params(params: str) -> str:
+  """The robot's BLIND_PARAMS as the build reads them: with U_MODEL=legacy without the model= entry."""
+  if not legacy_model():
+    return params
+  return ",".join(kv for kv in params.split(",") if kv and kv.split("=", 1)[0] != "model")
+
+
+def no_training_on_legacy(log_dir) -> None:
+  """A runner with a log directory is a training's (plays, checks, probes and exports have none): U_MODEL=legacy
+  stops it."""
+  if log_dir and legacy_model():
+    raise RuntimeError(f"{MODEL_SWITCH}=legacy is an evaluation's switch (an old package on the model it trained on): "
+                       "the unified pipeline trains on the aligned model alone")
 
 
 def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys: str = "P") -> ManagerBasedRlEnvCfg:
@@ -140,7 +173,7 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     "BLIND_PAYLOAD": robot.payload,          # no ramp: the progress curriculum scales the payload (curriculum.py)
     "BLIND_WALL_STOP": str(robot.wall_stop_m),
     "BLIND_FOOT_R": None if robot.foot_r_m is None else str(robot.foot_r_m),
-    "BLIND_PARAMS": recipe["env"],
+    "BLIND_PARAMS": model_params(recipe["env"]),
     # nothing of a blind chain's run state
     "BLIND_PHASE_START_IT": None,
     "BLIND_CONS_INIT": None,

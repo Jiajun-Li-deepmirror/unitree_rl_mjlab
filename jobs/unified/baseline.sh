@@ -15,8 +15,15 @@ SRC=${2:-$DEF} NAME=${3:-${DEFN:-baseline}}
 cd ${UNIFIED_ROOT:-/root/gpufree-data/go2-depth/depth_fe} || exit 2
 source env.sh > /dev/null 2>&1
 [ -f "$SRC" ] || { echo "baseline.sh: no $SRC" >&2; exit 2; }
+# The model the source trained on (go2-depth 2026-11-15; src/assets/robots/uros.py: a checkpoint is evaluated on the
+# model it trained on): a package says model=uros in a blind_params.txt beside the checkpoint; without it -- every
+# policy deployed before 2026-11-12 -- it is the legacy model's and the unified checks build that one (U_MODEL=legacy,
+# src/tasks/unified/robots.py). The converted checkpoint's directory keeps the choice in model.txt.
+if grep -qs 'model=uros' "$(dirname "$SRC")/blind_params.txt"; then MODEL=uros; else MODEL=legacy; export U_MODEL=legacy; fi
+echo "baseline.sh: $SRC on the $MODEL model"
 OUT=logs/rsl_rl/${r}_u_baseline/$NAME
 UNIFIED_TASKS=1 $PY scripts/unified/baseline_ckpt.py $R $SRC $OUT || exit 2
+echo "$MODEL" > $OUT/model.txt
 K=$(ls $OUT/model_*.pt | grep -oE 'model_[0-9]+' | cut -d_ -f2 | sort -n | tail -n 1)
 BASELINE=1 CANDIDATES=first TN_GATE=skip bash jobs/unified/accept.sh $R blind $OUT $K
 echo "baseline readings: logs/checks/u_${r}_blind_${NAME}_${K}_*.txt (verdict: logs/checks/u_${r}_blind_${NAME}_${K}_verdict.txt)"
