@@ -297,6 +297,11 @@ def constraint_items(kind: str) -> list[dict]:
     # (4.3 deg) -- about where that bar is met, not the bar
     items += [c(f"heading_{d}", "u_flight_heading", "max", 0.075, 0.3, "q", [], {"facing": d}, stat="p90",
                 enforce=False, family=d) for d in ("down", "up")]
+  if os.environ.get("U_DESCENT_LEG"):
+    # logged only, with the cost (_add_descent_leg): the share of the robots that walk down a flight with a thigh or
+    # calf pressing on a step (constraints._descent_leg; leg_contact reads every robot on the stairs columns). The
+    # Go2's model_5200 reads 0.09-0.15 down the 12-18 cm flights; 0.03 is a reference, no bar is set
+    items += [c("leg_down", "u_descent_leg", "max", 0.03, 0.15, "q", [], enforce=False, family="down")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -795,6 +800,32 @@ def _add_flight_heading(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.rewards[FLIGHT_HEADING_TERM] = RewardTermCfg(func=ucons.flight_heading, weight=-f[0], params=params)
 
 
+DESCENT_LEG_TERM = "descent_leg"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+
+
+def _add_descent_leg(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_DESCENT_LEG=<w>[,<heavy>] (a probe's switch, _probe_switches): the cost constraints.descent_leg_contact at
+  the weight -w, on a thigh or calf pressing on a step while the robot walks down a flight -- the leg contact
+  cost's reading (its sensor and force threshold: leg_ground_contact's), over the descent item's robots (the
+  command and the scan are stair_speed_deficit's); the heavy class at <heavy> times it (1: every payload alike;
+  constraints.payload_fade). On top of leg_ground_contact, which stays as it is (a robot that stands, stops or
+  climbs is read by that one alone). Before _rewards / quality_diff, as _add_flight_weave: in with the stairs
+  quality (no constraint scales it)."""
+  v = os.environ.get("U_DESCENT_LEG")
+  if not v:
+    return
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 2 and 0.0 < f[0] <= 30.0, f"U_DESCENT_LEG {v}: <weight 0-30>[,<heavy 0-1>]"
+  assert "leg_ground_contact" in cfg.rewards, "U_DESCENT_LEG: the robot has no leg contact cost (leg_ground_contact)"
+  ref, leg = cfg.rewards["stair_speed_deficit"].params, cfg.rewards["leg_ground_contact"].params
+  params = {"command_name": ref["command_name"], "sensor_name": ref["sensor_name"],
+            "leg_sensor_name": leg["sensor_name"], "force_threshold": leg["force_threshold"]}
+  if len(f) > 1:   # (the key only then, as U_DESCENT_SPEED's)
+    assert 0.0 <= f[1] <= 1.0, f"U_DESCENT_LEG {v}: the heavy class's share, 0-1"
+    params["heavy"] = f[1]
+  cfg.rewards[DESCENT_LEG_TERM] = RewardTermCfg(func=ucons.descent_leg_contact, weight=-f[0], params=params)
+
+
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
 
 
@@ -1216,6 +1247,15 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          偏离也要训练"; the acceptance from the next version on: each robot's largest heading error
                          on a flight, p90 <= 8 deg (model_5200: 10.3 up / 9.4 down the 15-18 cm flights; the
                          Go2W's model_3000 15.4 up) (_add_flight_heading, constraints.flight_heading).
+    U_DESCENT_LEG=<w>[,<heavy>]   a thigh or calf pressing on a step while the robot walks down a flight costs:
+                         constraints.descent_leg_contact at the weight -w (0-30) on the leg contact cost's reading
+                         (substeps with a leg geom above its force threshold), over the descent item's robots, the
+                         heavy class at <heavy> times it (1). On top of leg_ground_contact; a stopped robot is not
+                         read. In with the stairs quality. With it a logged item leg_down: the share of those
+                         robots with a leg pressing. 2026-11-15, the user: "下楼时，主要关注后腿是否会有碰撞";
+                         model_5200 down the 15-18 cm flights: 5.9 rear-calf and 9.5 front-calf contacts per
+                         flight; the item's larger floor is out (leg_contact:6, s132: topples after a stop)
+                         (_add_descent_leg, constraints.descent_leg_contact).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
@@ -1565,6 +1605,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     _add_descent_speed(cfg)
     _add_flight_weave(cfg)
     _add_flight_heading(cfg)
+    _add_descent_leg(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

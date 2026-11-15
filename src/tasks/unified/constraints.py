@@ -950,6 +950,44 @@ def _flight_heading(env: ManagerBasedRlEnv, facing: str = "down") -> tuple[torch
   return t.off, t.down if facing == "down" else t.up
 
 
+def descent_leg_contact(env: ManagerBasedRlEnv, command_name: str, sensor_name: str,
+                        leg_sensor_name: str = "leg_ground_touch", force_threshold: float = 5.0,
+                        heavy: float = 1.0) -> torch.Tensor:
+  """Reward term (U_DESCENT_LEG=<w>[,<heavy>], 2026-11-15): a thigh or calf pressing on a step while the robot walks
+  down a flight. Per robot the descent item reads (pitched nose down on uneven ground under a forward command --
+  a robot told to stop there is not among them): the leg contact cost's own reading (mdp.self_collision_cost on
+  `leg_sensor_name`: of the control step's substeps in the sensor's history, 4, those with a thigh / calf geom
+  pressing above `force_threshold` N), so the weight is in that cost's units and adds to it. The heavy class at
+  `heavy` times it (payload_fade; 1: every payload alike).
+
+  Why (the user 2026-11-15, on the Go2 teacher's videos: "你有记录下楼时后小腿与台阶的碰撞吗", "下楼时，主要关注后腿是否
+  会有碰撞"): the formal teacher's model_5200 down the 15-18 cm flights, unloaded and seen, lands 5.9 rear-calf and
+  9.5 front-calf contacts per flight (descent_probe.py; 97 % of the robots, 77-86 % of them on a step's edge, a leg
+  on the steps 15 % of the flight's steps; 5-8 cm: 0.8), and after a front calf's contact the yaw rate doubles --
+  one source of the weaving path. The leg contact cost (-1, its item leg_contact at the floor 3) is over every
+  robot on the stairs columns, and its item never met its bar (0.035-0.045 against 0.015). A larger floor for that
+  item was tried and is out (leg_contact:6, s132: no gain on the descents, and the robots told to stop on a
+  15-18 cm descent toppled forward 0-4 s later -- the cost also read the calf a stopped robot rests on the step
+  behind it). Hence this cost on the robots that walk down alone: a stopped robot's legs are as they were.
+
+  Comes in with the stairs quality as every cost the M keys do not have (teacher_env.quality_diff). The reading:
+  _descent_leg (the item leg_down, logged only)."""
+  force = torch.norm(env.scene[leg_sensor_name].data.force_history, dim=-1)   # [B, N, H]
+  hit = (force > force_threshold).any(dim=1).sum(dim=-1).float()              # substeps with a leg pressing
+  _, down = METRICS["stair_speed"](env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
+  return down.float() * hit * payload_fade(env, heavy)
+
+
+def _descent_leg(env: ManagerBasedRlEnv, leg_sensor_name: str = "leg_ground_touch", force_threshold: float = 5.0,
+                 **params) -> tuple[torch.Tensor, torch.Tensor]:
+  """Whether a thigh or calf presses on a step (as mdp.constraints' leg_contact: above `force_threshold` N in the
+  sensor's history), over the robots that walk down a flight (the descent item's robots). The Go2's model_5200:
+  0.15 down the 15-18 cm flights, 0.09 down the 12-15 cm ones (descent_probe.py, 2026-11-15)."""
+  force = torch.norm(env.scene[leg_sensor_name].data.force_history, dim=-1)
+  _, down = METRICS["stair_speed"](env, **{**params, "descend": True})
+  return (force > force_threshold).flatten(1).any(dim=1).float(), down
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -1189,7 +1227,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stairs_stop_still_heavy": over_heavy(_stairs_stop_still),
           "u_stop_place": upto_common(_stop_place), "u_stop_place_heavy": over_heavy(_stop_place),
           "u_descent_over": _descent_over,
-          "u_flight_weave": _flight_weave, "u_flight_heading": _flight_heading,
+          "u_flight_weave": _flight_weave, "u_flight_heading": _flight_heading, "u_descent_leg": _descent_leg,
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
