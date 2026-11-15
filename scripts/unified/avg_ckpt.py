@@ -5,6 +5,13 @@ several checkpoints of one unified student run (stage 2, a PPO checkpoint): ever
 (student_state_dict) is the mean over the checkpoints; everything else (critic, teacher, optimizer, iter, infos, the
 normalizers' integer counts) comes from the last one, and infos["averaged"] lists the sources.
 
+A unified teacher's candidate too (2026-11-15, jobs/unified/teacher.sh F_TEACHER_AVG_N; one teacher run's checkpoints):
+its actor_state_dict -- the policy MLP, the privileged encoder (priv_encoder.*) and both normalizers' mean / var / std
+(obs_normalizer.*, priv_normalizer.*) -- is averaged (a teacher checkpoint has no student_state_dict); the critic,
+the optimizer, iter, the normalizers' counts and infos (infos["unified"]: the curriculum's progress, the constraint
+multipliers and the meter the students restore; env_state) are the last checkpoint's. The gates judge this file and the
+students load it as their teacher (rsl_rl's Distillation.load reads actor_state_dict): one file for both.
+
 Why (doc/blind_phased_training.md 8.1): single checkpoints near the bars flip from one save to the next; the blind
 chains' averaged last 8 were stable. jobs/avg_student.py does the same for a distillation checkpoint's student only.
 Exit 2 when the checkpoints do not have the same tensors.

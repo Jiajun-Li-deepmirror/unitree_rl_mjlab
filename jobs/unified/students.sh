@@ -1,8 +1,10 @@
 #!/bin/bash
 # students.sh R [VARIANT] (go2-depth 2026-11-12, doc/redesign.md 3.6): robot R's blind and depth students from its
 # unified teacher. Waits for jobs/unified/teacher.sh's pick (logs/jobs/unified_<r>_<variant>.pick: the checkpoint that
-# passed scripts/unified/teacher_gate.py), then trains both students side by side on this GPU (NUM_ENVS / 2 robots
-# each, default 4096 in all):
+# passed scripts/unified/teacher_gate.py and the tier-2 gates; with F_TEACHER_AVG_N > 1, 2026-11-15, the averaged file
+# logs/avg/<r>_<run>_avg<N>/model_K.pt the gates judged -- this script takes only its path and the pick's "seed N":
+# the stop check, the teacher's curriculum restore and the stage-1 labels read that file, the fallback resumes the kept
+# seeds' own runs), then trains both students side by side on this GPU (NUM_ENVS / 2 robots each, default 4096 in all):
 #   stage 1  Unitree-<R>-U-Student-<Kind>      DAgger distillation, S1_ITERS (default 4000) iterations
 #   stage 2  Unitree-<R>-U-Student-<Kind>-RL   PPO + behavior cloning from stage 1's last checkpoint, S2_ITERS (3000)
 # Each kind's stage-2 run is then judged by the acceptance (jobs/unified/accept.sh: the mjlab tiers, 3 seeds pooled,
