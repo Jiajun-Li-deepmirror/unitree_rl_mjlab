@@ -9,8 +9,8 @@ holding the flight heading and its centerline as eval_map3 does) runs one script
 
   climb      --up-vx up the flight until the base has gained half the flight's rise
   mid stop   zero command 3 s (the operator off)                                        -> reading (c)
-  climb      on until the base has gained the whole rise (less 4 cm), then on along the landing until the first rail
-             ahead is within 1.0 m (at most 3 s)
+  climb      on until the base has gained the whole rise (less 12 cm: a loaded base stands lower) or a rail ahead is
+             within 1.0 m, then on along the landing until the first rail ahead is within 1.0 m (at most 3 s)
   stand 2 s, turn in place wz +1.0 for 3 s, stand 2 s on the top landing               -> reading (c')
 
 (c)  the mid-flight stop: per robot the braking distance (the displacement along the flight over the first 1 s after
@@ -51,6 +51,7 @@ GOAL_SHARE = 0.85
 STOP_S = 3.0
 ONTO_MAX_S = 3.0
 ONTO_WALL_M = 1.0
+TOP_SAG = 0.12
 LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top landing
 HELD_M = 0.05
 FORCE_N = 5.0
@@ -65,6 +66,7 @@ def main() -> int:
   ap.add_argument("--seed", type=int, default=0)
   ap.add_argument("--flights", nargs="*", default=None, help="flight names (default: every up flight)")
   ap.add_argument("--teacher-scan", action=argparse.BooleanOptionalAction, default=None)
+  ap.add_argument("--falls", action="store_true", help="print every fall and the stop's wheel placement")
   a = ap.parse_args()
 
   import mjlab.tasks  # noqa: F401
@@ -94,7 +96,7 @@ def main() -> int:
                                                                   pattern=(rf"^{leg}_foot_collision$",)),
                        secondary=ContactMatch(mode="body", pattern="terrain"), fields=("found", "force", "normal"),
                        reduce="none", num_slots=1, history_length=4)
-      for leg in ("FL", "FR"))
+      for leg in ("FL", "FR", "RL", "RR"))
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
     venv, policy = em.load_policy(env, a.checkpoint, a.task)
     rows.append(run_flight(env, venv, policy, sc, bx, rise, a.up_vx))
@@ -103,6 +105,8 @@ def main() -> int:
     gc.collect()
     torch.cuda.empty_cache()
   report(rows)
+  if a.falls:
+    falls_report(rows)
   return 0
 
 
@@ -115,7 +119,34 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
 
   dev, dt, n = env.device, env.step_dt, env.num_envs
   robot, term = env.scene["robot"], env.command_manager.get_term("twist")
-  feet = [env.scene[f"m3_{leg}_foot"] for leg in ("FL", "FR")]
+  feet4 = [env.scene[f"m3_{leg}_foot"] for leg in ("FL", "FR", "RL", "RR")]
+  feet = feet4[:2]
+  # each fall's state before env.step resets it (eval_stairs --causes' way): phase, time in it, pitch / roll, the
+  # commanded and the actual forward speed, the termination terms
+  tm = env.termination_manager
+  cause_names = [nm for nm in tm.active_terms if not tm.get_term_cfg(nm).time_out]
+  falls_rec: list[dict] = []
+  state = {}
+  orig_reset = env._reset_idx
+
+  def reset_capture(env_ids=None):
+    try:
+      if env_ids is not None and len(env_ids) > 0 and env.common_step_counter > 0 and "phase" in state:
+        ids = env_ids
+        g = robot.data.projected_gravity_b[ids]
+        pitch = torch.rad2deg(torch.atan2(g[:, 0], -g[:, 2]))   # + nose down
+        roll = torch.rad2deg(torch.atan2(g[:, 1], -g[:, 2]))
+        vb = robot.data.root_link_lin_vel_b[ids]
+        for j, e in enumerate(ids.tolist()):
+          falls_rec.append({"phase": int(state["phase"][e]), "t": float(state["t_ph"][e]), "pitch": float(pitch[j]),
+                            "roll": float(roll[j]), "cmd": float(term.vel_command_b[e, 0]), "vx": float(vb[j, 0]),
+                            "causes": [nm for nm in cause_names if bool(tm.get_term(nm)[e])],
+                            "stop_feet": state["stop_feet"][e].tolist() if "stop_feet" in state else None})
+    except Exception as ex:   # never break the run for a diagnostic
+      falls_rec.append({"error": repr(ex)})
+    return orig_reset(env_ids)
+
+  env._reset_idx = reset_capture
   # the front feet's height: the wheel's centre (a wheeled robot), else the calf's end (the foot sphere at its tip)
   wheel_ids, _ = robot.find_bodies([r"^FL_wheel_link$", r"^FR_wheel_link$"]) if any(
     "wheel_link" in b for b in robot.body_names) else ([], [])
@@ -169,6 +200,10 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   g0 = torch.full((n,), float("inf"), device=dev)          # the front feet's lowest height in the first stand
   lift_turn, lift_stand = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
   prev_c = torch.ones(n, 2, dtype=torch.bool, device=dev)
+  # each wheel / foot 1 s into the stop: 0 in the air, 1 on a tread (|n_z| >= 0.9), 2 on a step's edge (0.5-0.9),
+  # 3 against a riser (< 0.5)
+  stop_feet = torch.full((n, 4), -1, dtype=torch.long, device=dev)
+  state["stop_feet"] = stop_feet
   land_dur = [d for d, _ in LANDING]
   max_steps = int(round(sum(d for d, *_ in sc.segments) / dt))
   for _ in range(max_steps):
@@ -183,11 +218,13 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     t_ph = torch.where(go_stop, torch.zeros_like(t_ph), t_ph)
     end_stop = (phase == 1) & (t_ph >= STOP_S)
     phase = torch.where(end_stop, torch.full_like(phase, 2), phase)
-    top = (phase == 2) & (gain >= rise - 0.04) & ~fell
+    dw = wall_ahead(pos)
+    # at the top: the base within TOP_SAG of the whole rise (a loaded base stands lower), or a rail ahead within
+    # ONTO_WALL_M (never walk a robot into the end wall: a loaded Go2W's base never gained rise - 4 cm and drove on)
+    top = (phase == 2) & ((gain >= rise - TOP_SAG) | (dw <= ONTO_WALL_M)) & ~fell
     reached |= top
     phase = torch.where(top, torch.full_like(phase, 3), phase)
     t_ph = torch.where(top | end_stop, torch.zeros_like(t_ph), t_ph)
-    dw = wall_ahead(pos)
     for k, dur in ((3, ONTO_MAX_S), (4, land_dur[0]), (5, land_dur[1]), (6, land_dur[2])):
       nxt = (phase == k) & ((t_ph >= dur) | ((dw <= ONTO_WALL_M) if k == 3 else False))
       phase = torch.where(nxt, torch.full_like(phase, k + 1), phase)
@@ -204,6 +241,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     term.vel_command_b[:, 1] = torch.where(walk, (-lateral).clamp(-0.2, 0.2), zero)
     term.vel_command_b[:, 2] = torch.where(walk, heading_err.clamp(-0.5, 0.5),
                                            torch.where(phase == 5, torch.full_like(zero, LANDING[1][1]), zero))
+    state["phase"], state["t_ph"] = phase, t_ph
     with torch.no_grad():
       obs, _, dones, extras = venv.step(policy(obs))
     terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
@@ -221,6 +259,13 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     back_min = torch.where(in_stop, torch.minimum(back_min, d_rel), back_min)
     at1 = in_stop & (t_ph >= 1.0) & torch.isnan(disp1)
     disp1 = torch.where(at1, d_rel, disp1)
+    if bool(at1.any()):
+      cls = []
+      for f in feet4:
+        hit = torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N
+        nz = f.data.normal.reshape(n, -1)[:, 2].abs()
+        cls.append(torch.where(~hit, 0, torch.where(nz >= 0.9, 1, torch.where(nz >= 0.5, 2, 3))))
+      stop_feet[:] = torch.where(at1[:, None], torch.stack(cls, dim=1), stop_feet)
     at3 = in_stop & (t_ph >= STOP_S - 0.5 * dt) & torch.isnan(disp3)
     disp3 = torch.where(at3, d_rel, disp3)
     win = in_stop & (t_ph >= 1.5) & (t_ph <= 2.0)
@@ -250,10 +295,39 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "disp2": np_(disp3 - disp1), "back_min": np_(back_min),
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
-          "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase)}
+          "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
+          "falls_rec": falls_rec, "stop_feet": np_(stop_feet)}
 
 
 PHASES = ("climb to mid", "mid stop", "climb on", "onto landing", "stand", "turn", "stand 2", "done")
+FOOT_CLS = ("air", "tread", "edge", "riser")
+
+
+def falls_report(rows) -> None:
+  print("\n== the falls: phase, seconds into it, pitch (+ nose down) / roll deg, command / actual forward m/s, terms; "
+        "each wheel 1 s into the stop (FL FR RL RR: air / tread / edge / riser) ==")
+  for r in rows:
+    for f in r["falls_rec"]:
+      if "error" in f:
+        print(f"{r['name']:10s} (diagnostic error {f['error']})")
+        continue
+      sf = f["stop_feet"]
+      feet = " ".join(FOOT_CLS[c] if c >= 0 else "-" for c in sf) if sf is not None else "-"
+      print(f"{r['name']:10s} {PHASES[f['phase']]:13s} +{f['t']:4.1f} s  pitch {f['pitch']:+6.1f} roll {f['roll']:+6.1f}  "
+            f"cmd {f['cmd']:+.2f} vx {f['vx']:+.2f}  {','.join(f['causes'])}  | stop feet {feet}")
+  # the stop's wheel placement: robots that fell on the restart against those that did not
+  for tag, sel in (("fell climbing on", lambda r: r["fell_phase"] == 2), ("did not", lambda r: r["fell_phase"] != 2)):
+    cnt = np.zeros((4, 4))
+    nr = 0
+    for r in rows:
+      m = sel(r) & (r["stop_feet"][:, 0] >= 0)
+      nr += int(m.sum())
+      for leg in range(4):
+        for c in range(4):
+          cnt[leg, c] += int((r["stop_feet"][m, leg] == c).sum())
+    print(f"stop wheels, robots that {tag} ({nr}): " + "; ".join(
+      f"{leg} " + " ".join(f"{FOOT_CLS[c]} {100 * cnt[i, c] / max(nr, 1):.0f}%" for c in range(4))
+      for i, leg in enumerate(("FL", "FR", "RL", "RR"))))
 
 
 def report(rows) -> None:
