@@ -106,6 +106,9 @@ def main() -> int:
   ap.add_argument("--vx", type=float, default=0.5)
   ap.add_argument("--envs-per-tile", type=int, default=18)
   ap.add_argument("--seed", type=int, default=0)
+  ap.add_argument("--payload", default=None,
+                  help="kg,x,y,z: a fixed point mass for an OLD (non-unified) task, scripts/blind/eval/payload_opt.py's "
+                       "way (a unified task takes U_PAYLOAD; an old one keeps its training draw otherwise)")
   ap.add_argument("--straight", action="store_true",
                   help="spawn square to the steps: the stair spawn's yaw noise (k x 90 deg +- 15 deg by default, "
                        "mdp.reset_root_state_terrain_aware) set to 0, so turning square to the steps cannot read as "
@@ -130,6 +133,10 @@ def main() -> int:
   gen.num_rows = NUM_ROWS
   gen.num_cols = len(gen.sub_terrains) * 2
   cfg.events.pop("randomize_terrain")
+  if a.payload:
+    sys.path.insert(0, str(ROOT / "scripts" / "blind" / "eval"))
+    import payload_opt
+    payload_opt.apply(cfg, a.payload)
   if a.straight:
     cfg.events["reset_base"].params["stair_yaw_noise"] = 0.0
     cfg.events["reset_base"].params["narrow_yaw_noise"] = 0.0
@@ -265,7 +272,7 @@ def main() -> int:
 
   sw = {z: sway(z) for z in zones}
   print(f"checkpoint {a.checkpoint}\ntask {a.task}, scan {os.environ.get('U_SCAN', '(task default)')}, payload "
-        f"{os.environ.get('U_PAYLOAD', '(task default)')}, vx {a.vx}, {n} robots ({n // (NUM_ROWS * 2)} per band and "
+        f"{a.payload + ' (--payload)' if a.payload else os.environ.get('U_PAYLOAD', '(task default)')}, vx {a.vx}, {n} robots ({n // (NUM_ROWS * 2)} per band and "
         f"direction), spawn yaw {'square to the steps' if a.straight else 'k x 90 deg +- 15 deg'}, falls {int(np_(fell).sum())}, got past {int(np_(done).sum())}; segments "
         + ", ".join(f"{leg} {seg} {'|'.join(p)}" for (leg, seg), p in segs.items() if leg == "RL"))
 

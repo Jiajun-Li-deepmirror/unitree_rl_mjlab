@@ -68,6 +68,9 @@ def main() -> int:
   ap.add_argument("--flights", nargs="*", default=None, help="flight names (default: every up flight)")
   ap.add_argument("--teacher-scan", action=argparse.BooleanOptionalAction, default=None)
   ap.add_argument("--falls", action="store_true", help="print every fall and the stop's wheel placement")
+  ap.add_argument("--payload", default=None,
+                  help="kg,x,y,z: a fixed point mass for an OLD (non-unified) task, scripts/blind/eval/payload_opt.py's "
+                       "way (a unified task takes U_PAYLOAD; an old one keeps its training draw otherwise)")
   a = ap.parse_args()
 
   import mjlab.tasks  # noqa: F401
@@ -83,7 +86,7 @@ def main() -> int:
   if a.flights:
     ups = [s for s in ups if s.name[:-3] in a.flights]
   print(f"checkpoint {a.checkpoint}\ntask {a.task}, scan {os.environ.get('U_SCAN', '(task default)')}, payload "
-        f"{os.environ.get('U_PAYLOAD', '(task default)')}, up {a.up_vx} m/s, {a.num_envs} robots per flight, "
+        f"{a.payload + ' (--payload)' if a.payload else os.environ.get('U_PAYLOAD', '(task default)')}, up {a.up_vx} m/s, {a.num_envs} robots per flight, "
         f"teacher scan boxes {teacher_scan}, {len(ups)} up flights")
   rows = []
   for sc in ups:
@@ -92,6 +95,10 @@ def main() -> int:
     sc.segments = [(1.0, 0, 0, 0), (climb_s + STOP_S + ONTO_MAX_S + sum(d for d, _ in LANDING) + 4.0, a.up_vx, 0, 0)]
     bx = em.teacher_boxes(boxes, sc) if teacher_scan else boxes
     cfg = em.make_env_cfg(sc, bx, a.num_envs, a.seed, a.task)
+    if a.payload:
+      sys.path.insert(0, str(ROOT / "scripts" / "blind" / "eval"))
+      import payload_opt
+      payload_opt.apply(cfg, a.payload)
     cfg.scene.sensors = tuple(cfg.scene.sensors or ()) + tuple(
       ContactSensorCfg(name=f"m3_{leg}_foot", primary=ContactMatch(mode="geom", entity="robot",
                                                                   pattern=(rf"^{leg}_foot_collision$",)),
