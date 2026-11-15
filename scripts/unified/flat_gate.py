@@ -12,7 +12,7 @@ Judged in each scan mode as the students' acceptance judges them (scripts/unifie
 goal_cells, the same parsers and bars): flat speed, drift and heading, turning in place, alternating spins, stop, march,
 gait clock, falls, wheeled: wheels down (the creep after a stop at accept_judge.STOP_CREEP_CM's bar where the robot has
 one); the zero-command stance (long_stand 60 s and stop_then_move: p90 deviation
-<= accept_judge.POSTURE_BAR, no fall after the settle); and no fall in the gait-clock test either (go2-depth: "平地摔倒
+<= accept_judge.stand_bar(r) (the static stand; POSTURE_BAR after a stop), no fall after the settle); and no fall in the gait-clock test either (go2-depth: "平地摔倒
 0"; the students' acceptance reads no falls there). Not here: the stairs (stairs_gate.py) and the loaded / typical
 conditions (the teacher's loaded behaviour is judged on the stairs gate's loaded run).
 Reported per mode: drift %, creep, alternating-spin drift, march drift (payload_gap's readings).
@@ -64,11 +64,11 @@ def judge(r: str, prefix: str) -> tuple[str, int]:
         missing.append(f"{tag} {name}")
     sp, sl = aj.stand_posture(f"{q}_loadstand.txt")
     mp, mf = aj.stopmove(f"{q}_stopmove.txt")
-    detail.append(f"{tag}: 零指令站姿 静站 p90 {sp} rad，3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
+    detail.append(f"{tag}: 零指令站姿 静站 p90 {sp} rad（上限 {aj.stand_bar(r):.2f}），3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
     if sp is None or mp is None:
       missing.append(f"{tag} 零指令站姿")
     else:
-      tags = (["偏离站姿"] if sp > aj.POSTURE_BAR or mp > aj.POSTURE_BAR else []) \
+      tags = (["偏离站姿"] if sp > aj.stand_bar(r) or mp > aj.POSTURE_BAR else []) \
         + (["摔倒"] if (sl or 0) > 0 or (mf or 0) > 0 else [])
       if tags:
         bad.append(f"{tag} 零指令站姿：" + "、".join(tags))

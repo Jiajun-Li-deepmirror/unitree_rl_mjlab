@@ -36,6 +36,18 @@ import payload_gap  # noqa: E402
 
 POSTURE_BAR = 0.15
 STAND_SETTLE = 3.0
+# The zero-command stance's static-stand p90, per robot (2026-11-15, the user: "接受你的建议" -- the first delivery's
+# bar 0.17 rad for the Go2 and the Go2W, from their teachers' readings: the Go2's 0.154 / 0.167 rad with / without the
+# scan with its weight at the cap and the reading flat, the Go2W's probes 0.151-0.157; no flat fall, the stance after
+# an emergency stop 0.085-0.091). Every robot not listed, and the stance after an emergency stop for every robot:
+# POSTURE_BAR. Read by every unified judge -- the teacher's flat gate (flat_gate.py) and the students' acceptance
+# (judge, typical below); not the blind acceptance, not tinynav's tier (no stance item).
+STAND_P90_RAD: dict[str, float] = {"Go2": 0.17, "Go2W": 0.17}
+
+
+def stand_bar(r: str) -> float:
+  return STAND_P90_RAD.get(r, POSTURE_BAR)
+
 LEGGED_BARS = {"kicks": 0.245, "slips": 0.0245, "mid": 0.80, "edge": 0.10}
 WHEELED_SLIDE_BAR = 0.05
 # The stairs counts are judged only on enough events (2026-11-12, the user: fewer luck passes): at 0.05 a rate from
@@ -361,11 +373,11 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
   # zero-command stance
   sp, sl = stand_posture(p["loadstand"])
   mp, mf = stopmove(p["stopmove"])
-  detail.append(f"零指令站姿（常用负载）：静站 p90 {sp} rad，3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
+  detail.append(f"零指令站姿（常用负载）：静站 p90 {sp} rad（上限 {stand_bar(r):.2f}），3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
   if sp is None or mp is None:
     bad.append("零指令站姿（常用负载）：未测")
   else:
-    if sp > POSTURE_BAR or mp > POSTURE_BAR:
+    if sp > stand_bar(r) or mp > POSTURE_BAR:
       bad.append("零指令站姿（常用负载）：偏离站姿")
     if (sl or 0) > 0 or (mf or 0) > 0:
       bad.append("零指令站姿（常用负载）：摔倒")
@@ -464,11 +476,11 @@ def judge(argv: list[str]) -> int:
     if sp is None or mp is None:
       tags.append("未测")
     else:
-      if sp > POSTURE_BAR or mp > POSTURE_BAR:
+      if sp > stand_bar(r) or mp > POSTURE_BAR:
         tags.append("偏离站姿")
       if (sl or 0) > 0 or (mf or 0) > 0:
         tags.append("摔倒")
-    detail.append(f"零指令站姿（{cond}）：静站 p90 {sp} rad，3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
+    detail.append(f"零指令站姿（{cond}）：静站 p90 {sp} rad（上限 {stand_bar(r):.2f}），3 s 后摔 {sl}；急停后 p90 {mp} rad，摔 {mf}")
     if tags:
       bad.append(f"零指令站姿（{cond}）：" + "、".join(tags))
   # stairs counts (unloaded)
