@@ -318,6 +318,56 @@ def stairs_falls(path: str) -> int | None:
   return sum(int(a) + int(b) for a, b in rows)
 
 
+# The path on a flight (scripts/unified/descent_probe.py --straight, 72 robots per band and direction, spawned square to
+# the steps, a straight command): the user 11-15 on the Go2 teacher's descents, "不是旋转晃动，是左右晃动，像是喝醉了走不了
+# 直线", then "需要训练蛇行幅度，但是不用门槛", "Go2W 上楼的蛇行也要算在内", "朝向最大偏离也要训练，门槛你定". The heading
+# item: per robot the largest |heading - spawn heading| on the flight, its p90 over the robots of a band and direction
+# at most FLIGHT_HEADING_BAR_DEG in every band and direction, unloaded and with the typical payload (the full payload:
+# reported); unitree-rl-mjlab-62's bar 8 deg (go2-depth agreed): the Go2's 5-8 cm steps 2.6-5.5 deg and the Go2W's
+# descents ~2 deg reach it, the Go2 model_5200's 15-18 cm 9.4-12.0 / the Go2W model_3000's climbs 10-15 deg do not;
+# a peak of ~8 deg goes with tinynav's mean bar of 3 deg. Judged from the next version on: the first deliveries (the
+# Go2 students of 93a857f, the Go2W of 2c808e7) were not trained for it and report it -- FLIGHT_HEADING_JUDGED lists
+# the robots judged (U_JUDGE_FLIGHT_HEADING="Go2,..." adds robots for a test run). The meander (the slow weaving,
+# peak-to-peak) and the calf contacts per flight: reported, no bar.
+FLIGHT_HEADING_BAR_DEG = 8.0
+FLIGHT_HEADING_JUDGED: frozenset[str] = frozenset()
+
+
+def flight_heading_judged(r: str) -> bool:
+  return r in FLIGHT_HEADING_JUDGED or r in {x for x in os.environ.get("U_JUDGE_FLIGHT_HEADING", "").split(",") if x}
+
+
+def flight_path(path: str) -> dict[tuple[str, str], dict[str, float]]:
+  """descent_probe.py's SUM / SUMLAT lines: (band, direction) -> their readings ({} if none)."""
+  out: dict[tuple[str, str], dict[str, float]] = {}
+  for m in re.finditer(r"^SUM(?:LAT)? (\d+-\d+cm) (up|down) (.*)$", txt(path), re.M):
+    toks = m.group(3).split()
+    out.setdefault((m.group(1), m.group(2)), {}).update(
+      {toks[i]: float(toks[i + 1]) for i in range(0, len(toks) - 1, 2)})
+  return out
+
+
+def flight_path_lines(r: str, path: str, label: str, judged: bool) -> tuple[list[str], list[str]]:
+  """(bad, detail) for one condition's descent_probe file: the heading item (judged when `judged`), the meander and
+  the calf contacts (reported)."""
+  fp = flight_path(path)
+  rows = {k: v for k, v in fp.items() if "hd_max_p90" in v}
+  tag = "判" if judged else "只报告，下一版起判"
+  if not rows:
+    return ([f"{label}楼梯朝向最大偏离：未测"] if judged else []), [f"{label}楼梯走直线（descent_probe）：未测"]
+  ud = lambda d: "上" if d == "up" else "下"
+  over = [f"{b} {ud(d)} {v['hd_max_p90']:.1f}°" for (b, d), v in rows.items() if v["hd_max_p90"] > FLIGHT_HEADING_BAR_DEG]
+  detail = [f"{label}楼梯朝向最大偏离 p90（{tag}，上限 {FLIGHT_HEADING_BAR_DEG:g}°）：" + "，".join(
+              f"{b} {ud(d)} {v['hd_max_p90']:.1f}" for (b, d), v in rows.items()),
+            f"{label}楼梯蛇行峰峰值 p50（只报告，cm）：" + "，".join(
+              f"{b} {ud(d)} {v.get('meander_pp', float('nan')):.1f}" for (b, d), v in rows.items()),
+            f"{label}楼梯小腿磕台阶（只报告，每段 前 / 后）：" + "，".join(
+              f"{b} {ud(d)} {v.get('front_calf', float('nan')):.1f}/{v.get('rear_calf', float('nan')):.1f}"
+              for (b, d), v in fp.items())]
+  bad = [f"{label}楼梯朝向最大偏离超过 {FLIGHT_HEADING_BAR_DEG:g}°：" + "、".join(over)] if judged and over else []
+  return bad, detail
+
+
 # What the judge cannot read is a tool fault, not a fail (the user's "fault != fail"): an item whose reason is one of
 # these, when every reason is one, makes the verdict FAULT (accept.sh: exit 4, no fallback to another teacher seed).
 MISSING = ("未测", "评测中")
@@ -531,6 +581,15 @@ def judge(argv: list[str]) -> int:
     detail += td
   else:
     detail.append("常用负载：本机型没有这一档，不测")
+  # the path on a flight (descent_probe --straight): the heading judged unloaded and typical, the full payload reported
+  hj = flight_heading_judged(r)
+  has_typ = expect_typ or os.path.exists(f"{prefix}_descent_typ.txt")
+  for label, sfx, judged in (("", "", hj), ("常用负载 ", "_typ", hj), ("满载 ", "_pay", False)):
+    if sfx == "_typ" and not has_typ:
+      continue
+    fb, fd = flight_path_lines(r, f"{prefix}_descent{sfx}.txt", label, judged)
+    bad += fb
+    detail += fd
   print(verdict_line(bad))
   for line in detail:
     print("  " + line)

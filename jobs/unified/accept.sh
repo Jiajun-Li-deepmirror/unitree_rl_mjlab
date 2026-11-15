@@ -312,6 +312,9 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     pool $pay ${P}_stairs$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE $CK --envs-per-tile $(tn 18) --metrics
     pool $pay ${P}_loadstand$X.txt $W $S/long_stand.py --task $TF $CK --seconds 60 --num-envs $(tn 768)
     pool $pay ${P}_stopmove$X.txt $W $S/stop_then_move.py --task $TF $CK --num-envs $(tn 384)
+    # the path on a flight (2026-11-15, the user: the weaving and the heading on the stairs; accept_judge.py's
+    # FLIGHT_HEADING_*): the stairs traverse spawned square to the steps, every condition
+    pool $pay ${P}_descent$X.txt $W scripts/unified/descent_probe.py $TE $CK --straight --envs-per-tile $(tn 18)
     fi
     # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
     # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)

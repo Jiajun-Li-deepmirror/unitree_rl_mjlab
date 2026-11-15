@@ -423,7 +423,8 @@ def lateral(tr, yaw0, p0, lv, dr, dt) -> None:
       if m.any():
         print(f"SUMLAT {band(lvl)} {direc} " + " ".join(f"{q} {np.median(R[q][m]):.3f}" for q in
                                                         ("meander", "meander_pp", "sway", "drift", "hd_mean", "hd_max",
-                                                         "vy", "wz")))
+                                                         "vy", "wz"))
+              + f" hd_max_p90 {np.percentile(R['hd_max'][m], 90):.3f} n {int(m.sum())}")
 
 
 if __name__ == "__main__":
