@@ -1306,6 +1306,17 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          the Go2W's videos: "在平台的时候会出现前面是墙然后做抬腿翻越动作" -- the unified recipe has
                          none of the four (endwall cost the Go2W 3-8 % of its climbing speed on 2026-11-09 and was
                          left to the deployed wall guard; the B2W's top-landing steps went 2.0 -> 0.3 with it).
+    U_WALL_FAN=<deg>     with the key endwall: its level ray fan (5 rays at -20..20 deg) as 3 rays at -<deg>, 0,
+                         <deg>, 2-15 (robots._wall_fan; the stop distance and the slow-down stay). 2026-11-15,
+                         uprobe_s162 (U_KEYS_ADD=endwall,endwallshort): the lifts in front of the wall 44 -> 11 %
+                         of the turns, but the stops on a flight held 70.7 % of the time (94.1 %) and the 8 kg
+                         climbs fell 188 times of 896 (44), both measured without the fan -- the policy's own. In
+                         the walled flights' narrowest corridor (0.85 m) the +-20 deg rays reach the side walls at
+                         1.24 m, at 0.85 m once the robot yaws 10 deg (its climbs' largest heading error: p90
+                         13.5 deg): inside the Go2W's stop distance, the command falls to zero in the middle of a
+                         flight and comes back as the robot straightens -- does the training on those short stops
+                         cost the firm one? At 5 deg a yaw of 15 deg still reads 1.24 m, a wall across the flight
+                         is seen as before.
     U_MODEL=legacy       no probe's and no recipe's: an evaluation's switch, read by robots.base_env_cfg -- the robot
                          without the table's model=uros, for a policy of the old flow (trained on the model as
                          it was before 2026-11-11) under the unified checks. A training with it stops

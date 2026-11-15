@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -120,6 +120,16 @@ ADD_NEEDS = {"endwallshort": "endwall", "topflat30": "topflat"}   # a key that o
 ADD_WHEELED = ("topflat", "topflat30")                            # a cost on the wheels: nothing on a legged robot
 ADD_RECIPE_NEEDS = {"endwall": "longexit"}   # the wall stands at the flight's exit: 0.5 m past the last riser without
                                              # longexit (1.4 m with it), inside the command's stop distance
+# U_WALL_FAN=<deg> (a probe's switch, off unless set; teacher_env._probe_switches' docstring): the key endwall's level
+# ray fan -- 5 rays at -20..20 deg, any hit inside the stop distance + the slow-down's length cuts the forward
+# command -- as 3 rays at -<deg>, 0, <deg>. In the walled flights' narrowest corridor (0.85 m, the hard rows; map3's
+# are ~0.9 m) the +-20 deg rays reach the side walls at 1.24 m when the robot stands centred and straight, at 0.85 m
+# once it yaws 10 deg: with the Go2W's stop at 0.85 m and endwallshort's 0.2 m the command falls to zero in the
+# middle of a flight on every swerve (its climbs' largest heading error: p90 13.5 deg). 2026-11-15, uprobe_s162
+# (endwall,endwallshort): the lifts in front of the wall 44 -> 11 %, but the stops on a flight held 70.7 % of the
+# time (94.1 %) and the 8 kg climbs fell 188 times of 896 (44) -- measured WITHOUT the fan; the policy's own.
+WALL_FAN = "wall_fan"                        # blind_env_cfg's sensor (the key endwall)
+WALL_FAN_SWITCH = "U_WALL_FAN"
 # U_MODEL=legacy (an evaluation's switch, off unless set; no recipe carries it): the robot as the old flow's packages
 # were trained on it -- without the table's model=uros (src/assets/robots/uros.py: the unitree_ros-aligned model file
 # and actuator limits, every robot's since 2026-11-11; its rule: a checkpoint is always evaluated and exported on the
@@ -166,7 +176,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
   tilt = _rest_tilt(v)
   assert tilt is not None or v in (None, "", "0", "1", "even"), f"U_REST_OLD {v}: 1, even, tilt[,<rad>] or unset"
   drop = DROPPED_KEYS + (REST_OLD_KEYS if v == "1" and robot.kind == "wheeled" else ())
-  add = _keys_add(robot, recipe[keys]) if keys == "P" else []
+  final = keys == "P"
+  add = _keys_add(robot, recipe[keys]) if final else []
   keys = [k for k in recipe[keys] if k not in drop] + add
   env = {
     "BLIND_PILOT": ",".join(keys),
@@ -184,6 +195,7 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     # terrain: "map3" trains; the acceptance's checks (2026-11-12) use the blind builder's "flat" and "stairs"
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
+  _wall_fan(cfg, keys, final)
   if (v == "even" or tilt is not None) and robot.kind == "wheeled" and terrain == "map3":
     # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
     # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
@@ -192,6 +204,22 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
 
     rest.apply_even(cfg, tilt)
   return cfg
+
+
+def _wall_fan(cfg: ManagerBasedRlEnvCfg, keys: list[str], final: bool) -> None:
+  """U_WALL_FAN=<deg> (WALL_FAN_SWITCH's comment): the end wall's fan narrowed to -<deg>, 0, <deg>; its height, reach
+  and alignment and the command's stop distance and slow-down stay. Without the key endwall among the final keys
+  the switch stops the build. Nothing where the build has no fan: the M keys' build, the checks' terrains (the
+  blind builder adds the wall and its fan to the training terrain alone)."""
+  v = os.environ.get(WALL_FAN_SWITCH)
+  if not v:
+    return
+  d = float(v)
+  assert 2.0 <= d <= 15.0, f"{WALL_FAN_SWITCH} {v}: the fan's half angle, 2-15 deg"
+  assert not final or "endwall" in keys, f"{WALL_FAN_SWITCH} {v}: the fan is the key endwall's (U_KEYS_ADD)"
+  fan = next((s for s in cfg.scene.sensors if s.name == WALL_FAN), None)
+  if fan is not None:
+    fan.pattern = replace(fan.pattern, angles_deg=(-d, 0.0, d))
 
 
 def _keys_add(robot: URobot, have: list[str]) -> list[str]:
