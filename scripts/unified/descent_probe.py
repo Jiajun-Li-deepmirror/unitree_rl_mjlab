@@ -114,6 +114,8 @@ def main() -> int:
                        "mdp.reset_root_state_terrain_aware) set to 0, so turning square to the steps cannot read as "
                        "drift")
   a = ap.parse_args()
+  if a.payload and "-U-" in a.task:
+    ap.error("--payload is for an old task; a unified one (-U-) takes U_PAYLOAD (both would stack two payload events)")
 
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.rl import RslRlVecEnvWrapper

@@ -72,6 +72,8 @@ def main() -> int:
                   help="kg,x,y,z: a fixed point mass for an OLD (non-unified) task, scripts/blind/eval/payload_opt.py's "
                        "way (a unified task takes U_PAYLOAD; an old one keeps its training draw otherwise)")
   a = ap.parse_args()
+  if a.payload and "-U-" in a.task:
+    ap.error("--payload is for an old task; a unified one (-U-) takes U_PAYLOAD (both would stack two payload events)")
 
   import mjlab.tasks  # noqa: F401
   import src.tasks  # noqa: F401
