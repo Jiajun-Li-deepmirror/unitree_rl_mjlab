@@ -330,6 +330,7 @@ def restore_teacher_curriculum(env, teacher_checkpoint: str, device: str) -> Non
     cons.load(state["constraints"])
     print(f"[unified] student: the teacher's {len(state['constraints'].get('scale', {}))} constraint scales")
     line_floor(cons)
+    item_floor(cons)
 
 
 # U_STUDENT_LINE_FLOOR=<x> (2026-11-13, go2-depth's design; unset: the teacher's final multipliers as they are): the
@@ -352,6 +353,42 @@ def line_floor(cons) -> list[str]:
       cons.scale[name] = max(old, x)
       changed.append(f"{name} {old:.2f} -> {cons.scale[name]:.2f}")
   print(f"[unified] student: U_STUDENT_LINE_FLOOR={x:g}: {', '.join(changed) or 'none of ' + ', '.join(LINE_ITEMS)}")
+  return changed
+
+
+# U_STUDENT_FLOOR=<item>:<x>[,<item>:<x>...] (2026-11-15, go2-depth; a probe's switch, unset: the teacher's final
+# multipliers as they are): the named items at least x times their configured weight in the students' trainings.
+# The students' constraints are frozen at the teacher's final values, and a teacher that meets an item with ease
+# leaves little pressure on it: the Go2 formal teacher (seed 0 model_5200) held four feet down after a stop on a
+# descent in 93% of the stops at the multiplier 1.15; its blind student started stage 2 at 80.5% and reached 85.5%
+# in 3000 iterations at that same 1.15 (+1.8 points per 1000; the target 92%), and failed the cap gate on that item
+# (12-18 cm descents 84 / 79% against 90%). Applied once after the teacher's scales are loaded and after
+# U_STUDENT_LINE_FLOOR (the larger of the two for an item both name), frozen afterwards like the others; not held to
+# the item's own cap (the teacher's update is what a cap bounds). An item the teacher's checkpoint has no multiplier
+# of stops the training: a mistyped name must not run as the control.
+FLOOR_RANGE = (0.5, 6.0)
+
+
+def item_floor(cons) -> list[str]:
+  v = os.environ.get("U_STUDENT_FLOOR")
+  if not v:
+    return []
+  floors: dict[str, float] = {}
+  for kv in v.split(","):
+    name, sep, x = kv.partition(":")
+    assert name.strip() and sep and x.strip(), f"U_STUDENT_FLOOR {v}: <item>:<x>[,<item>:<x>...]"
+    assert name.strip() not in floors, f"U_STUDENT_FLOOR {v}: {name.strip()} twice"
+    floors[name.strip()] = float(x)
+  lo, hi = FLOOR_RANGE
+  assert all(lo <= x <= hi for x in floors.values()), f"U_STUDENT_FLOOR {v}: floors {lo:g}-{hi:g}"
+  missing = [name for name in floors if name not in cons.scale]
+  assert not missing, f"U_STUDENT_FLOOR {v}: the teacher has no multiplier of {missing} (it has {sorted(cons.scale)})"
+  changed = []
+  for name, x in floors.items():
+    old = float(cons.scale[name])
+    cons.scale[name] = max(old, x)
+    changed.append(f"{name} {old:.2f} -> {cons.scale[name]:.2f}")
+  print(f"[unified] student: U_STUDENT_FLOOR={v}: {', '.join(changed)}")
   return changed
 
 
