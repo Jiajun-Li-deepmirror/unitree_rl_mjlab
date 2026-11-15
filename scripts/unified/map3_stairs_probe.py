@@ -141,6 +141,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           falls_rec.append({"phase": int(state["phase"][e]), "t": float(state["t_ph"][e]), "pitch": float(pitch[j]),
                             "roll": float(roll[j]), "cmd": float(term.vel_command_b[e, 0]), "vx": float(vb[j, 0]),
                             "causes": [nm for nm in cause_names if bool(tm.get_term(nm)[e])],
+                            "gain": float(state["gain"][e]) / rise if "gain" in state else float("nan"),
+                            "wall": float(state["dw"][e]) if "dw" in state else float("nan"),
                             "stop_feet": state["stop_feet"][e].tolist() if "stop_feet" in state else None})
     except Exception as ex:   # never break the run for a diagnostic
       falls_rec.append({"error": repr(ex)})
@@ -247,7 +249,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     term.vel_command_b[:, 1] = torch.where(walk, (-lateral).clamp(-0.2, 0.2), zero)
     term.vel_command_b[:, 2] = torch.where(walk, heading_err.clamp(-0.5, 0.5),
                                            torch.where(phase == 5, torch.full_like(zero, LANDING[1][1]), zero))
-    state["phase"], state["t_ph"] = phase, t_ph
+    state["phase"], state["t_ph"], state["gain"], state["dw"] = phase, t_ph, gain, dw
     with torch.no_grad():
       obs, _, dones, extras = venv.step(policy(obs))
     terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
@@ -324,8 +326,28 @@ def falls_report(rows) -> None:
         continue
       sf = f["stop_feet"]
       feet = " ".join(FOOT_CLS[c] if c >= 0 else "-" for c in sf) if sf is not None else "-"
-      print(f"{r['name']:10s} {PHASES[f['phase']]:13s} +{f['t']:4.1f} s  pitch {f['pitch']:+6.1f} roll {f['roll']:+6.1f}  "
+      print(f"{r['name']:10s} {PHASES[f['phase']]:13s} +{f['t']:4.1f} s  gain {100 * f.get('gain', float('nan')):3.0f}% of the rise, "
+            f"wall {f.get('wall', float('nan')):4.1f} m  pitch {f['pitch']:+6.1f} roll {f['roll']:+6.1f}  "
             f"cmd {f['cmd']:+.2f} vx {f['vx']:+.2f}  {','.join(f['causes'])}  | stop feet {feet}")
+  # the climbing falls by where they happened: the first 2 s after the restart below 85 % of the rise (the restart),
+  # the rest below 85 % (the upper flight), at or above 85 % (the flight's head: eval_map3 takes a climb as done at
+  # 85 % and does not count what follows); before the stop
+  kinds = {"before the stop": 0, "restart (<= 2 s, < 85 %)": 0, "upper flight (< 85 %)": 0, "flight's head (>= 85 %)": 0}
+  for r in rows:
+    for f in r["falls_rec"]:
+      if "error" in f:
+        continue
+      g = f.get("gain", float("nan"))
+      if f["phase"] == 0:
+        kinds["before the stop"] += 1
+      elif f["phase"] == 2:
+        if g >= GOAL_SHARE:
+          kinds["flight's head (>= 85 %)"] += 1
+        elif f["t"] <= 2.0:
+          kinds["restart (<= 2 s, < 85 %)"] += 1
+        else:
+          kinds["upper flight (< 85 %)"] += 1
+  print("climbing falls by where: " + ", ".join(f"{k} {v}" for k, v in kinds.items()))
   # the stop's wheel placement: robots that fell on the restart against those that did not
   for tag, sel in (("fell climbing on", lambda r: r["fell_phase"] == 2), ("did not", lambda r: r["fell_phase"] != 2)):
     cnt = np.zeros((4, 4))
