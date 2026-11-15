@@ -135,13 +135,16 @@ def main() -> int:
   gen.num_rows = NUM_ROWS
   gen.num_cols = len(gen.sub_terrains) * 2
   cfg.events.pop("randomize_terrain")
+  if "-U-" not in a.task:
+    cfg.curriculum = {}   # an old task's training curricula (stairs_share needs stair and other columns), as eval_map3
   if a.payload:
     sys.path.insert(0, str(ROOT / "scripts" / "blind" / "eval"))
     import payload_opt
     payload_opt.apply(cfg, a.payload)
   if a.straight:
-    cfg.events["reset_base"].params["stair_yaw_noise"] = 0.0
-    cfg.events["reset_base"].params["narrow_yaw_noise"] = 0.0
+    # 1e-6 rad, not 0: the old tasks' reset divides the narrow treads' noise by the stairs' one
+    cfg.events["reset_base"].params["stair_yaw_noise"] = 1e-6
+    cfg.events["reset_base"].params["narrow_yaw_noise"] = 1e-6
   n = gen.num_rows * gen.num_cols * a.envs_per_tile
   cfg.scene.num_envs = n
   segs = leg_segments(cfg)
