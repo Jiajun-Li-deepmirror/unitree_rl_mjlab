@@ -114,13 +114,30 @@ KIND: dict[str, dict[str, str]] = {
     "U_CLOCK_SPLIT": "1",             # the gait clock's fast strafes and gentle arcs in bins of their own
                                       # (flat.flat_gait_bin): the clock item measures the commands the flat gate
                                       # judges (pooled, the bins read 0.79-0.92 "met" while the gate failed them)
+    # The stop on a climbing flight, from zero (2026-11-15). The formal run of 7ffc056 (the three switches above,
+    # never run from zero before) lost it once the stairs quality was in full: seed 0's tier 2 stayed 54 % / 18 %
+    # (scan / masked) on 15-18 cm up at model_2500 and 21 % / 7 % at model_3100 -- the robots rolled back down the
+    # flight to its foot (1.4 m), the full payload's falls 39. go2-home's WC0 (the same recipe without the clock
+    # split, from zero): 4 % / 4 % at 2500, 3 % / 18 % at 3000, 62 % / 72 % at 3600 -- not the clock split, and the
+    # stop comes late and in part by itself. From seed 0's model_3100, 600 iterations each, tier 2 at model_3699:
+    #   the recipe unchanged (uprobe_s161): 32 % / 42 %, 15-18 cm down 51 % / 75 %, the stop ok 83 % / 87 %
+    #   the two switches below (uprobe_s159): 100 % / 94 %, every other band 100 %, the stop ok 100 % / 99 %, the
+    #     typical payload's 99 % / 98 %, the full one's 98 % (68 % unchanged), slide-back 0.025
+    #   U_STOP_PLACE=20 (uprobe_s160): 99 % / 57 %, 15-18 cm down 64 % -- not the weight
+    # The full payload's falls: 39 at the start, 8 with the two switches, 3 unchanged, 5 with the weight 20 (bar 6):
+    # the open item of this recipe, watched at the formal run's gates.
+    "U_STAND_POSE_EVEN": "1",         # the standing pose cost acts on even ground only (the legged kind's entry):
+                                      # with it on a flight the robots left the steps for the level ground below
+    "U_STOP_HOLD_Q": "1",             # and its removal comes in along the stairs quality (as the legged: from the
+                                      # first iteration the removal keeps a robot from climbing)
   },
 }
 
 # one robot's own, each with its reason
 # (None now: the As2's U_STAND_POSE_EVEN=1 is the legged kind's since 2026-11-14. The Go2's loaded falls tripled
 # with that switch alone and on throughout (62 against 20, s50 / s51): with the overspeed cost and along the stairs
-# quality they do not. The Go2W gained nothing from it (s38): not for the wheeled.)
+# quality they do not. The Go2W gained nothing from it under the first wheeled recipe (s38); with the stand's
+# centre-of-mass cost and the tilt form it holds the stop on a climbing flight: the wheeled kind's since 2026-11-15.)
 ROBOT: dict[str, dict[str, str]] = {}
 
 # read by the runner when it starts (runner._entropy_by_q, _std_cap_by_q), not by the builders

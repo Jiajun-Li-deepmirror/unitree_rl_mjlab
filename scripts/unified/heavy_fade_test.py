@@ -182,8 +182,12 @@ def main() -> int:
         check(cfg.rewards["u_flat_only"].params.get("zero_heavy") == want
               and rest(cfg, "u_flat_only", "zero_heavy") == rest(one, "u_flat_only", "zero_heavy"),
               f"={v}: zero_heavy {want}, the other {len(one.rewards) - 1} terms and parameters as with =1")
-      off = build(robot, U_STAND_POSE_EVEN="0")
+      # the wheeled kind's U_STOP_HOLD_Q has this switch as its only part (no U_DESCENT_SPEED there): off together
+      alone = {} if robot.kind == "legged" else {"U_STOP_HOLD_Q": ""}
+      off = build(robot, U_STAND_POSE_EVEN="0", **alone)
       check("zero_terms" not in off.rewards["u_flat_only"].params or n in ("As2",), "=0: off")
+      if alone:
+        check(fails(robot, U_STAND_POSE_EVEN="0"), "=0 with the table's U_STOP_HOLD_Q left on stops the build")
       check(fails(robot, U_STAND_POSE_EVEN="2") and fails(robot, U_STAND_POSE_EVEN="1,1.5")
             and fails(robot, U_STAND_POSE_EVEN="1,0,0"), "wrong values stop the build")
     term = teacher_env.DESCENT_SPEED_TERM
