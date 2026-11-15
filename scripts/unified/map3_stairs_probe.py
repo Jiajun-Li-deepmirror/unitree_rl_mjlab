@@ -199,6 +199,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
                                                   "turn_lift", "wall_sum", "wall_touch")}
   g0 = torch.full((n,), float("inf"), device=dev)          # the front feet's lowest height in the first stand
   lift_turn, lift_stand = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
+  p_turn = torch.full((n, 2), float("nan"), device=dev)   # the base where the turn began
+  turn_move = torch.zeros(n, device=dev)                  # its largest horizontal distance from there in the turn
   prev_c = torch.ones(n, 2, dtype=torch.bool, device=dev)
   # each wheel / foot 1 s into the stop: 0 in the air, 1 on a tread (|n_z| >= 0.9), 2 on a step's edge (0.5-0.9),
   # 3 against a riser (< 0.5)
@@ -281,6 +283,10 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     up = torch.where(torch.isfinite(g0), fz[1] - g0, zero)
     lift_turn = torch.where(on_land & (phase == 5), torch.maximum(lift_turn, up), lift_turn)
     lift_stand = torch.where(on_land & (phase == 6), torch.maximum(lift_stand, up), lift_stand)
+    in_turn = on_land & (phase == 5)
+    p_turn = torch.where((in_turn & torch.isnan(p_turn[:, 0]))[:, None], pos[:, :2], p_turn)
+    mv = torch.norm(pos[:, :2] - p_turn, dim=1)
+    turn_move = torch.where(in_turn & torch.isfinite(mv), torch.maximum(turn_move, mv), turn_move)
     off = (~c).any(dim=1)
     lifts = (prev_c & ~c).sum(dim=1).float()
     prev_c = c
@@ -296,7 +302,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
-          "falls_rec": falls_rec, "stop_feet": np_(stop_feet)}
+          "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move)}
 
 
 PHASES = ("climb to mid", "mid stop", "climb on", "onto landing", "stand", "turn", "stand 2", "done")
@@ -374,7 +380,7 @@ def report(rows) -> None:
   print("\n== (c') the top landing, facing the end wall (walked on until the first rail ahead is within 1.0 m): stand 2 s, "
         "turn in place wz +1.0 3 s, stand 2 s; front foot / wheel off the ground (no contact > 5 N) ==")
   agg = {k: 0.0 for k in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off", "turn_lift")}
-  nrob, fl_tot, reach_tot, rob_tot, walls, lifts_all, touch_all = 0, 0, 0, 0, [], [], []
+  nrob, fl_tot, reach_tot, rob_tot, walls, lifts_all, touch_all, moves_all = 0, 0, 0, 0, [], [], [], []
   for r in rows:
     dt = r["dt"]
     has = (r["stand_n"] + r["turn_n"]) > 0
@@ -400,7 +406,9 @@ def report(rows) -> None:
           + f" | front foot highest above the stand: turn p50 / p90 {100 * q(lt, 50):.1f} / {100 * q(lt, 90):.1f} cm, last stand "
           f"{100 * q(ls, 50):.1f} / {100 * q(ls, 90):.1f} cm; > 10 cm {100 * (lt > 0.10).mean() if lt.size else 0:.0f}% | front foot "
           f"on the wall {100 * (r['wall_touch'][has] > 0).mean() if has.any() else 0:.0f}% of the robots, "
-          f"{r['wall_touch'][has].sum() * dt / max(int(has.sum()), 1):.2f} s / robot")
+          f"{r['wall_touch'][has].sum() * dt / max(int(has.sum()), 1):.2f} s / robot | base moved in the turn p50 / p90 "
+          f"{100 * q(r['turn_move'][has], 50):.0f} / {100 * q(r['turn_move'][has], 90):.0f} cm")
+    moves_all.append(r["turn_move"][has])
   w = np.concatenate(walls) if walls else np.array([])
   print(f"ALL top landing: reached {reach_tot} / {rob_tot}, on the landing {nrob}, wall ahead p50 "
         f"{np.median(w) if w.size else float('nan'):.2f} m, fell on the landing {fl_tot}; stand (4 s): front off "
@@ -411,7 +419,10 @@ def report(rows) -> None:
   if lt.size:
     print(f"ALL front foot highest above the stand in the turn: p50 / p90 {100 * np.median(lt):.1f} / "
           f"{100 * np.percentile(lt, 90):.1f} cm, > 10 cm {100 * (lt > 0.10).mean():.0f}% of the robots; a front foot on the "
-          f"wall (contact normal |n_z| < 0.5): {100 * (tc > 0).mean():.0f}% of the robots")
+          f"wall (contact normal |n_z| < 0.5): {100 * (tc > 0).mean():.0f}% of the robots; the base moved in the turn "
+          f"p50 / p90 {100 * np.median(np.concatenate(moves_all)):.0f} / {100 * np.percentile(np.concatenate(moves_all), 90):.0f} cm "
+          f"(R3's top landing is 0.91 m wide with the stairwell's well unrailed on its west side: a turn that wanders "
+          f"there falls in)")
 
 
 if __name__ == "__main__":
