@@ -281,6 +281,22 @@ def constraint_items(kind: str) -> list[dict]:
     # logged only, with the cost (_add_descent_speed): the share of the robots on the descents above 1.2x the command
     # over the ground -- the top of the acceptance's flight speed band (constraints._descent_over)
     items += [c("descent_over", "u_descent_over", "max", 0.05, 0.3, "q", [], enforce=False, family="down")]
+  if os.environ.get("U_FLIGHT_WEAVE"):
+    # logged only, with the cost (_add_flight_weave): the smoothed speed across the commanded line (m/s) of the
+    # robots that walk straight on down / up a flight (constraints._flight_weave). No bar (the user 2026-11-15:
+    # "需要训练蛇行幅度，但是不用门槛"); the numbers here are a logged item's reference alone: 0.02 m/s is what the
+    # checkpoints read where they walk their line (the Go2's model_5200 on the low steps 0.014-0.019, down the
+    # 15-18 cm ones 0.036; the Go2W's model_3000 going down 0.004-0.009, up the 15-18 cm ones 0.047)
+    items += [c(f"weave_{d}", "u_flight_weave", "max", 0.02, 0.1, "q", [], {"facing": d}, enforce=False, family=d)
+              for d in ("down", "up")]
+  if os.environ.get("U_FLIGHT_HEADING"):
+    # logged only, with the cost (_add_flight_heading): the heading's error against the commanded one (rad, p90 over
+    # the robots) walking straight on down / up a flight (constraints._flight_heading). The bar is the acceptance's
+    # (each robot's largest error on a flight, p90 <= 8 deg = 0.14 rad, from the next version on); a step's p90
+    # reads 0.5-0.6 of that on the checkpoints (constraints.flight_heading), so the reference here is 0.075 rad
+    # (4.3 deg) -- about where that bar is met, not the bar
+    items += [c(f"heading_{d}", "u_flight_heading", "max", 0.075, 0.3, "q", [], {"facing": d}, stat="p90",
+                enforce=False, family=d) for d in ("down", "up")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -719,6 +735,66 @@ def _add_descent_speed(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.rewards[DESCENT_SPEED_TERM] = RewardTermCfg(func=ucons.descent_overspeed, weight=-f[0], params=params)
 
 
+FLIGHT_WEAVE_TERM = "flight_weave"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+
+
+def _add_flight_weave(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_FLIGHT_WEAVE=<w>[,<scale>[,<up>[,<heavy>]]] (a probe's switch, _probe_switches): the cost
+  constraints.flight_weave at the weight -w, on the smoothed speed across the commanded line over <scale> m/s (0.1)
+  going straight on down a flight, going up at <up> times it (1; 0: the descents alone); the heavy class at <heavy>
+  times it (1: every payload alike; constraints.payload_fade). Before _rewards / quality_diff: a cost the M keys do
+  not have, so it starts at Q_EPS of its weight and comes in with the stairs quality (no constraint scales it). The
+  command and the scan are stair_speed_deficit's (in every robot's environment); the line is the heading
+  observation's (blind_env_cfg's heading_error: the build stops for a robot without it)."""
+  v = os.environ.get("U_FLIGHT_WEAVE")
+  if not v:
+    return
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 4 and 0.0 < f[0] <= 30.0, \
+    f"U_FLIGHT_WEAVE {v}: <weight 0-30>[,<scale 0.02-0.5 m/s>[,<up 0-1>[,<heavy 0-1>]]]"
+  assert "heading_error" in cfg.observations["critic"].terms, "U_FLIGHT_WEAVE: the robot has no heading observation"
+  ref = cfg.rewards["stair_speed_deficit"].params
+  params = {"command_name": ref["command_name"], "sensor_name": ref["sensor_name"],
+            "scale": f[1] if len(f) > 1 else 0.1}
+  assert 0.02 <= params["scale"] <= 0.5, f"U_FLIGHT_WEAVE {v}: the scale, 0.02-0.5 m/s"
+  if len(f) > 2:   # (the keys only then, as U_DESCENT_SPEED's)
+    assert 0.0 <= f[2] <= 1.0, f"U_FLIGHT_WEAVE {v}: the climbs' share, 0-1"
+    params["up"] = f[2]
+  if len(f) > 3:
+    assert 0.0 <= f[3] <= 1.0, f"U_FLIGHT_WEAVE {v}: the heavy class's share, 0-1"
+    params["heavy"] = f[3]
+  cfg.rewards[FLIGHT_WEAVE_TERM] = RewardTermCfg(func=ucons.flight_weave, weight=-f[0], params=params)
+
+
+FLIGHT_HEADING_TERM = "flight_heading"   # (no "u_" prefix: in with the stairs quality)
+
+
+def _add_flight_heading(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_FLIGHT_HEADING=<w>[,<scale>[,<up>[,<heavy>]]] (a probe's switch, _probe_switches): the cost
+  constraints.flight_heading at the weight -w, on (the heading's error against the commanded one / <scale> rad)^2
+  (0.14 = 8 deg; at most 4) going straight on down a flight, going up at <up> times it (1); the heavy class at
+  <heavy> times it (1). Before _rewards / quality_diff, as _add_flight_weave: in with the stairs quality. The
+  command and the scan are stair_speed_deficit's; the build stops for a robot without the heading observation."""
+  v = os.environ.get("U_FLIGHT_HEADING")
+  if not v:
+    return
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 4 and 0.0 < f[0] <= 30.0, \
+    f"U_FLIGHT_HEADING {v}: <weight 0-30>[,<scale 0.03-0.5 rad>[,<up 0-1>[,<heavy 0-1>]]]"
+  assert "heading_error" in cfg.observations["critic"].terms, "U_FLIGHT_HEADING: the robot has no heading observation"
+  ref = cfg.rewards["stair_speed_deficit"].params
+  params = {"command_name": ref["command_name"], "sensor_name": ref["sensor_name"],
+            "scale": f[1] if len(f) > 1 else 0.14}
+  assert 0.03 <= params["scale"] <= 0.5, f"U_FLIGHT_HEADING {v}: the scale, 0.03-0.5 rad"
+  if len(f) > 2:
+    assert 0.0 <= f[2] <= 1.0, f"U_FLIGHT_HEADING {v}: the climbs' share, 0-1"
+    params["up"] = f[2]
+  if len(f) > 3:
+    assert 0.0 <= f[3] <= 1.0, f"U_FLIGHT_HEADING {v}: the heavy class's share, 0-1"
+    params["heavy"] = f[3]
+  cfg.rewards[FLIGHT_HEADING_TERM] = RewardTermCfg(func=ucons.flight_heading, weight=-f[0], params=params)
+
+
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
 
 
@@ -1123,6 +1199,23 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          above 1.2x. 2026-11-14, the Go2's formal teacher (84e7965, model_5200): 1.35x the
                          command down the 15-18 cm flights, and told to stop there it was 72 cm further 2 s later
                          (stayed within 0.50 m: 30 %; the stop-place cost alone did not hold it, 3 / 8 / 20).
+    U_FLIGHT_WEAVE=<w>[,<scale>[,<up>[,<heavy>]]]   weaving along a flight costs: constraints.flight_weave at
+                         the weight -w (0-30) on the smoothed speed across the commanded line over <scale> m/s
+                         (0.1), over the robots that walk straight on down a flight -- up a flight at <up> times
+                         it (1), the heavy class at <heavy> times it (1). In with the stairs quality. With it two
+                         logged items weave_down / weave_up: that speed (m/s), no bar. 2026-11-15, the user on the
+                         Go2 teacher's videos ("像是喝醉了走不了直线", "需要训练蛇行幅度，但是不用门槛"): model_5200
+                         wanders 8.8 cm peak-to-peak down the 15-18 cm flights (5-8 cm: 2.7; descent_probe.py
+                         --straight), and no cost read it; the Go2W's model_3000 6.0 cm up them ("Go2W 上楼的蛇行
+                         也要算在内") (_add_flight_weave, constraints.flight_weave).
+    U_FLIGHT_HEADING=<w>[,<scale>[,<up>[,<heavy>]]]   turning off the commanded heading along a flight costs:
+                         constraints.flight_heading at the weight -w (0-30) on (the heading's error / <scale>
+                         rad)^2 (0.14 = 8 deg; at most 4), over the same robots, up a flight at <up> times it (1),
+                         the heavy class at <heavy> times it (1). In with the stairs quality. With it two logged
+                         items heading_down / heading_up: that error's p90 (rad). 2026-11-15, the user: "朝向最大
+                         偏离也要训练"; the acceptance from the next version on: each robot's largest heading error
+                         on a flight, p90 <= 8 deg (model_5200: 10.3 up / 9.4 down the 15-18 cm flights; the
+                         Go2W's model_3000 15.4 up) (_add_flight_heading, constraints.flight_heading).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
@@ -1470,6 +1563,8 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     _add_com_support(cfg)
     _add_stop_place(cfg)
     _add_descent_speed(cfg)
+    _add_flight_weave(cfg)
+    _add_flight_heading(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

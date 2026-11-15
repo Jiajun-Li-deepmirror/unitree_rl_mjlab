@@ -803,6 +803,153 @@ def descent_overspeed(env: ManagerBasedRlEnv, command_name: str, sensor_name: st
   return out * quality_in(env) if by_q else out
 
 
+def _flight_straight(env: ManagerBasedRlEnv, command_name: str, sensor_name: str,
+                     observed) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """(down, up, straight): the robots that walk straight on down / up a flight -- the robots the descent / climb
+  items read (pitched on uneven ground under a forward command: mdp.constraints._stair_speed's mask) whose command
+  has no sideways and no yaw part and whose heading observation `observed` is past its settling steps after a reset
+  (its target is the base heading until then) -- and the robots under such a command wherever they are."""
+  command = env.command_manager.get_command(command_name)
+  straight = (command[:, 1].abs() <= 1e-6) & (command[:, 2].abs() <= 1e-6) & (observed.settle == 0)
+  _, down = METRICS["stair_speed"](env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
+  _, climb = METRICS["stair_speed"](env, command_name=command_name, scan_sensor_name=sensor_name, descend=False)
+  return down & straight, climb & straight, straight
+
+
+class flight_weave:
+  """Reward term (U_FLIGHT_WEAVE=<w>[,<scale>[,<up>[,<heavy>]]], 2026-11-15): weaving along a flight. Per robot that
+  walks straight on along a flight (_flight_straight): |its smoothed speed across the line it is told to walk| /
+  `scale` (m/s), at most 1. Going down in full, going up at `up` times it (1; 0: the descents alone); the heavy
+  class at `heavy` times it (payload_fade; 1: every payload alike).
+
+  The line is along the heading the policy is shown (mdp.heading_error's target: the heading at the reset plus the
+  commanded turns), so a base whose heading wobbles while it walks where its nose points is read as well as one that
+  slips sideways; the body frame's sideways speed is zero for the first. The speed across it is the base's velocity
+  over the ground, smoothed with a time constant of `tau` s: the trot's own sway (0.7 cm at 2-3 Hz on the Go2, a
+  sideways speed of ~0.1 m/s at its peaks) is left out as descent_probe.py's 0.5 s average leaves it out, and what
+  stays is the path's slow wander over several steps. The smoothed speed restarts at zero at a reset and whenever
+  the command is not straight on.
+
+  Why (the user 2026-11-15, on the Go2 teacher's videos: "不是旋转晃动，是左右晃动，像是喝醉了走不了直线", then "需要训练
+  蛇行幅度，但是不用门槛"): the formal teacher's model_5200 down the 15-18 cm flights, unloaded and seen, wanders
+  8.8 cm peak-to-peak off its own straight line (descent_probe.py --straight; 5-8 cm down 2.7, 15-18 cm up 4.2), its
+  heading up to 7 deg off, and no cost saw it: the line cost on uneven ground reads the heading change over 0.17 rad
+  and the sideways offset as a share of the distance walked -- a drift's measures, each a few percent of its range
+  for a path that swings +-4 cm about its line -- and the body rate costs are small. The Go2W formal teacher wanders
+  going up instead (15-18 cm up 4.4-6.0 cm at 2500-3000, down 0.5-0.8 cm), and the user the same day: "Go2W 上楼的
+  蛇行也要算在内" -- hence both directions, and `up` for a probe that asks about one.
+
+  Comes in with the stairs quality as every cost the M keys do not have (teacher_env.quality_diff: Q_EPS of its
+  weight until then), so the robots climb before their path is asked to be straight. The reading: _flight_weave
+  (the items weave_down / weave_up, logged only -- the user asked for no bar)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    n = env.num_envs
+    self.lat = torch.zeros(n, device=env.device)                     # the smoothed speed across the line (m/s, + left)
+    self.down = torch.zeros(n, dtype=torch.bool, device=env.device)  # read this step: straight on down a flight
+    self.up = torch.zeros(n, dtype=torch.bool, device=env.device)    # ... up a flight
+    env.u_flight_weave = self
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.lat[env_ids] = 0.0
+    self.down[env_ids] = False
+    self.up[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, command_name: str, sensor_name: str, scale: float = 0.1,
+               up: float = 1.0, heavy: float = 1.0, tau: float = 0.5, obs_term: str = "heading_error") -> torch.Tensor:
+    out = torch.zeros(env.num_envs, device=env.device)
+    try:
+      observed = env.observation_manager.get_term_cfg("critic", obs_term).func
+    except ValueError:
+      return out
+    self.down, self.up, straight = _flight_straight(env, command_name, sensor_name, observed)
+    v = env.scene["robot"].data.root_link_lin_vel_w
+    across = -torch.sin(observed.target) * v[:, 0] + torch.cos(observed.target) * v[:, 1]
+    a = min(1.0, env.step_dt / tau)
+    self.lat = torch.where(straight, self.lat + a * (across - self.lat), torch.zeros_like(self.lat))
+    share = self.down.float() + up * self.up.float()
+    return share * (self.lat.abs() / scale).clamp(max=1.0) * payload_fade(env, heavy)
+
+
+def _flight_weave(env: ManagerBasedRlEnv, facing: str = "down") -> tuple[torch.Tensor, torch.Tensor]:
+  """`flight_weave`'s reading: |the smoothed speed across the commanded line| (m/s) over the robots that walk
+  straight on down (`facing` "down") / up ("up") a flight. For scale: a path that swings +-A m about its line with a
+  period of T s moves across it at 4 A / T m/s on average -- 0.06 m/s for the Go2's 8.8 cm peak-to-peak at 3 s, of
+  which the smoothing keeps 0.035 (flight_weave_test.py). Read on the checkpoints (2026-11-15, descent_probe.py's
+  flights, unloaded, the scan on; the mask catches 91-100 % of a flight's steps): the Go2's model_5200 0.014 down
+  the 5-8 cm steps (its path there: 2.7 cm peak-to-peak) and 0.036 down the 15-18 cm ones (8.8 cm), 0.019-0.026
+  going up; the Go2W's model_3000 0.004-0.009 going down (0.5-0.8 cm) and 0.025-0.047 going up (15-18 cm: 6.0 cm).
+  So about 0.02 and below is a robot that walks its line."""
+  t = getattr(env, "u_flight_weave", None)
+  if t is None:
+    raise RuntimeError("u_flight_weave: U_FLIGHT_WEAVE's term is not in this environment (teacher_env._add_flight_weave)")
+  assert facing in ("up", "down"), facing
+  return t.lat.abs(), t.down if facing == "down" else t.up
+
+
+class flight_heading:
+  """Reward term (U_FLIGHT_HEADING=<w>[,<scale>[,<up>[,<heavy>]]], 2026-11-15): turning off the commanded heading
+  along a flight. Per robot that walks straight on along a flight (_flight_straight): (|the heading the policy is
+  shown as its target - the base heading| / `scale` rad)^2, at most `most` -- 1 at `scale` (0.14 rad = 8 deg), 4 at
+  twice it. Going down in full, going up at `up` times it (1); the heavy class at `heavy` times it (1).
+
+  Why (the user 2026-11-15 ~14:00: "朝向最大偏离也要训练"; the acceptance's bar from the next version on, the peer's:
+  per robot the largest heading error on the flight, p90 over the robots <= 8 deg, descent_probe.py --straight):
+  the Go2 formal teacher's model_5200 reads 10.3 deg up / 9.4 deg down the 15-18 cm flights (2.6-5.5 on the low
+  steps), the Go2W's model_3000 15.4 deg up them. A cost on the heading is there already -- the line cost's part on
+  uneven ground, linear, |error| / 0.17 rad at about 2 per second: 1 /s at 5 deg -- and it left those peaks. The
+  square puts the price on the peaks: a quarter of the bar's at 4 deg, where the linear cost goes on working, four
+  times it at 16 deg; `most` keeps a robot that a fall or a shove has turned (the observation's target follows the
+  base at 0.5 rad) from a cost of 13.
+
+  Comes in with the stairs quality as flight_weave. The reading: _flight_heading (the items heading_down /
+  heading_up, logged only: the bar is the acceptance's, and a p90 over the robots at one step is below the p90 of
+  each robot's largest error over a flight -- 0.5-0.6 of it on the checkpoints, 2026-11-15: the Go2's model_5200
+  5.8 deg down / 5.7 up the 15-18 cm flights against 9.7 / 10.9, the Go2W's model_3000 7.2 up them against 15.4;
+  the acceptance's 8 deg is about 4.3 deg = 0.075 rad of this reading. The cost there, on average: 0.2-0.3 on those
+  flights, 0.01-0.07 on the 5-8 cm ones)."""
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    n = env.num_envs
+    self.off = torch.zeros(n, device=env.device)                     # |target - heading| (rad), the last step
+    self.down = torch.zeros(n, dtype=torch.bool, device=env.device)  # read this step: straight on down a flight
+    self.up = torch.zeros(n, dtype=torch.bool, device=env.device)    # ... up a flight
+    env.u_flight_heading = self
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    if env_ids is None:
+      env_ids = slice(None)
+    self.off[env_ids] = 0.0
+    self.down[env_ids] = False
+    self.up[env_ids] = False
+
+  def __call__(self, env: ManagerBasedRlEnv, command_name: str, sensor_name: str, scale: float = 0.14,
+               up: float = 1.0, heavy: float = 1.0, most: float = 4.0, obs_term: str = "heading_error") -> torch.Tensor:
+    from mjlab.utils.lab_api.math import wrap_to_pi
+
+    try:
+      observed = env.observation_manager.get_term_cfg("critic", obs_term).func
+    except ValueError:
+      return torch.zeros(env.num_envs, device=env.device)
+    self.down, self.up, _ = _flight_straight(env, command_name, sensor_name, observed)
+    self.off = torch.abs(wrap_to_pi(observed.target - env.scene["robot"].data.heading_w))
+    share = self.down.float() + up * self.up.float()
+    return share * ((self.off / scale) ** 2).clamp(max=most) * payload_fade(env, heavy)
+
+
+def _flight_heading(env: ManagerBasedRlEnv, facing: str = "down") -> tuple[torch.Tensor, torch.Tensor]:
+  """`flight_heading`'s reading: |the commanded heading - the base heading| (rad) over the robots that walk straight
+  on down (`facing` "down") / up ("up") a flight. (_stairs_heading reads the same error over both directions, the
+  backward walks and the stairs columns' level ground with steps in the scan.)"""
+  t = getattr(env, "u_flight_heading", None)
+  if t is None:
+    raise RuntimeError("u_flight_heading: U_FLIGHT_HEADING's term is not in this environment (teacher_env._add_flight_heading)")
+  assert facing in ("up", "down"), facing
+  return t.off, t.down if facing == "down" else t.up
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -1042,6 +1189,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stairs_stop_still_heavy": over_heavy(_stairs_stop_still),
           "u_stop_place": upto_common(_stop_place), "u_stop_place_heavy": over_heavy(_stop_place),
           "u_descent_over": _descent_over,
+          "u_flight_weave": _flight_weave, "u_flight_heading": _flight_heading,
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,
