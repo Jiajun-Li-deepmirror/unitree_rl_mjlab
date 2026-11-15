@@ -139,6 +139,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
         roll = torch.rad2deg(torch.atan2(g[:, 1], -g[:, 2]))
         vb = robot.data.root_link_lin_vel_b[ids]
         for j, e in enumerate(ids.tolist()):
+          if bool(state["fell"][e]):
+            continue   # a robot already down, respawned by the reset and falling again: only first falls count
           falls_rec.append({"phase": int(state["phase"][e]), "t": float(state["t_ph"][e]), "pitch": float(pitch[j]),
                             "roll": float(roll[j]), "cmd": float(term.vel_command_b[e, 0]), "vx": float(vb[j, 0]),
                             "causes": [nm for nm in cause_names if bool(tm.get_term(nm)[e])],
@@ -250,7 +252,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     term.vel_command_b[:, 1] = torch.where(walk, (-lateral).clamp(-0.2, 0.2), zero)
     term.vel_command_b[:, 2] = torch.where(walk, heading_err.clamp(-0.5, 0.5),
                                            torch.where(phase == 5, torch.full_like(zero, LANDING[1][1]), zero))
-    state["phase"], state["t_ph"], state["gain"], state["dw"] = phase, t_ph, gain, dw
+    state["phase"], state["t_ph"], state["gain"], state["dw"], state["fell"] = phase, t_ph, gain, dw, fell
     with torch.no_grad():
       obs, _, dones, extras = venv.step(policy(obs))
     terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
