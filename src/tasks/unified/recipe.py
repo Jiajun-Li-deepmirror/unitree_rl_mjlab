@@ -86,6 +86,23 @@ KIND: dict[str, dict[str, str]] = {
     # is not held). As2 (go2-home's mAJ, the pose switch alone, on throughout): the loaded falls at the stops 179 ->
     # 88; its line had the pose switch as the robot's own until this entry. Not the heavy class's fade
     # (U_STAND_POSE_EVEN=1,<heavy>; G11: out).
+    # The flights walked straight and with the legs off the steps (the user on the Go2 teacher's videos, 2026-11-15:
+    # "像是喝醉了走不了直线", "下楼时，主要关注后腿是否会有碰撞", "朝向最大偏离也要训练，门槛你定" -- the bar: the heading's
+    # p90 within 8 deg on every band, up and down, from this version on). Two switches, one recipe part (2026-11-16):
+    "U_DESCENT_LEG": "6",         # a thigh or calf pressing on a step while the robot walks down a flight costs
+    "U_FLIGHT_HEADING": "5,0.07", # turning off the commanded heading along a flight costs ((the error / 0.07 rad)^2)
+    # Evidence, the Go2 from the formal seed 0's model_5200, 600 iterations on, the newest 4 checkpoints averaged
+    # (uprobe_s178; in brackets the formal run's own at the same iteration, averaged the same way): the stairs gate
+    # passes (gap 0.12); on the 15-18 cm flights, without a load / with the typical one: the heading's p90 4.6 / 5.4
+    # deg down (9.6 / 9.1) and 4.5 / 5.6 deg up (10.4 / 10.5), the front calves on the steps 4.1 / 5.5 times a
+    # descent (7.8 / 11.3), the rear ones 2.7 / 2.8 (2.9 / 2.6); the full payload's falls on 5-15 cm 1 (10; the leg
+    # cost alone, uprobe_s165: 0). The price: the descent's weave 8.0 / 7.8 cm peak to peak (6.7 / 5.7). The weave
+    # cost in its place (U_FLIGHT_WEAVE=5, uprobe_s166: 5.0 cm) leaves the heading at 8.3 deg and puts the rear
+    # calves on the steps 4.2 times a descent; the weave cost beside the leg cost (uprobe_s177): 7.2 cm, the heading
+    # 6.6 / 7.3 deg. The user's order of the three: the rear legs first, the heading judged, the weave trained and not
+    # judged. The As2 takes the part untested (go2-home's probes). Not the wheeled kind: the Go2W's heading cost at 5
+    # leaves 8.4 deg, at 15 the robot slides back at the stops (uprobe_s164 / s170), and with the leg cost its gate
+    # fails (uprobe_s174).
   },
   "wheeled": {
     "U_STAIR_APPROACH": "0",          # the stairs speed cost holds on a climbing column's level ground too (the Go2W

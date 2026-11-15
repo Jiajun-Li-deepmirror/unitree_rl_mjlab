@@ -24,7 +24,10 @@ _add_flight_heading). The user on the Go2 teacher's videos: "不是旋转晃动�
   -3.1: 0.083 rad apart) 0.35; climb (0.07 rad) 0.25, nothing at up 0; even / side / yaw (0.14 rad) no cost, not
   read; heavy (0.14 rad) 1, 0.5 at heavy 0.5; scale 0.28: the bar robot 0.25.
 (B) On the built configurations (no GPU), per robot and per switch:
-  (1) without the switch (no recipe carries it yet): no term, no items;
+  (1) with both switches off (U_FLIGHT_WEAVE= U_FLIGHT_HEADING= in the environment: an empty value wins over the
+      recipe's; every build below starts from it): no term, no items; the plain build: the recipe's own weight and
+      scale where the robot's recipe carries a switch (the legged kind's U_FLIGHT_HEADING=5,0.07 since 2026-11-16; no
+      recipe carries U_FLIGHT_WEAVE), no term and no items where it does not, the rest as with the switches off;
   (2) with <switch>=5: the term at the weight -5, the default scale, no up / heavy key, on stair_speed_deficit's
       command and scan; two items (weave_down / weave_up; heading_down / heading_up at the p90), logged only (no
       terms, not enforced), their metric in constraints.CUSTOM; <switch>=8,0.05,1,0.5 read as written; a weight of 0
@@ -255,6 +258,7 @@ def main() -> int:
     return cfg, items
 
   def with_env(values: dict, robot, **kw):
+    values = {**{sw: "" for sw in switches}, **values}   # both off unless set, whatever the robot's recipe carries
     os.environ.update(values)
     try:
       return build(robot, **kw)
@@ -280,10 +284,27 @@ def main() -> int:
   for n in names:
     robot = ROBOTS[n]
     print(f"{n}:")
-    cfg0, items0 = build(robot)
+    cfg0, items0 = with_env({}, robot)   # both switches off
+    cfgr, itemsr = build(robot)
+    table = urecipe.recipe(robot)
+    own_terms = [s[1] for s in specs if table.get(s[0])]
+    own_items = [x for s in specs if table.get(s[0]) for x in s[4]]
+    check(terms(cfgr, skip=own_terms) == terms(cfg0) and [i for i in itemsr if i["name"] not in own_items] == items0,
+          f"the plain build: the recipe's own {[s[0] for s in specs if table.get(s[0])] or 'neither switch'}, "
+          "the rest as with the switches off")
     for sw, term, func, scale, mine, stat, metric in specs:
       check(term not in cfg0.rewards and not [i for i in items0 if i["name"] in mine],
-            f"without {sw}: no term, no items")
+            f"{sw}= (off): no term, no items")
+      own = table.get(sw)
+      got, n_items = cfgr.rewards.get(term), len([i for i in itemsr if i["name"] in mine])
+      if own:
+        f = own.split(",")
+        check(got is not None and got.weight == -float(f[0])
+              and got.params["scale"] == (float(f[1]) if len(f) > 1 else scale) and n_items == 2,
+              f"the plain build, the recipe's own {sw}={own}: the term at {got.weight if got else None}, scale "
+              f"{got.params['scale'] if got else None}, the two items")
+      else:
+        check(got is None and n_items == 0, f"the plain build, the recipe carries no {sw}: no term, no items")
       cfg1, items1 = with_env({sw: "5"}, robot)
       new = [i for i in items1 if i["name"] in mine]
       check([i["name"] for i in new] == list(mine) and all(
