@@ -73,6 +73,13 @@ TEACHER_SET = "teacher"
 TEACHER_MODEL = "src.tasks.unified.models:UPrivLatentModel"
 S1_ITERATIONS = 4000
 S2_ITERATIONS = 3000
+# Stage 2's learning rate: steady (2026-11-15, go2-depth). The first formal Go2 students (93a857f) ran rsl_rl's
+# adaptive schedule under a 1e-4 ceiling with desired_kl 0.005: the rate sat near 5e-6 from the first hundreds of
+# iterations on, and the items stage 1 hands over short (four feet on the treads after a stop on a descent) moved
+# +-0.05-0.10 over the 3000 iterations. Of the two probe rounds' arms the steady 3e-5 alone gained (stD from the
+# hand-over; r2d from model_2999, +600 iterations: 15-18 cm descents 0.83 against the control's 0.74); a steady 1e-4
+# lost (r2e), a floor on the item's multiplier and the privileged-latent cost did nothing (stA / stB / stC, r2f).
+S2_LEARNING_RATE = 3e-5
 
 
 # The checks' foot friction where the blind builder's check terrain differs from the training's (2026-11-12, the user:
@@ -313,7 +320,8 @@ def ppo_runner_cfg(robot: URobot, kind: str, clip_actions: float | None = None) 
     max_iterations=S2_ITERATIONS, save_interval=100, clip_actions=clip_actions,
     obs_groups={"actor": STUDENT_GROUPS[kind], "critic": ("critic",), TEACHER_SET: TEACHER_GROUPS[kind]},
     actor=_student_model_cfg(kind, distribution=True), teacher=_teacher_model_cfg(),
-    algorithm=UStudentPpoAlgorithmCfg(bc_coef=1.0, bc_coef_final=0.3),
+    algorithm=UStudentPpoAlgorithmCfg(bc_coef=1.0, bc_coef_final=0.3, schedule="fixed",
+                                      learning_rate=S2_LEARNING_RATE),
   )
 
 
