@@ -51,6 +51,10 @@ ROBOTS: dict[str, dict] = {
                wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
                notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
+              # 2026-11-15 (the As2's first run on the unified flow; the values the user confirmed 2026-11-14,
+              # "2 按建议"): the Go2's box and typical condition scaled by the body's size, half the walking payload
+              payload_point=((-0.26, 0.26), (-0.15, 0.15), (-0.06, 0.34)),
+              typical_payload="7.5,0,0,0.11,0.21,0.10,0.11",
               wall_stop=0.9, foot_r=0.028, params={"model": "uros"},
               notes="payload: Unitree's figure ~15 kg walking (www.unitree.com/As2, 2026-11-11; was 10, half the body "
                     "weight, when no figure was found)"),
