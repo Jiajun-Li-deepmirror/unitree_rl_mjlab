@@ -52,6 +52,7 @@ STOP_S = 3.0
 ONTO_MAX_S = 3.0
 ONTO_WALL_M = 1.0
 TOP_SAG = 0.12
+LAST_STEPS = 0.75   # the falls between this share of the rise and eval_map3's 85 % are the flight's last steps
 LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top landing
 HELD_M = 0.05
 FORCE_N = 5.0
@@ -332,7 +333,8 @@ def falls_report(rows) -> None:
   # the climbing falls by where they happened: the first 2 s after the restart below 85 % of the rise (the restart),
   # the rest below 85 % (the upper flight), at or above 85 % (the flight's head: eval_map3 takes a climb as done at
   # 85 % and does not count what follows); before the stop
-  kinds = {"before the stop": 0, "restart (<= 2 s, < 85 %)": 0, "upper flight (< 85 %)": 0, "flight's head (>= 85 %)": 0}
+  kinds = {"before the stop": 0, "restart (<= 2 s, < 75 %)": 0, "upper flight (< 75 %)": 0,
+           "last steps (75-85 %)": 0, "flight's head (>= 85 %)": 0}
   for r in rows:
     for f in r["falls_rec"]:
       if "error" in f:
@@ -343,10 +345,12 @@ def falls_report(rows) -> None:
       elif f["phase"] == 2:
         if g >= GOAL_SHARE:
           kinds["flight's head (>= 85 %)"] += 1
+        elif g >= LAST_STEPS:
+          kinds["last steps (75-85 %)"] += 1
         elif f["t"] <= 2.0:
-          kinds["restart (<= 2 s, < 85 %)"] += 1
+          kinds["restart (<= 2 s, < 75 %)"] += 1
         else:
-          kinds["upper flight (< 85 %)"] += 1
+          kinds["upper flight (< 75 %)"] += 1
   print("climbing falls by where: " + ", ".join(f"{k} {v}" for k, v in kinds.items()))
   # the stop's wheel placement: robots that fell on the restart against those that did not
   for tag, sel in (("fell climbing on", lambda r: r["fell_phase"] == 2), ("did not", lambda r: r["fell_phase"] != 2)):
