@@ -988,6 +988,39 @@ def _descent_leg(env: ManagerBasedRlEnv, leg_sensor_name: str = "leg_ground_touc
   return (force > force_threshold).flatten(1).any(dim=1).float(), down
 
 
+def descent_pitch_rate(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, scale: float = 0.8,
+                       heavy: float = 1.0, most: float = 16.0) -> torch.Tensor:
+  """Reward term (U_DESCENT_PITCH=<w>[,<scale>[,<heavy>]], 2026-11-15): the base rocking fore and aft while the robot
+  walks down a flight. Per robot the descent item reads (pitched nose down on uneven ground under a forward command
+  -- a robot told to stop there is not among them): its pitch rate in the base frame over `scale` rad/s, squared, at
+  most `most` (a fall's rates stay bounded: 4 x the scale). The heavy class at `heavy` times it (payload_fade; 1:
+  every payload alike).
+
+  Why (the user 2026-11-15, on the Go2W teacher's videos, seed 1 model_3800: "下楼梯的pitch角速度很大，一直会前后仰俯"):
+  no cost and no acceptance item ever read the pitch rate on a descent by itself. The Go2W's model_3000 down the
+  15-18 cm flights reads a pitch rate of 78 deg/s rms (1.36 rad/s; pitch std 6.4 deg; 59 deg/s down the 12-15 cm
+  ones), against 46 deg/s climbing them and the Go2's model_5200 at 43 deg/s going down (descent_probe.py). What
+  prices it today is the roll and pitch rates' square on every ground (body_ang_vel, the Go2W's -0.05) and again on
+  uneven ground (body_ang_vel_stairs, -0.1): 0.15 per (rad/s)^2, 0.28 per second at that reading -- one price for
+  climbing, descending and standing, set where the climb needs its pitch motion. Hence a price on the descents'
+  pitch rate alone: the scale 0.8 rad/s (46 deg/s) is the rate of its own climbs, so the cost reads 1 where the
+  descent rocks as the climb does and 2.9 at the reading above; the weight 1 is 10 x today's price there.
+
+  Comes in with the stairs quality as every cost the M keys do not have (teacher_env.quality_diff). The reading:
+  _descent_pitch (the item pitch_down, logged only)."""
+  rate = env.scene["robot"].data.root_link_ang_vel_b[:, 1]
+  _, down = METRICS["stair_speed"](env, command_name=command_name, scan_sensor_name=sensor_name, descend=True)
+  return down.float() * ((rate / scale) ** 2).clamp(max=most) * payload_fade(env, heavy)
+
+
+def _descent_pitch(env: ManagerBasedRlEnv, **params) -> tuple[torch.Tensor, torch.Tensor]:
+  """The base's pitch rate, absolute (rad/s), over the robots that walk down a flight (the descent item's robots).
+  A mean of absolute values: about 0.8 of the rms descent_probe.py prints for a rate that swings evenly (the Go2W's
+  78 deg/s rms is about 1.1 rad/s here, its climbs' 46 deg/s about 0.64)."""
+  _, down = METRICS["stair_speed"](env, **{**params, "descend": True})
+  return env.scene["robot"].data.root_link_ang_vel_b[:, 1].abs(), down
+
+
 def stair_speed_deficit_h(env: ManagerBasedRlEnv, command_name: str, sensor_name: str, ratio: float = 0.9,
                           min_speed: float = 0.1, ratio_high: float | None = None, axis_min: float | None = None,
                           max_payload: float | None = None, approach_heavy: float | None = None) -> torch.Tensor:
@@ -1228,6 +1261,7 @@ CUSTOM = {"u_stairs_stop_feet": _stairs_stop_feet, "u_stairs_roll": _stairs_roll
           "u_stop_place": upto_common(_stop_place), "u_stop_place_heavy": over_heavy(_stop_place),
           "u_descent_over": _descent_over,
           "u_flight_weave": _flight_weave, "u_flight_heading": _flight_heading, "u_descent_leg": _descent_leg,
+          "u_descent_pitch": _descent_pitch,
           "u_stair_speed_c": upto_common("stair_speed"), "u_stair_speed_hc": upto_common(_stair_speed_h),
           "u_stand_hold_light": _stand_hold_light,
           "u_stop_creep": _stop_creep, "u_stop_creep_light": _stop_creep_light,

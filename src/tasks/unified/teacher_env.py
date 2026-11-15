@@ -302,6 +302,11 @@ def constraint_items(kind: str) -> list[dict]:
     # calf pressing on a step (constraints._descent_leg; leg_contact reads every robot on the stairs columns). The
     # Go2's model_5200 reads 0.09-0.15 down the 12-18 cm flights; 0.03 is a reference, no bar is set
     items += [c("leg_down", "u_descent_leg", "max", 0.03, 0.15, "q", [], enforce=False, family="down")]
+  if os.environ.get("U_DESCENT_PITCH"):
+    # logged only, with the cost (_add_descent_pitch): the base's pitch rate, absolute (rad/s), over the robots that
+    # walk down a flight (constraints._descent_pitch). No bar is set; 0.64 rad/s is a reference -- what the Go2W's
+    # climbs read (46 deg/s rms; its descents of the 15-18 cm flights 78 deg/s rms, about 1.1 here)
+    items += [c("pitch_down", "u_descent_pitch", "max", 0.64, 1.5, "q", [], enforce=False, family="down")]
   # -- the loaded-falls and kicks switches (probes, _probe_switches)
   if os.environ.get("U_STAIR_SPEED_LOADED"):
     # the heavier robots' stairs speed cost is discounted (_rewards: constraints.stair_speed_loaded), so the items
@@ -826,6 +831,33 @@ def _add_descent_leg(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.rewards[DESCENT_LEG_TERM] = RewardTermCfg(func=ucons.descent_leg_contact, weight=-f[0], params=params)
 
 
+DESCENT_PITCH_TERM = "descent_pitch"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
+
+
+def _add_descent_pitch(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_DESCENT_PITCH=<w>[,<scale>[,<heavy>]] (a probe's switch, _probe_switches): the cost
+  constraints.descent_pitch_rate at the weight -w, on the base's pitch rate over <scale> rad/s (0.8), squared, while
+  the robot walks down a flight -- the descent item's robots (the command and the scan are stair_speed_deficit's);
+  the heavy class at <heavy> times it (1: every payload alike; constraints.payload_fade). On top of body_ang_vel and
+  body_ang_vel_stairs, which stay as they are (roll and pitch, every direction). Before _rewards / quality_diff, as
+  _add_flight_weave: in with the stairs quality (no constraint scales it)."""
+  v = os.environ.get("U_DESCENT_PITCH")
+  if not v:
+    return
+  f = [float(x) for x in v.split(",")]
+  assert 1 <= len(f) <= 3 and 0.0 < f[0] <= 20.0, \
+    f"U_DESCENT_PITCH {v}: <weight 0-20>[,<scale 0.2-3 rad/s>[,<heavy 0-1>]]"
+  ref = cfg.rewards["stair_speed_deficit"].params
+  params = {"command_name": ref["command_name"], "sensor_name": ref["sensor_name"]}
+  if len(f) > 1:   # (the keys only then, as U_DESCENT_SPEED's)
+    assert 0.2 <= f[1] <= 3.0, f"U_DESCENT_PITCH {v}: the scale, 0.2-3 rad/s"
+    params["scale"] = f[1]
+  if len(f) > 2:
+    assert 0.0 <= f[2] <= 1.0, f"U_DESCENT_PITCH {v}: the heavy class's share, 0-1"
+    params["heavy"] = f[2]
+  cfg.rewards[DESCENT_PITCH_TERM] = RewardTermCfg(func=ucons.descent_pitch_rate, weight=-f[0], params=params)
+
+
 COM_TERM = "com_support"   # (no "u_" prefix, as KEEPOUT_TERM: in with the stairs quality)
 
 
@@ -1256,6 +1288,24 @@ def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
                          model_5200 down the 15-18 cm flights: 5.9 rear-calf and 9.5 front-calf contacts per
                          flight; the item's larger floor is out (leg_contact:6, s132: topples after a stop)
                          (_add_descent_leg, constraints.descent_leg_contact).
+    U_DESCENT_PITCH=<w>[,<scale>[,<heavy>]]   the base rocking fore and aft while the robot walks down a flight
+                         costs: constraints.descent_pitch_rate at the weight -w (0-20) on the pitch rate over <scale>
+                         rad/s (0.8 = 46 deg/s, the Go2W's own climbs), squared, over the descent item's robots, the
+                         heavy class at <heavy> times it (1). On top of body_ang_vel / body_ang_vel_stairs (0.15
+                         per (rad/s)^2 on roll and pitch alike: the weight 1 is 10 x that price). In with the
+                         stairs quality. With it a logged item pitch_down: those robots' absolute pitch rate
+                         (rad/s). 2026-11-15, the user on the Go2W's videos: "下楼梯的pitch角速度很大，一直会前后
+                         仰俯"; model_3000 down the 15-18 cm flights 78 deg/s rms, the Go2's model_5200 43
+                         (_add_descent_pitch, constraints.descent_pitch_rate).
+    U_KEYS_ADD=<key>[,<key>...]   keys of the old flow added to the recipe's final keys (robots.base_env_cfg; the M
+                         keys stay, so a cost they bring comes in with the stairs quality). Those of robots.ADD_KEYS
+                         alone: endwall (a 2 m wall closes the walled up-flights, the forward command slows to zero
+                         in front of a wall as the deployed wall guard does; endwallshort with it: the slow-down
+                         over the last 0.2 m instead of 0.5) and, a wheeled robot's, topflat (a lifted wheel with
+                         flat ground ahead next to stairs at -8; topflat30 with it: at -30). 2026-11-15, the user on
+                         the Go2W's videos: "在平台的时候会出现前面是墙然后做抬腿翻越动作" -- the unified recipe has
+                         none of the four (endwall cost the Go2W 3-8 % of its climbing speed on 2026-11-09 and was
+                         left to the deployed wall guard; the B2W's top-landing steps went 2.0 -> 0.3 with it).
   The descent (2026-11-13: tier 2 on the Go2 candidate, s29 model_5598 -- four feet down in 0.57-0.75 of the stops
   going down the 8-18 cm steps and the descents at 0.73-0.81x the command, where training read 0.93 and 0.9):
     U_STOP_FEET_DIR=<x>  stop_feet as two items, stop_feet_up / stop_feet_down: the robots stopped on the flight
@@ -1642,6 +1692,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     _add_flight_weave(cfg)
     _add_flight_heading(cfg)
     _add_descent_leg(cfg)
+    _add_descent_pitch(cfg)
     items = constraint_items(robot.kind)
     constrained, other = _rewards(cfg, robot.kind, items, lean)
     if not play:

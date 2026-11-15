@@ -109,6 +109,16 @@ DROPPED_KEYS = ("legcons", "wheelcons", "sidetgt75", "consease", "desccons", "lo
 # on uneven ground (rest.py; the keys stay in the build). U_REST_OLD=tilt[,<rad>]: as even, the ground told by the
 # base's tilt (rest.TILT) instead of the scan.
 REST_OLD_KEYS = ("restlock", "standtgt")
+# U_KEYS_ADD=<key>[,<key>...] (a probe's switch, off unless set; teacher_env._probe_switches' docstring): keys of the
+# old flow added to the recipe's P keys -- the final environment's; the M keys stay as they are, so a cost an added
+# key brings comes in with the stairs quality as every cost the M keys do not have (teacher_env.quality_diff). Those
+# below alone: the top landing in front of a wall (2026-11-15, the user on the Go2W teacher's videos: "在平台的时候会
+# 出现前面是墙然后做抬腿翻越动作"; blind_env_cfg has each key's history).
+ADD_KEYS = ("endwall", "endwallshort", "topflat", "topflat30")
+ADD_NEEDS = {"endwallshort": "endwall", "topflat30": "topflat"}   # a key that only changes another's numbers
+ADD_WHEELED = ("topflat", "topflat30")                            # a cost on the wheels: nothing on a legged robot
+ADD_RECIPE_NEEDS = {"endwall": "longexit"}   # the wall stands at the flight's exit: 0.5 m past the last riser without
+                                             # longexit (1.4 m with it), inside the command's stop distance
 
 
 def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys: str = "P") -> ManagerBasedRlEnvCfg:
@@ -123,7 +133,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
   tilt = _rest_tilt(v)
   assert tilt is not None or v in (None, "", "0", "1", "even"), f"U_REST_OLD {v}: 1, even, tilt[,<rad>] or unset"
   drop = DROPPED_KEYS + (REST_OLD_KEYS if v == "1" and robot.kind == "wheeled" else ())
-  keys = [k for k in recipe[keys] if k not in drop]
+  add = _keys_add(robot, recipe[keys]) if keys == "P" else []
+  keys = [k for k in recipe[keys] if k not in drop] + add
   env = {
     "BLIND_PILOT": ",".join(keys),
     "BLIND_PAYLOAD": robot.payload,          # no ramp: the progress curriculum scales the payload (curriculum.py)
@@ -148,6 +159,24 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
 
     rest.apply_even(cfg, tilt)
   return cfg
+
+
+def _keys_add(robot: URobot, have: list[str]) -> list[str]:
+  """U_KEYS_ADD's keys (ADD_KEYS' comment), checked: each of ADD_KEYS, once, not in the recipe already, with the key
+  it changes (ADD_NEEDS) there or among them, a wheel cost on a wheeled robot alone, and the recipe key it stands on
+  (ADD_RECIPE_NEEDS) in the recipe. [] without the switch."""
+  v = os.environ.get("U_KEYS_ADD")
+  if not v:
+    return []
+  add = v.split(",")
+  assert len(set(add)) == len(add) and set(add) <= set(ADD_KEYS), f"U_KEYS_ADD {v}: of {', '.join(ADD_KEYS)}, once"
+  for k in add:
+    assert k not in have, f"U_KEYS_ADD {v}: {k} is in {robot.name}'s recipe already"
+    assert k not in ADD_NEEDS or ADD_NEEDS[k] in add or ADD_NEEDS[k] in have, f"U_KEYS_ADD {v}: {k} needs {ADD_NEEDS[k]}"
+    assert k not in ADD_WHEELED or robot.kind == "wheeled", f"U_KEYS_ADD {v}: {k} is a wheeled robot's"
+    assert k not in ADD_RECIPE_NEEDS or ADD_RECIPE_NEEDS[k] in have, \
+      f"U_KEYS_ADD {v}: {k} needs {ADD_RECIPE_NEEDS[k]} in {robot.name}'s recipe"
+  return add
 
 
 def _rest_tilt(v: str | None) -> float | None:

@@ -50,7 +50,8 @@ WATCH = {
 
 def remote(port: str, cmd: str) -> str:
   try:
-    return subprocess.run([SSH, port, cmd], capture_output=True, text=True, timeout=60,
+    # (errors="replace": a box cuts a log line by bytes, and a verdict's Chinese text may end mid-character)
+    return subprocess.run([SSH, port, cmd], capture_output=True, text=True, errors="replace", timeout=60,
                           stdin=subprocess.DEVNULL).stdout
   except subprocess.TimeoutExpired:
     return ""

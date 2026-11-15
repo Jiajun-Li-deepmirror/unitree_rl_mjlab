@@ -339,7 +339,8 @@ def fetch(key: str, since: str) -> dict | None:
   name, box, port = ROBOTS[key]
   cmd = f"cd {D} && python3 - '{json.dumps({'robots': [key], 'since': since})}'"
   try:
-    res = subprocess.run([SSH, port, cmd], input=REMOTE, capture_output=True, text=True, timeout=120)
+    res = subprocess.run([SSH, port, cmd], input=REMOTE, capture_output=True, text=True, errors="replace",
+                         timeout=120)
     return json.loads(res.stdout.strip().splitlines()[-1])
   except Exception as e:   # a box that does not answer: its robot says so
     print(f"board_unified: {box} did not answer ({type(e).__name__})", file=sys.stderr)
