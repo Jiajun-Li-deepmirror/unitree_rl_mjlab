@@ -195,6 +195,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   v_acc, v_n = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
   stopped = torch.zeros(n, dtype=torch.bool, device=dev)
   reached = torch.zeros(n, dtype=torch.bool, device=dev)
+  top_gap = torch.full((n,), float("nan"), device=dev)
+  top_by_wall = torch.zeros(n, dtype=torch.bool, device=dev)
   land = {q: torch.zeros(n, device=dev) for q in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off",
                                                   "turn_lift", "wall_sum", "wall_touch")}
   g0 = torch.full((n,), float("inf"), device=dev)          # the front feet's lowest height in the first stand
@@ -225,6 +227,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     # ONTO_WALL_M (never walk a robot into the end wall: a loaded Go2W's base never gained rise - 4 cm and drove on)
     top = (phase == 2) & ((gain >= rise - TOP_SAG) | (dw <= ONTO_WALL_M)) & ~fell
     reached |= top
+    top_gap = torch.where(top, rise - gain, top_gap)                 # how far below the whole rise the top was taken
+    top_by_wall = torch.where(top, gain < rise - TOP_SAG, top_by_wall)  # taken by the wall (the base not up yet)
     phase = torch.where(top, torch.full_like(phase, 3), phase)
     t_ph = torch.where(top | end_stop, torch.zeros_like(t_ph), t_ph)
     for k, dur in ((3, ONTO_MAX_S), (4, land_dur[0]), (5, land_dur[1]), (6, land_dur[2])):
@@ -302,7 +306,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
-          "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move)}
+          "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move), "top_gap": np_(top_gap),
+          "top_by_wall": np_(top_by_wall)}
 
 
 PHASES = ("climb to mid", "mid stop", "climb on", "onto landing", "stand", "turn", "stand 2", "done")
@@ -401,6 +406,11 @@ def report(rows) -> None:
     q = lambda x, p: float(np.percentile(x, p)) if x.size else float("nan")
     lifts_all.append(lt)
     touch_all.append(r["wall_touch"][has])
+    tg = r["top_gap"][~np.isnan(r["top_gap"])]
+    flag = " [TOP BY THE WALL: the base not on the landing yet]" if tg.size and r["top_by_wall"].mean() > 0.2 else ""
+    print(f"{r['name']:10s} top taken {100 * np.median(tg) if tg.size else float('nan'):.0f} / "
+          f"{100 * np.percentile(tg, 90) if tg.size else float('nan'):.0f} cm below the whole rise (p50 / p90), by the wall "
+          f"{100 * r['top_by_wall'].mean():.0f}%{flag}")
     print(f"{r['name']:10s} reached the top {100 * r['reached'].mean():5.1f}%, on the landing {int(has.sum())}, wall ahead p50 "
           f"{np.median(w) if w.size else float('nan'):.2f} m, fell on the landing {int(r['fell_land'].sum())} | " + " | ".join(line)
           + f" | front foot highest above the stand: turn p50 / p90 {100 * q(lt, 50):.1f} / {100 * q(lt, 90):.1f} cm, last stand "
