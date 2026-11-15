@@ -21,6 +21,13 @@ the flight (Chebyshev distance 1.0-3.6 m from the tile centre, about 8-10 steps)
              before the flight (0.2-0.9 m, level) as each robot's own reference
   jolt       the mean |roll rate| / |pitch rate| over the 0.1 s after a rear calf's contact onset against the
              flight's other steps (a ratio near 1: the contacts do not rock the body)
+  path       (the user 11-15: "不是旋转晃动，是左右晃动，像是喝醉了走不了直线") the lateral offset from the line along the
+             spawn heading, fitted against the forward distance: the drift angle, and the residual split by a 0.5 s
+             average into the slow weaving over several steps ("meander", std and peak-to-peak) and the rest ("gait
+             sway"); the heading off the spawn heading (mean |.|, std, max |.|); the body-frame lateral speed and the
+             yaw rate (RMS); the lateral speed / yaw rate in the 0.1 s after a calf's onset, front and rear, on the
+             12-18 cm descents. --straight spawns square to the steps (the check's stair spawn is k x 90 deg
+             +- 15 deg: squaring up would read as drift)
 
 A robot that falls counts until its fall. One "SUM" line per band and direction for comparing arms. Judges nothing.
 Run from the repo root with UNIFIED_TASKS=1 (set here); a student checkpoint (the depth student's memory) through
@@ -33,7 +40,11 @@ The Go2 formal teacher seed 0 model_5200 (11-15, unloaded, seen; 72 robots per b
 laptop RTX 3060), 15-18 cm down: rear calf 5.94 onsets per flight (97 % of the robots, 86 % on a step's edge, peak
 258 N p50), front calf 9.50 (636 N), thighs ~0, a leg on the steps 15 % of the flight's steps (12-15 cm 8.9 %, up
 <= 0.6 %); sway roll / pitch std 2.65 / 5.20 deg, rates 43 / 43 deg/s against 0.8 / 1.2 deg and 18 / 19 deg/s on the
-platform, 15-18 cm up 2.99 / 4.93 deg, 42 / 46 deg/s; jolt ratio 0.97 / 0.89 (8-15 cm down 1.1-1.4).
+platform, 15-18 cm up 2.99 / 4.93 deg, 42 / 46 deg/s; jolt ratio 0.97 / 0.89 (8-15 cm down 1.1-1.4). The path,
+--straight: 15-18 cm down meander 8.8 cm peak-to-peak (p90 11.4; 5-8 cm down 2.7, 15-18 cm up 4.2), gait sway 0.7 cm,
+drift 2.5 deg (p90 6.1), heading max 7.0 deg, lateral speed 0.109 m/s (5-8 cm down 0.049, 15-18 cm up 0.091), yaw
+rate 16.3 deg/s; after a front calf's onset the yaw rate 21.7 deg/s against 10.8 (rear 16.2), the lateral speed 0.098
+against 0.077 m/s.
 """
 from __future__ import annotations
 
@@ -95,6 +106,10 @@ def main() -> int:
   ap.add_argument("--vx", type=float, default=0.5)
   ap.add_argument("--envs-per-tile", type=int, default=18)
   ap.add_argument("--seed", type=int, default=0)
+  ap.add_argument("--straight", action="store_true",
+                  help="spawn square to the steps: the stair spawn's yaw noise (k x 90 deg +- 15 deg by default, "
+                       "mdp.reset_root_state_terrain_aware) set to 0, so turning square to the steps cannot read as "
+                       "drift")
   a = ap.parse_args()
 
   from mjlab.envs import ManagerBasedRlEnv
@@ -115,6 +130,9 @@ def main() -> int:
   gen.num_rows = NUM_ROWS
   gen.num_cols = len(gen.sub_terrains) * 2
   cfg.events.pop("randomize_terrain")
+  if a.straight:
+    cfg.events["reset_base"].params["stair_yaw_noise"] = 0.0
+    cfg.events["reset_base"].params["narrow_yaw_noise"] = 0.0
   n = gen.num_rows * gen.num_cols * a.envs_per_tile
   cfg.scene.num_envs = n
   segs = leg_segments(cfg)
@@ -167,6 +185,11 @@ def main() -> int:
   post_steps = max(1, int(round(JOLT_S / dt)))
   since = torch.full((n,), 10 ** 6, device=dev)
   jl = {q: zeros() for q in ("post_n", "post_r", "post_p", "oth_n", "oth_r", "oth_p")}
+  # the path (lateral section): each step's planar position, heading, body-frame lateral velocity, yaw rate, and the
+  # calf contact onsets, front and rear -- a few MB for the whole run
+  yaw0 = robot.data.heading_w.clone()
+  p0 = robot.data.root_link_pos_w[:, :2].clone()
+  tr: dict[str, list] = {q: [] for q in ("x", "y", "yaw", "vy", "wz", "d", "act", "fc", "rc")}
   for _ in range(int(round(FLIGHT[1] / max(abs(a.vx), 0.1) * 2.0 / dt))):
     with torch.no_grad():
       obs, _, _, _ = venv.step(policy(obs))
@@ -191,6 +214,8 @@ def main() -> int:
       A["wp2"] += w[:, 1] ** 2 * f
     on_fl = act & (d >= FLIGHT[0]) & (d <= FLIGHT[1])
     touching = torch.zeros(n, dtype=torch.bool, device=dev)
+    fc_on = torch.zeros(n, dtype=torch.bool, device=dev)
+    rc_on = torch.zeros(n, dtype=torch.bool, device=dev)
     for k in segs:
       sd = sens[k].data
       fh = torch.norm(sd.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values
@@ -204,6 +229,9 @@ def main() -> int:
       C["fmax"] = torch.where(h, torch.maximum(C["fmax"], fh), C["fmax"])
       if k[0] in SIDES["rear"] and k[1] == "calf":
         since = torch.where(hit & ~prev[k] & on_fl, torch.zeros_like(since), since)
+        rc_on |= hit & ~prev[k] & on_fl
+      elif k[1] == "calf":
+        fc_on |= hit & ~prev[k] & on_fl
       prev[k] = hit
       touching |= h
     any_leg += touching.float()
@@ -212,6 +240,11 @@ def main() -> int:
       jl[f"{tag}_r"] += w[:, 0].abs() * m.float()
       jl[f"{tag}_p"] += w[:, 1].abs() * m.float()
     since += 1
+    pw = robot.data.root_link_pos_w[:, :2]
+    for q, v in (("x", pw[:, 0]), ("y", pw[:, 1]), ("yaw", robot.data.heading_w),
+                 ("vy", robot.data.root_link_lin_vel_b[:, 1]), ("wz", w[:, 2]), ("d", d), ("act", act),
+                 ("fc", fc_on), ("rc", rc_on)):
+      tr[q].append(v.clone())
     done |= alive & (d >= FLIGHT[1])
 
   def np_(t):
@@ -233,7 +266,7 @@ def main() -> int:
   sw = {z: sway(z) for z in zones}
   print(f"checkpoint {a.checkpoint}\ntask {a.task}, scan {os.environ.get('U_SCAN', '(task default)')}, payload "
         f"{os.environ.get('U_PAYLOAD', '(task default)')}, vx {a.vx}, {n} robots ({n // (NUM_ROWS * 2)} per band and "
-        f"direction), falls {int(np_(fell).sum())}, got past {int(np_(done).sum())}; segments "
+        f"direction), spawn yaw {'square to the steps' if a.straight else 'k x 90 deg +- 15 deg'}, falls {int(np_(fell).sum())}, got past {int(np_(done).sum())}; segments "
         + ", ".join(f"{leg} {seg} {'|'.join(p)}" for (leg, seg), p in segs.items() if leg == "RL"))
 
   print("\n== contacts on the flight (> 5 N): onsets per robot per flight / robots with any / on an edge or riser "
@@ -305,8 +338,92 @@ def main() -> int:
       print(f"SUM {band(lvl)} {direc} " + " ".join(f"{k} {v:.2f}" for k, v in vals.items())
             + f" roll_std {np.median(rstd[m]):.2f} pitch_std {np.median(pstd[m]):.2f} roll_rate {np.median(wr[m]):.1f}"
             f" pitch_rate {np.median(wp[m]):.1f} falls {int(np_(fell)[(lv == lvl) & (dr == direc)].sum())}")
+  lateral(tr, np_(yaw0), np_(p0), lv, dr, dt)
   env.close()
   return 0
+
+
+def lateral(tr, yaw0, p0, lv, dr, dt) -> None:
+  """The path's straightness on the flight (the user 11-15: "不是旋转晃动，是左右晃动，像是喝醉了走不了直线"). Per robot,
+  over its flight steps: the lateral offset from the line through its spawn point along its spawn heading (the
+  command is straight ahead, wz 0), a straight-line fit of it against the forward distance (its slope = the drift
+  angle), and the residual split by a 0.5 s moving average into the slow part ("meander": weaving over several steps)
+  and the rest ("gait sway": the side-to-side motion within a gait cycle); the heading off the spawn heading; the
+  body-frame lateral speed and the yaw rate; and the lateral speed / yaw rate in the 0.1 s after a calf's contact
+  onset (front, rear) against the flight's other steps."""
+  T = {q: torch.stack(v).cpu().numpy() for q, v in tr.items()}   # [steps, robots]
+  ex, ey = np.cos(yaw0), np.sin(yaw0)
+  dx, dy = T["x"] - p0[:, 0], T["y"] - p0[:, 1]
+  s, lat = dx * ex + dy * ey, -dx * ey + dy * ex
+  dyaw = np.degrees(np.arctan2(np.sin(T["yaw"] - yaw0), np.cos(T["yaw"] - yaw0)))
+  fl = T["act"] & (T["d"] >= FLIGHT[0]) & (T["d"] <= FLIGHT[1])
+  win = max(3, int(round(0.5 / dt)))
+  post = max(1, int(round(JOLT_S / dt)))
+  n = lat.shape[1]
+  R = {q: np.full(n, np.nan) for q in ("meander", "meander_pp", "sway", "drift", "hd_mean", "hd_std", "hd_max",
+                                       "vy", "wz")}
+  jolt = {q: [0.0, 0] for q in ("fc_vy", "fc_wz", "rc_vy", "rc_wz", "oth_vy", "oth_wz")}
+  for i in range(n):
+    idx = np.where(fl[:, i])[0]
+    if len(idx) < 3 * win:
+      continue
+    si, li = s[idx, i], lat[idx, i]
+    b, a0 = np.polyfit(si, li, 1)
+    r = li - (a0 + b * si)
+    m = np.convolve(np.pad(r, win // 2, mode="edge"), np.ones(win) / win, mode="valid")[:len(r)]
+    R["meander"][i] = 100 * np.std(m)
+    R["meander_pp"][i] = 100 * (m.max() - m.min())
+    R["sway"][i] = 100 * np.std(r - m)
+    R["drift"][i] = abs(np.degrees(np.arctan(b)))
+    hd = dyaw[idx, i]
+    R["hd_mean"][i], R["hd_std"][i], R["hd_max"][i] = np.mean(np.abs(hd)), np.std(hd), np.max(np.abs(hd))
+    R["vy"][i] = np.sqrt(np.mean(T["vy"][idx, i] ** 2))
+    R["wz"][i] = np.sqrt(np.mean(T["wz"][idx, i] ** 2))
+    R.setdefault("_i", []).append(i)
+    if dr[i] != "down" or lv[i] < 2:
+      continue
+    after = {"fc": np.zeros(len(T["vy"]), bool), "rc": np.zeros(len(T["vy"]), bool)}
+    for kind in after:
+      for t0 in np.where(T[kind][:, i])[0]:
+        after[kind][t0:t0 + post] = True
+    for kind in ("fc", "rc"):
+      sel = idx[after[kind][idx]]
+      jolt[f"{kind}_vy"][0] += np.abs(T["vy"][sel, i]).sum()
+      jolt[f"{kind}_vy"][1] += len(sel)
+      jolt[f"{kind}_wz"][0] += np.abs(T["wz"][sel, i]).sum()
+      jolt[f"{kind}_wz"][1] += len(sel)
+    sel = idx[~(after["fc"] | after["rc"])[idx]]
+    jolt["oth_vy"][0] += np.abs(T["vy"][sel, i]).sum()
+    jolt["oth_vy"][1] += len(sel)
+    jolt["oth_wz"][0] += np.abs(T["wz"][sel, i]).sum()
+    jolt["oth_wz"][1] += len(sel)
+
+  print("\n== the path on the flight: meander (the slow weaving, 0.5 s average, cm: std and peak-to-peak), gait sway "
+        "(the rest, cm std), drift angle (|deg|), heading off the spawn heading (mean |.| / std / max |.| deg), "
+        "lateral speed rms (m/s), yaw rate rms (deg/s); p50 / p90 over the robots ==")
+  for direc in ("down", "up"):
+    for lvl in range(NUM_ROWS):
+      m = (lv == lvl) & (dr == direc) & ~np.isnan(R["meander"])
+      if not m.any():
+        continue
+
+      def pp(x, f="5.1f"):
+        return f"{np.median(x[m]):{f}} / {np.percentile(x[m], 90):{f}}"
+      print(f"{band(lvl):8s} {direc:4s}: meander {pp(R['meander'])} cm, p-p {pp(R['meander_pp'])} cm | sway "
+            f"{pp(R['sway'])} cm | drift {pp(R['drift'])} deg | heading {pp(R['hd_mean'])} / std {pp(R['hd_std'])} / "
+            f"max {pp(R['hd_max'])} deg | vy {pp(R['vy'], '5.3f')} m/s | wz {pp(R['wz'])} deg/s | n {int(m.sum())}")
+  print("  after a calf onset (0.1 s), 12-18 cm down pooled: |vy| front "
+        f"{jolt['fc_vy'][0] / max(jolt['fc_vy'][1], 1):.3f} rear {jolt['rc_vy'][0] / max(jolt['rc_vy'][1], 1):.3f} "
+        f"other {jolt['oth_vy'][0] / max(jolt['oth_vy'][1], 1):.3f} m/s; |wz| front "
+        f"{jolt['fc_wz'][0] / max(jolt['fc_wz'][1], 1):.1f} rear {jolt['rc_wz'][0] / max(jolt['rc_wz'][1], 1):.1f} "
+        f"other {jolt['oth_wz'][0] / max(jolt['oth_wz'][1], 1):.1f} deg/s")
+  for direc in ("down", "up"):
+    for lvl in range(NUM_ROWS):
+      m = (lv == lvl) & (dr == direc) & ~np.isnan(R["meander"])
+      if m.any():
+        print(f"SUMLAT {band(lvl)} {direc} " + " ".join(f"{q} {np.median(R[q][m]):.3f}" for q in
+                                                        ("meander", "meander_pp", "sway", "drift", "hd_mean", "hd_max",
+                                                         "vy", "wz")))
 
 
 if __name__ == "__main__":
