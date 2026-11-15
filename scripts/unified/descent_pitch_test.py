@@ -16,7 +16,9 @@ videos: "下楼梯的pitch角速度很大，一直会前后仰俯".
   heavy     walk with the full payload, 0.8 rad/s                                          1 at heavy 1, 0.5 at 0.5
   scale 1.6: walk's 0.8 rad/s costs 0.25.
 (B) On the built configurations (no GPU), per robot:
-  (1) without the switch (no recipe carries it): no term, no item;
+  (1) with the switch off (U_DESCENT_PITCH= in the environment: an empty value wins over the recipe's): no term, no
+      item; the plain build: the recipe's own weight where the robot's recipe carries the switch (the wheeled kind's,
+      4, since 2026-11-15), no term and no item where it does not;
   (2) U_DESCENT_PITCH=1: the term at the weight -1 on stair_speed_deficit's command and scan, no scale and no heavy
       key; the item pitch_down, logged only (no terms, not enforced), family down, its metric in
       constraints.CUSTOM; U_DESCENT_PITCH=2,1.2,0.5 read as written; a weight of 0 or 30, a scale of 0.1 or 5, a
@@ -153,9 +155,17 @@ def main() -> int:
   for n in names:
     robot = ROBOTS[n]
     print(f"{n}:")
-    cfg0, items0 = build(robot)
+    cfg0, items0 = with_env("", robot)   # the switch off, whatever the robot's recipe carries
     check(term not in cfg0.rewards and not [i for i in items0 if i["name"] == "pitch_down"],
-          f"without {SWITCH}: no term, no item")
+          f"{SWITCH}= (off): no term, no item")
+    cfgr, itemsr = build(robot)
+    own = urecipe.recipe(robot).get(SWITCH)
+    got, n_items = cfgr.rewards.get(term), len([i for i in itemsr if i["name"] == "pitch_down"])
+    if own:
+      check(got is not None and got.weight == -float(own.split(",")[0]) and n_items == 1,
+            f"the plain build, the recipe's own {SWITCH}={own}: the term at {got.weight if got else None}, the item")
+    else:
+      check(got is None and n_items == 0, f"the plain build, the recipe carries no {SWITCH}: no term, no item")
     cfg1, items1 = with_env("1", robot)
     new = [i for i in items1 if i["name"] == "pitch_down"]
     check(len(new) == 1 and not new[0]["enforce"] and not new[0]["terms"] and new[0]["metric"] == "u_descent_pitch"

@@ -130,6 +130,25 @@ KIND: dict[str, dict[str, str]] = {
                                       # with it on a flight the robots left the steps for the level ground below
     "U_STOP_HOLD_Q": "1",             # and its removal comes in along the stairs quality (as the legged: from the
                                       # first iteration the removal keeps a robot from climbing)
+    # The wheeled freeze e (2026-11-15). The user on the videos of the formal run of 2c808e7 (seed 1, model_3800):
+    # "下楼梯的pitch角速度很大，一直会前后仰俯". Probes from that seed's model_5000, 600 iterations each, read at
+    # model_5599 on 15-18 cm, unloaded, straight down (descent_probe.py --straight; the control = the formal's 5600):
+    "U_DESCENT_PITCH": "4",           # the base rocking fore and aft on a descent costs: the pitch rate 72 -> 37.5
+                                      # deg/s rms (uprobe_s169; the mean of its last 4 checkpoints 34), the stairs
+                                      # gate passes (the mean: no fall in any mode, the full payload's 2). The weight
+                                      # 1 does half of it (48 deg/s, uprobe_s163); with the descent's leg cost
+                                      # (U_DESCENT_LEG=6, uprobe_s174) the gate fails. Its price, on the climb: the
+                                      # roll rate 32 -> 43-50 deg/s, the heading's p90 2-3 deg wider (13.7 -> 15.2-
+                                      # 16.5); the heading cost that would take it back does not hold the loaded
+                                      # stop (U_FLIGHT_HEADING 5 / 15, uprobe_s164 / s170: out) -- the climb's
+                                      # heading is reported, not judged, in this version
+    "U_FAST_SIDE": "0.1",             # the fast strafes' share of the flat commands 3.2 -> 12.8 %: the one item the
+                                      # mean of that seed's last 8 checkpoints fails in the flat gate is the gait
+                                      # clock on (0, +-0.6, 0), 79 / 80 % at the bar 80 %. uprobe_s180, the mean of
+                                      # its last 4 checkpoints, 96 robots per command: 86 / 85 % in both scan modes,
+                                      # no judged command under 85 %, the stairs gate passed (no fall, the full
+                                      # payload's 3). The share 0.2 (uprobe_s181) lifts the strafes to 88-92 % and
+                                      # drops the fast gentle arcs under the bar (77 % at (1.0, 0, 0.15), scan off)
   },
 }
 

@@ -4,8 +4,11 @@
 is left, on the fast gentle arcs (1.0, 0, +-0.1..0.2) and the strafes (0, +-0.6, 0), with its multiplier at the cap.
 
 On the built configurations (no GPU), per robot:
-  (1) without the switches (no recipe carries them): the command's steering share, |wz| range, slow share and fast-side
-      share as the old flow's keys set them (printed);
+  (1) with the switches off (U_STEER= U_FAST_SIDE= in the environment: an empty value wins over the recipe's; every
+      build below starts from it): the command's steering share, |wz| range, slow share and fast-side share as the old
+      flow's keys set them (printed); the plain build: the recipe's own fast-side share where the robot's recipe
+      carries U_FAST_SIDE (the wheeled kind's, 0.1, since 2026-11-15), the old flow's where it does not; no recipe
+      carries U_STEER;
   (2) U_STEER=0.3: the steering share 0.3, its |wz| range and slow share as before; U_STEER=0.3,0.25,0.1: the largest
       |wz| 0.25 (the smallest kept) and the slow share 0.1; U_FAST_SIDE=0.1: the fast-side share 0.1; both together:
       both;
@@ -49,15 +52,16 @@ def main() -> int:
     ok &= bool(good)
     print(f"  {'ok  ' if good else 'FAIL'}  {text}")
 
-  def build(robot, env: dict[str, str] | None = None, **kw):
-    for k, v in (env or {}).items():
+  def build(robot, env: dict[str, str] | None = None, plain: bool = False, **kw):
+    env = dict(env or {}) if plain else {**{s: "" for s in SWITCHES}, **(env or {})}   # off unless set (or plain)
+    for k, v in env.items():
       os.environ[k] = v
     try:
       cfg = teacher_env.unified_teacher_env_cfg(robot, **kw)
       with urecipe.scope(robot):
         items = teacher_env.constraint_items(robot.kind)
     finally:
-      for k in env or {}:
+      for k in env:
         os.environ.pop(k)
     return cfg, items
 
@@ -81,8 +85,18 @@ def main() -> int:
     cfg0, items0 = build(robot)
     t0 = cfg0.commands["twist"]
     check(all(hasattr(t0, f) for f in FIELDS),
-          f"without the switches: steering {t0.steer_prob} of the flat commands, |wz| {t0.steer_wz_range}, "
+          f"the switches off: steering {t0.steer_prob} of the flat commands, |wz| {t0.steer_wz_range}, "
           f"slow {t0.steer_slow_prob}; fast side {t0.fast_side_prob}")
+    cfgr, itemsr = build(robot, plain=True)
+    tr = cfgr.commands["twist"]
+    table = urecipe.recipe(robot)
+    own = table.get("U_FAST_SIDE")
+    check(not table.get("U_STEER") and tr.fast_side_prob == (float(own) if own else t0.fast_side_prob)
+          and all(getattr(tr, f) == getattr(t0, f) for f in FIELDS[:3])
+          and twist(cfgr, skip=FIELDS) == twist(cfg0, skip=FIELDS) and itemsr == items0,
+          f"the plain build: the recipe's own U_FAST_SIDE={own} -> fast side {tr.fast_side_prob}, no U_STEER; "
+          "the rest as with the switches off" if own else
+          f"the plain build: the recipe carries neither switch -> fast side {tr.fast_side_prob}, as with them off")
     cfg1, items1 = build(robot, {"U_STEER": "0.3"})
     t1 = cfg1.commands["twist"]
     check(t1.steer_prob == 0.3 and t1.steer_wz_range == t0.steer_wz_range and t1.steer_slow_prob == t0.steer_slow_prob
@@ -115,7 +129,9 @@ def main() -> int:
     both = {"U_STEER": "0.3,0.25,0.1", "U_FAST_SIDE": "0.1"}
     cfgp0, _ = build(robot, play=True)
     cfgp, _ = build(robot, both, play=True)
-    check(twist(cfgp) == twist(cfgp0), "the play build keeps the command as it was")
+    cfgpr, _ = build(robot, plain=True, play=True)
+    check(twist(cfgp) == twist(cfgp0) and twist(cfgpr) == twist(cfgp0),
+          "the play build keeps the command as it was (with the switches set, and with the recipe's own)")
     for kind in ("blind", "depth"):
       cfgs, _ = build(robot, both, student=kind)
       ts = cfgs.commands["twist"]

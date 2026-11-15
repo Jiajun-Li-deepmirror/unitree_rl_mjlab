@@ -39,7 +39,8 @@ from contextlib import contextmanager
 # arms' and go2-home's ZR's U_STAND_POSE_EVEN=1 U_DESCENT_SPEED=10,1.1 U_STOP_HOLD_Q=1), since 2026-11-15 the two item
 # floors and the centre-of-mass cost's share under a command (the Go2's uprobe_s141 / s154 / s155, go2-home's ZRe2);
 # the Go2W's line the stand's centre-of-mass cost, the stand form by the tilt and the gait clock's split (uprobe_s157)
-# and the standing pose cost off the uneven ground along the stairs quality (uprobe_s159: the stop on a climbing flight)
+# and the standing pose cost off the uneven ground along the stairs quality (uprobe_s159: the stop on a climbing
+# flight), and the descent's pitch-rate cost (uprobe_s169) and the fast strafes' share of the flat commands (uprobe_s180)
 _PK = "U_Q_SCALE_MAX=1 U_TERMINATED_Q=10 U_ENTROPY_Q=0.002 U_METER_EMA=2400 U_FLAT_ONLY=1 U_PAYLOAD_STICKY=0.05"
 _LEGGED = (f"{_PK} U_STOP_FEET_DIR=3 U_STAIR_SPEED_H=1 U_HEADING_OBS=1 U_HEADING_LAG=2 U_FLAT_DIAG_AXIS=0.2 "
            "U_FLAT_SPEED_W=4 U_STAIR_PARK=10 U_BODY_CLEAR=50 U_COM_SUPPORT=15,0.5 U_ALIVE=4 "
@@ -48,7 +49,7 @@ PROBE_LINES = {
   "Go2": f"{_LEGGED} U_STAIRS_P=0.0,0.15",
   "Go2W": f"{_PK} U_STAIR_SPEED_H=1 U_HEADING_OBS=1 U_HEADING_LAG=2 U_STAIR_APPROACH=0 U_BODY_CLEAR=50,0.06,0.10 "
           "U_STAIRS_P=0.0,0.15 U_STOP_PLACE=12 U_COM_SUPPORT=15 U_REST_OLD=tilt,0.20 U_CLOCK_SPLIT=1 "
-          "U_STAND_POSE_EVEN=1 U_STOP_HOLD_Q=1",
+          "U_STAND_POSE_EVEN=1 U_STOP_HOLD_Q=1 U_DESCENT_PITCH=4 U_FAST_SIDE=0.1",
   "As2": f"{_LEGGED} U_STAIRS_P=0.0,0.15",   # go2-home's mAM line (11-13 15:35) + the legged kind's stop-hold part
 }
 
