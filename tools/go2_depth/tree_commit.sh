@@ -12,8 +12,9 @@ SSH=/home/dm/.cache/go2-depth-work/ssh/r M=/root/gpufree-data/go2-depth/depth_fe
 have=$($SSH $P "cat $T/REPO_COMMIT 2>/dev/null" < /dev/null | tr -d '[:space:]')
 if [ "$have" != "$C" ]; then
   # (env.sh sets PYTHONPATH to the main tree: the copy's points at the copy, or its trainings would import the main
-  # tree's code)
-  $SSH $P "set -e; rm -rf $T.part; mkdir -p $T.part; cd $M; cp -a src scripts jobs env.sh REPO_COMMIT $T.part/; [ -d tools ] && cp -a tools $T.part/ || true; ln -s $M/logs $T.part/logs; sed -i 's#^export PYTHONPATH=$M\$#export PYTHONPATH=$T#' $T.part/env.sh; grep -q '^export PYTHONPATH=$T\$' $T.part/env.sh; rm -rf $T; mv $T.part $T" < /dev/null || exit 2
+  # tree's code; src/assets is a relative link in the main tree: the copy gets the files as hard links -- no space,
+  # and deploy.sh's atomic replacements give a changed file its own inode in the copy alone)
+  $SSH $P "set -e; rm -rf $T.part; mkdir -p $T.part; cd $M; cp -a src scripts jobs env.sh REPO_COMMIT $T.part/; [ -d tools ] && cp -a tools $T.part/ || true; ln -s $M/logs $T.part/logs; if [ -L $T.part/src/assets ]; then A=\$(readlink -f $M/src/assets); rm $T.part/src/assets; cp -al \$A $T.part/src/assets; fi; sed -i 's#^export PYTHONPATH=$M\$#export PYTHONPATH=$T#' $T.part/env.sh; grep -q '^export PYTHONPATH=$T\$' $T.part/env.sh; rm -rf $T; mv $T.part $T" < /dev/null || exit 2
   DEPLOY_TREE=$T bash "$(dirname "$0")/deploy.sh" --boxes $B --force $C | tail -n 1
 fi
 r=$($SSH $P "cat $T/REPO_COMMIT" < /dev/null | tr -d '[:space:]')
