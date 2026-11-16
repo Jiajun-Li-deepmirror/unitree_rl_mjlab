@@ -230,6 +230,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   app_lift = torch.zeros(n, device=dev)   # a front foot's highest rise above its take-off from the landing's level in
                                           # the drive-up and the first stand (item 21's part A; the last riser's step-up
                                           # takes off from the tread below, so it is not counted)
+  app_take = torch.full((n,), float("nan"), device=dev)   # that lift's take-off height (the diagnostic below)
   lift_turn, lift_stand = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
   p_turn = torch.full((n, 2), float("nan"), device=dev)   # the base where the turn began
   turn_move = torch.zeros(n, device=dev)                  # its largest horizontal distance from there in the turn
@@ -336,8 +337,11 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     land_now = air_on & c4
     top_steps += (land_now & (t_air > TOP_AIR_S) & (z_apex - z_take > TOP_LIFT_M)).float()
     a_win = (((phase == 3) | (phase == 4)) & alive)
-    rise_now = torch.where(air_on[:, :2], z_apex[:, :2] - z_take[:, :2], torch.zeros_like(z_take[:, :2])).amax(dim=1)
-    app_lift = torch.where(a_win, torch.maximum(app_lift, rise_now), app_lift)
+    rise_f = torch.where(air_on[:, :2], z_apex[:, :2] - z_take[:, :2], torch.zeros_like(z_take[:, :2]))
+    rise_now, which = rise_f.max(dim=1)
+    better = a_win & (rise_now > app_lift)
+    app_take = torch.where(better, z_take[:, :2].gather(1, which[:, None])[:, 0], app_take)   # (diagnostic)
+    app_lift = torch.where(better, rise_now, app_lift)
     air_on = air_on & ~c4 & win
     prev4 = c4
     c = torch.stack([(torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N)
@@ -368,7 +372,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
-          "lift_app": np_(app_lift),
+          "lift_app": np_(app_lift), "app_take_rel": np_(app_take - g0),
           "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move), "top_gap": np_(top_gap),
           "top_by_wall": np_(top_by_wall), "top_steps": np_(top_steps)}
 
@@ -539,6 +543,14 @@ def report(rows) -> None:
     nreach += int(rch.sum())
     nfell += int(fl.sum())
   k = max(app_bad, ts_bad)
+  # diagnostic: where the drive-up's counted lifts took off, against the first stand's lowest front foot (the landing)
+  rel = np.concatenate([r["app_take_rel"][r["reached"].astype(bool) & (np.nan_to_num(r["lift_app"]) > WALL_LIFT_M)]
+                        for r in rows]) if rows else np.array([])
+  rel = rel[np.isfinite(rel)]
+  if rel.size:
+    print(f"item 21 drive-up lifts' take-off above the first stand's lowest front foot: p10 / p50 / p90 "
+          f"{100 * np.percentile(rel, 10):+.1f} / {100 * np.percentile(rel, 50):+.1f} / {100 * np.percentile(rel, 90):+.1f} cm "
+          f"(n {rel.size}; near 0: lifts from the landing)")
   sh = lambda x: f"{100 * x / nreach:.1f}" if nreach else "nan"
   ts_n, ts_f, ts_r = 0.0, 0.0, 0.0
   for r in rows:
