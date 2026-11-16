@@ -240,9 +240,17 @@ def _wall_fan(cfg: ManagerBasedRlEnvCfg, keys: list[str], final: bool) -> None:
 # map3's risers 18.6) and the slopes 0.25 rise / run (14 deg; item 23 tests 15). wide: every stairs sub-terrain's
 # step_height_range 0.05-0.23 m and the slopes' slope_range 0-0.36 (19.8 deg); the terrain curriculum's levels spread
 # over the wider range (difficulty interpolates it); random_rough unchanged (0.02-0.06 m against the test's +-3 cm).
+# Tread depth (the user, 2026-11-16, map3's 0.219-0.35 m): the walled stairs' step_width_range 0.18-0.40 (was
+# 0.20-0.30; the +-0.02 noise kept), the open stairs' narrow / wide tiles 0.18 / 0.40 (were 0.25 / 0.32); and the depth
+# student's training camera latency 6-12 control steps (TERRAIN_DEPTH_LATENCY; students.student_env_cfg).
 # U_TERRAIN=base (an evaluation / old-checkpoint switch, off unless set): the training terrain before it.
 TERRAIN_SWITCH = "U_TERRAIN"
-TERRAINS = {"wide": {"step_height_range": (0.05, 0.23), "slope_range": (0.0, 0.36)}}
+TERRAINS = {"wide": {"step_height_range": (0.05, 0.23), "slope_range": (0.0, 0.36), "step_width_range": (0.18, 0.40)}}
+# the open pyramid stairs take one tread depth per tile type (no range): wide puts their two types at the range's ends
+TERRAIN_OPEN_WIDTH = {"wide": {"narrow": 0.18, "wide": 0.40}}
+# the depth student's training camera latency (2026-11-16, the user via go2-home, with terrain=wide; REAL_CAMERA_DEPTH
+# latency_range 7.0-9.5 control steps covered the real bag's p5-p95 138-190 ms only): 120-240 ms, the jitter kept
+TERRAIN_DEPTH_LATENCY = {"wide": (6.0, 12.0)}   # control steps of 20 ms
 
 
 def terrain_param(params: str) -> str | None:
@@ -267,6 +275,10 @@ def _training_terrain(cfg: ManagerBasedRlEnvCfg, params: str) -> None:
     return
   w = TERRAINS[m]
   subs = {k: replace(s, **{f: v for f, v in w.items() if hasattr(s, f)}) for k, s in gen.sub_terrains.items()}
+  for k, s in subs.items():   # (the open stairs: stairs_<dir>_narrow / _wide, one tread depth each)
+    kind = k.rsplit("_", 1)[-1]
+    if k.startswith("stairs_") and kind in TERRAIN_OPEN_WIDTH[m] and hasattr(s, "step_width"):
+      subs[k] = replace(s, step_width=TERRAIN_OPEN_WIDTH[m][kind])
   # (new objects all the way up: the play build of the same import must not see them)
   cfg.scene.terrain = replace(cfg.scene.terrain, terrain_generator=replace(gen, sub_terrains=subs))
 

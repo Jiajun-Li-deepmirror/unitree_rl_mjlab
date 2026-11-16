@@ -5,8 +5,10 @@ one process per build (the unified tasks register at import).
 
   (1) the robot table: the Go2W's params carry terrain=wide; no other robot's do;
   (2) the Go2W's training builds (the teacher, map3's tiles; the blind and the depth students' trainings): every stairs
-      sub-terrain's step_height_range 0.05-0.23, the slopes' slope_range 0-0.36, random_rough's noise_range as today,
-      the proportions, rows / columns and curriculum as today;
+      sub-terrain's step_height_range 0.05-0.23, the slopes' slope_range 0-0.36, the walled stairs' tread depth
+      0.18-0.40 (noise as today), the open stairs' narrow / wide 0.18 / 0.40, the depth student's camera latency 6-12
+      steps (jitter as today), random_rough's noise_range as today, the proportions, rows / columns and curriculum as
+      today;
   (3) every play build (the teacher's map3 / Stairs / Flat, the students' Stairs) is today's (the code at TODAY);
   (4) U_TERRAIN=base: the training build's terrain is today's; a bad value stops the build;
   (5) the Go2 is unchanged.
@@ -33,8 +35,10 @@ gen = c.scene.terrain.terrain_generator
 subs = {}
 for k, s in gen.sub_terrains.items():
   subs[k] = {f.name: repr(getattr(s, f.name)) for f in dataclasses.fields(s) if f.name not in ("size",)}
+dp = c.observations["depth"].terms["depth"].params if "depth" in c.observations else {}
 print("JSON" + json.dumps({"rows": gen.num_rows, "cols": gen.num_cols, "curriculum": repr(getattr(gen, "curriculum", None)),
-                           "difficulty": repr(gen.difficulty_range), "subs": subs}))
+                           "difficulty": repr(gen.difficulty_range), "subs": subs,
+                           "latency": repr(dp.get("latency_range")), "jitter": repr(dp.get("latency_jitter"))}))
 '''
 ok = True
 _today = None
@@ -88,8 +92,17 @@ for task in ("Unitree-Go2W-U-Teacher", "Unitree-Go2W-U-Student-Blind", "Unitree-
   S = w["subs"]
   check(all(S[k]["step_height_range"] == repr((0.05, 0.23)) for k in STAIRS), "every stairs sub-terrain: step_height_range (0.05, 0.23)")
   check(all(S[k]["slope_range"] == repr((0.0, 0.36)) for k in ("slope_up", "slope_down")), "slopes: slope_range (0.0, 0.36)")
+  check(all(S[k]["step_width_range"] == repr((0.18, 0.40)) and S[k]["step_width_noise"] == t0["subs"][k]["step_width_noise"]
+            for k in ("walled_up", "walled_down")), "walled stairs: tread depth 0.18-0.40, the noise as today")
+  check(all(S[f"stairs_{d}_narrow"]["step_width"] == "0.18" and S[f"stairs_{d}_wide"]["step_width"] == "0.4" for d in ("up", "down")),
+        "open stairs: narrow 0.18, wide 0.40")
+  if "Depth" in task:
+    check(w["latency"] == repr((6.0, 12.0)) and w["jitter"] == t0["jitter"] and t0["latency"] == repr((7.0, 9.5)),
+          f"the depth camera's training latency 6-12 steps (today {t0['latency']}), the jitter as today ({w['jitter']})")
+  else:
+    check(w["latency"] == t0["latency"], "no depth camera change")
   diff = {k: {f for f in S[k] if S[k][f] != t0["subs"][k][f]} for k in S}
-  check(set(S) == set(t0["subs"]) and all(d <= {"step_height_range", "slope_range"} for d in diff.values())
+  check(set(S) == set(t0["subs"]) and all(d <= {"step_height_range", "slope_range", "step_width_range", "step_width"} for d in diff.values())
         and S["random_rough"] == t0["subs"]["random_rough"] and S["flat"] == t0["subs"]["flat"],
         f"everything else as today: {[(k, sorted(d)) for k, d in diff.items() if d]}")
   check({k: w[k] for k in ("rows", "cols", "curriculum", "difficulty")} == {k: t0[k] for k in ("rows", "cols", "curriculum", "difficulty")},
@@ -97,7 +110,7 @@ for task in ("Unitree-Go2W-U-Teacher", "Unitree-Go2W-U-Student-Blind", "Unitree-
   check(b == t0, "(4) U_TERRAIN=base: today's training terrain")
 print("(3) the play builds:")
 for task in ("Unitree-Go2W-U-Teacher", "Unitree-Go2W-U-Teacher-Stairs", "Unitree-Go2W-U-Teacher-Flat", "Unitree-Go2W-U-Student-Depth-Stairs",
-             "Unitree-Go2W-U-Student-Blind-Stairs"):
+             "Unitree-Go2W-U-Student-Blind-Stairs", "Unitree-Go2W-U-Student-Depth"):
   p, p0 = probe("Go2W", task, True), probe("Go2W", task, True, today=True)
   check("error" not in p and p == p0, f"{task} play: today's terrain ({p.get('error', '')[:80]})")
 print("(4) a bad value:")

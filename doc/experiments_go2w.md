@@ -70,6 +70,10 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
     map3's risers 18.6); the terrain curriculum's levels spread over the wider range;
   - slopes: slope_range 0-0.36 rise / run (19.8 deg; was 0.25, 14 deg; item 23 tests 15 deg);
   - random_rough unchanged (0.02-0.06 m; the test's +-3 cm is inside);
+  - tread depth (the user, 2026-11-16; map3 0.219-0.35 m): the walled stairs 0.18-0.40 m (was 0.20-0.30; the ±0.02 noise
+    kept); the open pyramid stairs take one depth per tile type: narrow 0.18, wide 0.40 (were 0.25 / 0.32);
+  - the depth student's training camera latency 6-12 control steps, 120-240 ms (was 7.0-9.5, the real bag's p5-p95
+    138-190 ms); the jitter kept; play / evaluation cameras unchanged;
   - training builds only (the teacher's and the students' trainings); every play / evaluation terrain stays.
   **Rule: U_TERRAIN=base for the checkpoints trained before it** (every Go2W run launched on a commit before 06e2647:
   go2w_min_s0 and everything before it, and the runs launched on 36d0fe8): their training terrain as it was; evaluation terrains do not depend on

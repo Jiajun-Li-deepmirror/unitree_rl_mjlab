@@ -62,7 +62,7 @@ from src.tasks.velocity.rl.student_ppo import (
 
 from . import diagnostics, student_sched
 from .models import PRIV_GROUP, PRIV_LATENT
-from .robots import URobot, no_training_on_legacy
+from .robots import TERRAIN_DEPTH_LATENCY, URobot, no_training_on_legacy, training_terrain
 from .teacher_env import unified_teacher_env_cfg
 
 STUDENT_GROUPS = {"blind": ("actor",), "depth": ("proprio", "proprio_history", "depth")}
@@ -112,6 +112,9 @@ def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str =
     kw = {} if play else {"real_camera": True, "occlusion": True, "edge_blur": True}
     cfg = apply_depth_student(cfg, play=play, camera_pos=NAVCORE_CAMERA_POS[robot.key],
                               camera_quat=NAVCORE_CAMERA_QUAT, camera=NAVCORE_DEPTH_CAMERA, **kw)
+    tw = None if (play or terrain != "map3") else training_terrain(robot)
+    if tw in TERRAIN_DEPTH_LATENCY:   # (terrain=wide: the training camera's latency 120-240 ms)
+      cfg.observations["depth"].terms["depth"].params["latency_range"] = TERRAIN_DEPTH_LATENCY[tw]
   if kind == "blind":
     teacher = cfg.observations.pop("actor")
     cfg.observations["teacher"] = teacher
