@@ -59,7 +59,7 @@ from . import flat as uflat
 from . import recipe as urecipe
 from . import stick_slip
 from .models import PRIV_GROUP
-from .robots import URobot, base_env_cfg, unified_recipe
+from .robots import URobot, base_env_cfg, robot_motor, unified_recipe
 
 # (foot_contact_forces stays critic-only: world-frame vectors, see symmetry.py)
 PRIVILEGED_ACTOR_TERMS = ("base_lin_vel", "foot_height", "foot_air_time", "foot_contact")
@@ -579,7 +579,13 @@ def _effort(actuator) -> float | None:
   return getattr(a, "effort_limit", None)
 
 
-def _add_joint_dr(cfg: ManagerBasedRlEnvCfg) -> None:
+def _add_joint_dr(cfg: ManagerBasedRlEnvCfg, motor: str | None = None) -> None:
+  """Without a motor model: friction and damping uniform from 0 to the shares above. With one (uros.MOTORS, the
+  Go2W's gom8010 since 2026-11-16): friction, damping and armature scaled around the model's own joint values by the
+  motor's factors (uros.MOTOR_JOINT_DR)."""
+  from src.assets.robots import uros
+
+  mdr = uros.MOTOR_JOINT_DR[motor] if motor is not None else None
   for a in cfg.scene.entities["robot"].articulation.actuators:
     expr = tuple(getattr(a, "target_names_expr", ()) or getattr(getattr(a, "base_cfg", None), "target_names_expr", ()))
     group = next((g for g in ("hip", "thigh", "calf") if any(g in e for e in expr)), None)
@@ -587,18 +593,20 @@ def _add_joint_dr(cfg: ManagerBasedRlEnvCfg) -> None:
     if group is None or effort is None:
       continue   # wheels: their brake / drive model stays as it is
     # one SceneEntityCfg per event: resolving writes the joint ids into it, and a shared one fails the second check
+    if mdr is None:
+      fr = {"ranges": (0.0, JOINT_FRICTION_SHARE * effort), "operation": "abs"}
+      da = {"ranges": (0.0, JOINT_DAMPING_SHARE[group] * effort), "operation": "abs"}
+      ar = {"ranges": JOINT_ARMATURE_SCALE, "operation": "scale"}
+    else:
+      fr = {"ranges": mdr["friction"], "operation": "scale"}
+      da = {"ranges": mdr["damping"], "operation": "scale"}
+      ar = {"ranges": mdr["armature"], "operation": "scale"}
     cfg.events[f"u_joint_friction_{group}"] = EventTermCfg(
-      mode="startup", func=dr.joint_friction,
-      params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), "ranges": (0.0, JOINT_FRICTION_SHARE * effort),
-              "operation": "abs"})
+      mode="startup", func=dr.joint_friction, params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), **fr})
     cfg.events[f"u_joint_damping_{group}"] = EventTermCfg(
-      mode="startup", func=dr.joint_damping,
-      params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr),
-              "ranges": (0.0, JOINT_DAMPING_SHARE[group] * effort), "operation": "abs"})
+      mode="startup", func=dr.joint_damping, params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), **da})
     cfg.events[f"u_joint_armature_{group}"] = EventTermCfg(
-      mode="startup", func=dr.joint_armature,
-      params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), "ranges": JOINT_ARMATURE_SCALE,
-              "operation": "scale"})
+      mode="startup", func=dr.joint_armature, params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), **ar})
 
 
 KEEPOUT_TERM = "riser_keepout"   # (no "u_" prefix: quality_diff takes it as a cost of the P keys the M keys lack)
@@ -1405,7 +1413,9 @@ def _round_switches(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
     p = ev["encoder_bias"].params
     p["bias_range"] = (p["bias_range"][0] * k, p["bias_range"][1] * k)
     for name, term in ev.items():
-      if name.startswith(("u_joint_friction_", "u_joint_damping_")):
+      if name.startswith(("u_joint_friction_", "u_joint_damping_")) and term.params.get("operation") == "scale":
+        term.params["ranges"] = around1(term.params["ranges"])   # (a motor model's factors, _add_joint_dr)
+      elif name.startswith(("u_joint_friction_", "u_joint_damping_")):
         r = term.params["ranges"]
         term.params["ranges"] = (r[0], r[1] * k)
       elif name.startswith("u_joint_armature_"):
@@ -1908,7 +1918,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
   _add_scan_mask(cfg)
   # U_DR_LIGHT=1 (a probe's switch, _probe_switches): the training task alone goes without these two
   if not (os.environ.get("U_DR_LIGHT") == "1" and terrain == "map3" and not play and student is None):
-    _add_joint_dr(cfg)
+    _add_joint_dr(cfg, robot_motor(robot))
     stick_slip.add(cfg)   # after the sensor and the privileged group
   other_shares = None
   if terrain == "map3":

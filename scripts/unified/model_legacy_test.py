@@ -42,6 +42,10 @@ def main() -> int:
   os.environ.pop("BLIND_PARAMS", None)
   sys.path.insert(0, os.getcwd())
   from src.assets.robots import uros
+
+  # the motor model (uros.MOTORS, the Go2W's gom8010) has its own test (scripts/unified/motor_switch_test.py): here
+  # the aligned model as before it, so the checks below read the aligned model alone
+  os.environ[uros.MOTOR_SWITCH] = "builtin"
   from src.tasks.unified import recipe as urecipe
   from src.tasks.unified import robots as urobots
   from src.tasks.unified import teacher_env
@@ -70,7 +74,10 @@ def main() -> int:
     this robot (uros.ACTUATORS: a torque limit for the Go2 / Go2W / B2 / B2W, a joint friction loss for the As2 /
     As2W)."""
     ent = cfg.scene.entities["robot"]
-    path = ent.spec_fn.args[0] if getattr(ent.spec_fn, "args", ()) else None
+    f = ent.spec_fn
+    while getattr(f, "args", ()) and callable(f.args[0]):   # (uros.spec_fn wraps the loader with a motor model)
+      f = f.args[0]
+    path = f.args[0] if getattr(f, "args", ()) else None
     acts = {uros._group(x): x for x in (getattr(x, "base_cfg", x) for x in ent.articulation.actuators)}   # the blind
     limits = {g: x.effort_limit for g, x in acts.items()}                             # builder's delay wraps them
     over = {g: {f: getattr(acts[g], f) for f in fields} for g, fields in uros.ACTUATORS[key].items()}

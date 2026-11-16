@@ -37,12 +37,27 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
 
 - Stair turns (go2-home 11-16, piece 5 of the shape survey): training has stair_turn_prob 0.0, while the map3 tour and
   the F1 landing test turn in place on the landings. Skipped for now: g27b passed F1 without it.
-- U_MOTOR=gom8010 (the user: take the motor and joint values from Unitree's own sources):
-  - the GO-M8010-6 torque-speed curve (unitree_rl_lab Go2HV: Y1 20.2 / Y2 23.4 N m, flat to X1 13.5 rad/s, 0 at
-    X2 30; the calf scaled by its linkage ratio, Go2 1.917 / Go2W 1.5);
-  - unitree_mujoco's frictionloss 0.2, damping 0.1 and armature 0.01.
-  The steps, in order: (1) measure today's policies against the corner; (2) U_MOTOR=pd, the legs as explicit PD
-  without the curve, which must match today's gates; (3) the curve and the joint values; (4) tests.
+- The motor model gom8010 (the user: the motor and joint values from Unitree's own sources; then "可以不用那么准确，
+  取一个中间值就行了或者平均", and it is the robot model, not an experiment: realistic motors may lower the sim scores
+  while helping the real robot, so it is not judged by an A/B):
+  - parameters only, the built-in position actuators unchanged (no torque-speed curve, no explicit PD);
+  - torque limits: hip / thigh 21.8 N m = the mean of the GO-M8010-6's 20.2 (up to the corner) and 23.4 (stall); calf
+    32.7 (x 1.5, the Go2W's calf linkage); wheel 21.8. Before: 23.7 / 23.7 / 35.55 / 23.7;
+  - every leg joint: friction loss 0.2 N m, passive damping 0.1 N m s/rad, armature 0.01 kg m^2 (unitree_mujoco).
+    Before: no friction or damping in the model, armature 0.01 / 0.01 / 0.02;
+  - the teacher's joint randomization around them: friction and damping x 0.5-1.5, armature x 0.7-1.3. Before:
+    friction and damping uniform from 0 to a share of the torque limit;
+  - Go2W only (robot table: motor=gom8010 next to model=uros); the Go2 keeps its build.
+  Step 1's measurement (the teacher pick, t1 logs/probe/motor/): the legs pass the 20.2 / 30.3 N m limits on under
+  0.15 % of steps on flat and the unloaded stairs and ~1 % of the 8 kg climbs' hip / thigh steps; the wheels run past
+  the motor's corner (13.5 rad/s) on 4-7 % of steps.
+- **Rule: U_MOTOR=builtin for the checkpoints trained before the motor model.** U_MOTOR=builtin (an evaluation
+  switch, like U_MODEL=legacy) builds the Go2W as before the motor model, field by field equal to the code at
+  4d25c78 (scripts/unified/motor_switch_test.py). Every Go2W run up to and including go2w_min_s0 (11-16) trained
+  without the motor model: the formal teachers and students, the control, arms A and B, go2w_min_s0. Their gates,
+  acceptance runs, videos and exports in a tree at or after the motor model's commit must set U_MOTOR=builtin; a
+  tree before it builds them that way anyway. A run whose records (run_env.sh / the timeline's env_vars) show no
+  motor= in its BLIND_PARAMS trained without it.
 - Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
   ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
   gives ~15.9 N m at 1.5 m/s (~17 rad/s at the wheel).

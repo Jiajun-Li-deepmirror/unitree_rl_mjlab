@@ -156,6 +156,13 @@ def model_params(params: str) -> str:
   return ",".join(kv for kv in params.split(",") if kv and kv.split("=", 1)[0] != "model")
 
 
+def robot_motor(robot: "URobot") -> str | None:
+  """The robot's motor model as its build reads it (src/assets/robots/uros.py motor; U_MOTOR=builtin: None)."""
+  from src.assets.robots import uros
+
+  return uros.motor(model_params(unified_recipe(robot)["env"]))
+
+
 def no_training_on_legacy(log_dir) -> None:
   """A runner with a log directory is a training's (plays, checks, probes and exports have none): U_MODEL=legacy
   stops it."""

@@ -48,7 +48,7 @@ ROBOTS: dict[str, dict] = {
   "Go2W": dict(kind="wheeled", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
                payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
                typical_payload="4,0,0,0.10,0.20,0.08,0.10",
-               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros"},
+               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros", "motor": "gom8010"},
                notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
               # 2026-11-15 (the As2's first run on the unified flow; the values the user confirmed 2026-11-14,

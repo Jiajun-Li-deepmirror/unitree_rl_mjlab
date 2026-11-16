@@ -18,6 +18,7 @@ PD gains. Not modelled: the URDF <limit velocity> (no torque-speed curve is publ
 from __future__ import annotations
 
 import dataclasses
+import functools
 import os
 from pathlib import Path
 
@@ -33,9 +34,64 @@ ACTUATORS: dict[str, dict[str, dict[str, float]]] = {
 }
 
 
-def active() -> bool:
-  params = dict(kv.split("=", 1) for kv in os.environ.get("BLIND_PARAMS", "").split(",") if "=" in kv)
-  return params.get("model") == "uros"
+def _params(params: str | None = None) -> dict[str, str]:
+  s = os.environ.get("BLIND_PARAMS", "") if params is None else params
+  return dict(kv.split("=", 1) for kv in s.split(",") if "=" in kv)
+
+
+def active(params: str | None = None) -> bool:
+  return _params(params).get("model") == "uros"
+
+
+# The motor model (2026-11-16; the user, via go2-home: the motor and joint values from Unitree's own sources, then
+# "可以不用那么准确，取一个中间值就行了或者平均" -- no torque-speed curve, the built-in position actuators unchanged).
+# Selected by the robot parameter motor=<name> in BLIND_PARAMS (src/robot_table.py), on the aligned model only.
+# gom8010, the Go2W's GO-M8010-6 joint motors (unitree_rl_lab UnitreeActuatorCfg_Go2HV: 20.2 N m up to the corner,
+# 23.4 at stall): the torque limit their mean 21.8 N m (hip, thigh, wheel), the calf x 1.5 (its linkage) 32.7; the
+# leg joints' friction loss 0.2 N m, passive damping 0.1 N m s/rad and armature 0.01 kg m^2 (unitree_mujoco go2.xml,
+# the armature in place of 0.01 / 0.01 / 0.02); the teacher's joint randomization draws friction and damping x 0.5-1.5
+# and armature x 0.7-1.3 around them (teacher_env._add_joint_dr). Before it: today's limits 23.7 / 35.55 / 23.7, no
+# joint friction or damping in the model, the randomization from 0.
+# U_MOTOR=builtin (an evaluation's switch, off unless set; no recipe carries it): without the motor= entry -- a
+# checkpoint trained before the motor model (a run whose BLIND_PARAMS has no motor=) is evaluated on the model it
+# trained on. Rule: every Go2W run before 2026-11-16 ~19:00 (go2w_min_s0 and earlier, the formal teachers and
+# students) trained without it.
+MOTOR_SWITCH = "U_MOTOR"
+_LEG = {"frictionloss": 0.2, "armature": 0.01}
+MOTORS: dict[str, dict[str, dict[str, dict[str, float]]]] = {
+  "gom8010": {"go2w": {"hip": {"effort_limit": 21.8, **_LEG}, "thigh": {"effort_limit": 21.8, **_LEG},
+                       "calf": {"effort_limit": 32.7, **_LEG}, "wheel": {"effort_limit": 21.8}}},
+}
+MOTOR_JOINT_DAMPING = {"gom8010": 0.1}   # passive, every leg joint (hip / thigh / calf)
+MOTOR_JOINT_DR = {"gom8010": {"friction": (0.5, 1.5), "damping": (0.5, 1.5), "armature": (0.7, 1.3)}}
+
+
+def motor(params: str | None = None) -> str | None:
+  """The motor model the robot's BLIND_PARAMS name (motor=...) on the aligned model; None without it, with the legacy
+  model, or with U_MOTOR=builtin."""
+  v = os.environ.get(MOTOR_SWITCH) or None
+  assert v in (None, "builtin"), f"{MOTOR_SWITCH}={v!r}: builtin or unset"
+  m = _params(params).get("motor")
+  assert m in (None,) + tuple(MOTORS), f"motor={m!r}: one of {tuple(MOTORS)}"
+  if v == "builtin" or not active(params):
+    return None
+  return m
+
+
+def _with_joint_damping(fn, damping: float):
+  spec = fn()
+  for j in spec.joints:
+    if any(g in j.name for g in ("hip", "thigh", "calf")):
+      j.damping = damping
+  return spec
+
+
+def spec_fn(robot: str, fn):
+  """The robot's spec function with the motor model's passive joint damping on the leg joints."""
+  m = motor()
+  if m is None or robot not in MOTORS[m]:
+    return fn
+  return functools.partial(_with_joint_damping, fn, MOTOR_JOINT_DAMPING[m])
 
 
 def xml(path: Path) -> Path:
@@ -59,4 +115,8 @@ def articulation(robot: str, art):
     return art
   over = ACTUATORS.get(robot, {})
   acts = tuple(dataclasses.replace(a, **over.get(_group(a), {})) for a in art.actuators)
+  m = motor()
+  if m is not None and robot in MOTORS[m]:
+    over = MOTORS[m][robot]
+    acts = tuple(dataclasses.replace(a, **over.get(_group(a), {})) for a in acts)
   return dataclasses.replace(art, actuators=acts)

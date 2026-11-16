@@ -161,8 +161,14 @@ def main() -> int:
     check(abs(b1[1] - b0[1] * 1.25) < 1e-12, f"encoder bias {b0} -> {b1}")
     jf = [k for k in e0 if k.startswith(("u_joint_friction_", "u_joint_damping_"))]
     ja = [k for k in e0 if k.startswith("u_joint_armature_")]
-    check(jf and all(abs(e1[k].params["ranges"][1] - e0[k].params["ranges"][1] * 1.25) < 1e-9 for k in jf),
-          f"{len(jf)} joint friction / damping tops x 1.25")
+    def widened(k) -> bool:   # from 0: the top x 1.25; a motor model's factors (scale): their spread around 1 x 1.25
+      r0, r1 = e0[k].params["ranges"], e1[k].params["ranges"]
+      if e0[k].params.get("operation") == "scale":
+        return abs(r1[0] - (1 - (1 - r0[0]) * 1.25)) < 1e-9 and abs(r1[1] - (1 + (r0[1] - 1) * 1.25)) < 1e-9
+      return r1[0] == r0[0] and abs(r1[1] - r0[1] * 1.25) < 1e-9
+
+    check(jf and all(widened(k) for k in jf),
+          f"{len(jf)} joint friction / damping ranges widened x 1.25 ({e0[jf[0]].params['ranges']} -> {e1[jf[0]].params['ranges']})")
     check(ja and all(abs(e1[k].params["ranges"][0] - (1 - (1 - e0[k].params["ranges"][0]) * 1.25)) < 1e-9 for k in ja),
           f"{len(ja)} armature ranges {e0[ja[0]].params['ranges']} -> {e1[ja[0]].params['ranges']}")
     p0 = {k: v for k, v in e0["base_payload"].params.items() if k != "base_com_range"}

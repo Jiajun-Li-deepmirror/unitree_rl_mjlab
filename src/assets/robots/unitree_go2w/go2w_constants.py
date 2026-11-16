@@ -156,7 +156,7 @@ def get_go2w_robot_cfg() -> EntityCfg:
   return EntityCfg(
     init_state=INIT_STATE,
     collisions=(FULL_COLLISION,),
-    spec_fn=functools.partial(get_spec, uros.xml(GO2W_XML)),   # decided now, as the actuators below
+    spec_fn=uros.spec_fn("go2w", functools.partial(get_spec, uros.xml(GO2W_XML))),   # decided now, as the actuators below
     articulation=uros.articulation("go2w", GO2W_ARTICULATION),
   )
 
