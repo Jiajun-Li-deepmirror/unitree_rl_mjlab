@@ -45,10 +45,11 @@ p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--num-envs", type=int, default=64, help="robots per group (command x push direction)")
-p.add_argument("--push", type=float, default=0.5, help="m/s added to the base's velocity (the judged push)")
-p.add_argument("--also", type=float, nargs="*", default=[1.0],
-               help="more pushes (m/s) in the same simulation, reported, not judged (2026-11-16, go2-home: 1.0 beside "
-                    "the judged 0.5 while the user decides); none: --also")
+p.add_argument("--push", type=float, default=1.0,
+               help="m/s added to the base's velocity, the judged push (2026-11-16, the user: 1.0; it was 0.5)")
+p.add_argument("--also", type=float, nargs="*", default=[0.5],
+               help="more pushes (m/s) in the same simulation, reported, not judged (0.5, the first judged size);"
+                    " none: --also")
 p.add_argument("--push-at", type=float, default=3.0)
 p.add_argument("--after", type=float, default=5.0)
 p.add_argument("--lin-accel", type=float, default=2.0, help="m/s^2 slew of the linear command (0: a step)")

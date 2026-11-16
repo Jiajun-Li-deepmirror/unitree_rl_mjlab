@@ -575,7 +575,8 @@ SPEC: dict[str, dict] = {
   "roll_up": {c: 45.0 for c in CONDS},                                     # deg/s, climbs' roll rate RMS p50
   "strikes": {c: 2.0 for c in CONDS},                                      # % of a flight's steps, front / rear
   "top_steps": {c: 1.0 for c in CONDS},                                    # per climb, map3's top landings
-  "push_falls": {c: 0 for c in CONDS},                                     # falls, 0.5 m/s base pushes (item 22)
+  "push_falls": {c: 0 for c in CONDS},                                     # falls, 1.0 m/s base pushes (item 22)
+  "push_mps": {c: 1.0 for c in CONDS},                                     # the judged push (the user 11-16; was 0.5)
 }
 # items 29 and 30 are reported until go2-home fixes their bars from w27d's readings (the proposals below)
 SPEC_REPORT = {"bob_height_cm": 1.0, "bob_pitch_deg": 2.0, "speed_cv": 0.3}
@@ -999,15 +1000,16 @@ def push_vals(path: str) -> dict[str, float] | None:
 
 
 def spec_push(r: str, path: str, cond: str, sh: Sheet) -> None:
-  """Item 22 (2026-11-16, the user via go2-home): one 0.5 m/s base push in 4 directions, standing, 1.0 m/s forward
-  and 0.5 m/s sideways (push_test.py): no fall in any condition; the recovery (the base back within 0.3 m/s of the
-  command for 0.5 s) reported."""
+  """Item 22 (2026-11-16, the user via go2-home): one base push of SPEC['push_mps'] (1.0 m/s; the user first approved
+  0.5, then picked 1.0) in 4 directions, standing, 1.0 m/s forward and 0.5 m/s sideways (push_test.py --push): no fall
+  in any condition; the recovery (the base back within 0.3 m/s of the command for 0.5 s) reported; the other push
+  sizes of the run (0.5) reported."""
   L = COND_LABEL[cond]
   v = push_vals(path)
   if v is None:
     sh.missing(f"{L}抗推（push_test）")
     return
-  sh.detail.append(f"{L}抗推：摔倒 {v['falls']}/{v['n']}（= {SPEC['push_falls'][cond]}）；恢复到指令 0.3 m/s 内 p50 "
+  sh.detail.append(f"{L}抗推 {SPEC['push_mps'][cond]:g} m/s：摔倒 {v['falls']}/{v['n']}（= {SPEC['push_falls'][cond]}）；恢复到指令 0.3 m/s 内 p50 "
                    f"{v['r50']:.2f} s、p90 {v['r90']:.2f} s，未恢复 {v['nr']:.1f}%（只报告）")
   for m in re.finditer(r"^ALL push ([\d.]+) \(item 22, reported\): falls (\d+) of (\d+) robots; recovered within [\d.]+ "
                        r"m/s: p50 (\S+) s, p90 (\S+) s, not recovered (\S+) %", txt(path), re.M):

@@ -125,7 +125,7 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   # push_test: item 22's line
   w("push", f"ALL push (item 22): falls {g['pfalls']} of 768 robots; recovered within 0.3 m/s: p50 0.08 s, p90 0.16 s, "
             f"not recovered 0.0 % (falls at or after the push {g['pfalls']})\n"
-            f"ALL push 1 (item 22, reported): falls {g['pfalls1']} of 768 robots; recovered within 0.3 m/s: p50 0.20 s, "
+            f"ALL push 0.5 (item 22, reported): falls {g['pfalls1']} of 768 robots; recovered within 0.3 m/s: p50 0.20 s, "
             f"p90 0.50 s, not recovered 1.0 % (falls at or after the push {g['pfalls1']})\n")
   # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
   share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
@@ -178,7 +178,8 @@ def main() -> int:
           "edge": (0.10, 0.10, 0.12), "kicks_up": (0.35, 0.35, 0.40), "slips": (0.06, 0.06, 0.07),
           "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0),
           "wall_lift": (5.0, 5.0, 5.0), "pitch_down": (45.0, 45.0, 45.0), "roll_up": (45.0, 45.0, 45.0),
-          "strikes": (2.0, 2.0, 2.0), "top_steps": (1.0, 1.0, 1.0), "push_falls": (0, 0, 0)}
+          "strikes": (2.0, 2.0, 2.0), "top_steps": (1.0, 1.0, 1.0), "push_falls": (0, 0, 0),
+          "push_mps": (1.0, 1.0, 1.0)}
   for k, v in want.items():
     check(tuple(S[k][c] for c in aj.CONDS) == v, f"SPEC {k} = {v}")
   check(S["drift_head"]["full"] == (3.0, 8.0), "drift heading p50 3 / p10-p90 8 deg")
