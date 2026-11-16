@@ -1035,8 +1035,20 @@ def _add_slopes(cfg: ManagerBasedRlEnvCfg, slope_max: float = SLOPE_MAX) -> dict
     new[name] = sub
   gen.sub_terrains = new
   total = sum(others.values())
-  shares = {n: (1.0 - SLOPE_SHARE) * p / total for n, p in others.items()}
-  shares |= {n: SLOPE_SHARE / 2 for n in ucur.SLOPE_NAMES}
+  # U_SLOPE_SHARE=<x> (2026-11-17, go2-home's round-1 candidate for item 23 and the slope falls): x of the other
+  # ground's episodes on each sloped tile (SLOPE_SHARE / 2 each without it)
+  v = os.environ.get("U_SLOPE_SHARE")
+  each = SLOPE_SHARE / 2 if not v else float(v)
+  assert 0.0 < each <= 0.25, f"U_SLOPE_SHARE={v}: each sloped tile's share, in (0, 0.25]"
+  shares = {n: (1.0 - 2 * each) * p / total for n, p in others.items()}
+  shares |= {n: each for n in ucur.SLOPE_NAMES}
+  # U_HEAVY_SLOPE=<share> (2026-11-17, go2-home, for the full-load slope falls): the heavy payload class's share of the
+  # robots spawned on the sloped tiles (the base_payload event's heavy_share elsewhere: 0.5)
+  h = os.environ.get("U_HEAVY_SLOPE")
+  if h:
+    ev = cfg.events["base_payload"]
+    assert float(ev.params["heavy_share"]) < float(h) <= 1.0, f"U_HEAVY_SLOPE={h}: a share above {ev.params['heavy_share']}, up to 1"
+    ev.params = {**ev.params, "heavy_share_on": float(h), "heavy_terrain_names": tuple(ucur.SLOPE_NAMES)}
   return shares
 
 

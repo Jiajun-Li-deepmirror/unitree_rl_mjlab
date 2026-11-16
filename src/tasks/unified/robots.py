@@ -203,6 +203,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
   _wall_fan(cfg, keys, final)
+  if final and not play and terrain == "map3" and endwall_guard():   # (the checks' terrains have no end wall)
+    _endwall_guard(cfg, robot)
   if play:
     _play_wall_stop(cfg)
   elif terrain == "map3":
@@ -359,14 +361,40 @@ def _play_wall_stop(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.scene.sensors = tuple(s for s in cfg.scene.sensors if s.name != WALL_FAN)
 
 
+# U_ENDWALL_GUARD=1 (2026-11-17, go2-home's round-1 candidate for items 21 / 28; the open item "wall guard alignment"):
+# the key endwall (added when the recipe has not got it) with the forward command's wall stop and ramp as the deployed
+# wall guard has them (tinynav-sim sim/guard.py; scripts/unified/map3_stairs_probe.py's GUARD_STOP_M / GUARD_GAIN): zero
+# GUARD_STOP_CAM_M from the camera (NAVCORE_CAMERA_POS ahead of the base: the Go2W's stop 0.757 m base-to-wall), capped
+# at GUARD_GAIN x the distance left. Training builds only (the play builds drop the wall stop: _play_wall_stop).
+ENDWALL_GUARD_SWITCH = "U_ENDWALL_GUARD"
+GUARD_STOP_CAM_M, GUARD_GAIN = 0.45, 1.5
+
+
+def endwall_guard() -> bool:
+  v = os.environ.get(ENDWALL_GUARD_SWITCH) or "0"
+  assert v in ("0", "1"), f"{ENDWALL_GUARD_SWITCH}={v}: 1 or unset"
+  return v == "1"
+
+
+def _endwall_guard(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
+  from src.tasks.velocity.depth_env_cfg import NAVCORE_CAMERA_POS
+
+  twist = cfg.commands["twist"]
+  assert twist.end_wall_terrain_names or twist.wall_sensor_name, f"{ENDWALL_GUARD_SWITCH}: no wall stop in {robot.name}'s build"
+  twist.end_wall_stop_m = float(NAVCORE_CAMERA_POS[robot.name.lower()][0]) + GUARD_STOP_CAM_M
+  twist.wall_guard_gain = GUARD_GAIN
+
+
 def _keys_add(robot: URobot, have: list[str]) -> list[str]:
   """U_KEYS_ADD's keys (ADD_KEYS' comment), checked: each of ADD_KEYS, once, not in the recipe already, with the key
   it changes (ADD_NEEDS) there or among them, a wheel cost on a wheeled robot alone, and the recipe key it stands on
   (ADD_RECIPE_NEEDS) in the recipe. [] without the switch."""
   v = os.environ.get("U_KEYS_ADD")
   if not v:
-    return []
+    return ["endwall"] if endwall_guard() and "endwall" not in have else []
   add = v.split(",")
+  if endwall_guard() and "endwall" not in have and "endwall" not in add:
+    add.append("endwall")
   assert len(set(add)) == len(add) and set(add) <= set(ADD_KEYS), f"U_KEYS_ADD {v}: of {', '.join(ADD_KEYS)}, once"
   for k in add:
     assert k not in have, f"U_KEYS_ADD {v}: {k} is in {robot.name}'s recipe already"

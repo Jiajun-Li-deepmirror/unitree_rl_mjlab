@@ -572,9 +572,18 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     ids = ((self._vx_raw > 0.0) & moving).nonzero(as_tuple=False).flatten()
     if len(ids) == 0:
       return
-    scale = ((d[ids] - self.cfg.end_wall_stop_m) / self.cfg.end_wall_slow_m).clamp(0.0, 1.0)
-    self.vel_command_b[ids, 0] = self._vx_raw[ids] * scale   # recovers when the robot backs off
-    self._wall_cut[ids] = scale < 1.0
+    raw = self._vx_raw[ids]
+    new = self._wall_limit(raw, d[ids])
+    self.vel_command_b[ids, 0] = new   # recovers when the robot backs off
+    self._wall_cut[ids] = new < raw
+
+  def _wall_limit(self, raw: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
+    """The forward command in front of a wall at base-centre distance d: scaled by the ramp from full at
+    end_wall_stop_m + end_wall_slow_m to zero at end_wall_stop_m, or -- with wall_guard_gain (2026-11-17, U_ENDWALL_GUARD)
+    -- capped at wall_guard_gain x (d - end_wall_stop_m) as tinynav-sim's guard caps it (sim/guard.py)."""
+    if self.cfg.wall_guard_gain is not None:
+      return torch.minimum(raw, (self.cfg.wall_guard_gain * (d - self.cfg.end_wall_stop_m)).clamp(min=0.0))
+    return raw * ((d - self.cfg.end_wall_stop_m) / self.cfg.end_wall_slow_m).clamp(0.0, 1.0)
 
   def _end_wall_slowdown(self) -> None:
     """Forward speed cut in front of the wall that closes a flight (2026-11-05, the end walls of walled_up with
@@ -595,11 +604,11 @@ class TerrainAwareVelocityCommand(UniformVelocityCommand):
     along = torch.cos(axis) * rel[:, 0] + torch.sin(axis) * rel[:, 1]
     lateral = -torch.sin(axis) * rel[:, 0] + torch.cos(axis) * rel[:, 1]
     d = self.cfg.end_wall_dist - along
-    scale = ((d - self.cfg.end_wall_stop_m) / self.cfg.end_wall_slow_m).clamp(0.0, 1.0)
     in_flight = lateral.abs() < 1.0   # inside the corridor that runs to that wall
     raw = self._vx_raw[ids]
-    self.vel_command_b[ids, 0] = torch.where(in_flight, raw * scale, raw)
-    self._wall_cut[ids] = in_flight & (scale < 1.0)
+    new = self._wall_limit(raw, d)
+    self.vel_command_b[ids, 0] = torch.where(in_flight, new, raw)
+    self._wall_cut[ids] = in_flight & (new < raw)
 
   def _corridor_update(self) -> None:
     ids = self.corridor_hold.nonzero(as_tuple=False).flatten()
@@ -689,6 +698,9 @@ class TerrainAwareVelocityCommandCfg(UniformVelocityCommandCfg):
   """Base-centre distance to the wall where the forward command reaches zero (robot half-length + ~0.5 m)."""
   end_wall_slow_m: float = 0.5
   """Length of the ramp before that."""
+  wall_guard_gain: float | None = None
+  """None: the ramp above. A gain (1/s; 2026-11-17, the unified U_ENDWALL_GUARD): the forward command capped at
+  gain x (distance - end_wall_stop_m) instead, the deployed wall guard's profile (tinynav-sim sim/guard.py)."""
   stair_resampling_time_range: tuple[float, float] = (1.5, 4.0)
   zero_threshold: float = 0.1
   march_prob: float = 0.0
