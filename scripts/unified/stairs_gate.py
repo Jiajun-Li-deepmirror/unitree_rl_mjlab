@@ -171,7 +171,8 @@ def mode_checks(r: str, path: str, t: str, tag: str, bars: dict, bad: list, miss
 def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[str, int]:
   """The stairs gate of a robot in accept_judge.SPEC_ROBOTS (2026-11-16, the user's Go2 / Go2W specification,
   doc/acceptance_go2_go2w.md): every eval_stairs item at the condition's bar -- both scan modes unloaded, both with the
-  typical payload (--typ), the seen mode with the full payload (--pay N: 5-15 cm judged, 15-18 cm reported) -- and the
+  typical payload (--typ), the seen mode with the full payload (--pay N: 5-15 cm judged, 15-18 cm reported; a robot in
+  accept_judge.FULL_ALL_BANDS, the Go2W since 2026-11-16: every band) -- and the
   teacher's fall tolerance (FALLS_MAX per scan mode unloaded and typical, N under the full payload). The counts (edge,
   kicks on the climbs, slips, mid / slide-back) are hard items now: no HARDPASS. The heading and the meander: the
   students' acceptance only (no descent_probe here)."""
@@ -206,7 +207,8 @@ def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[st
     head, rc = f"FAIL (gap {sh.gap:.2f}): " + "；".join(sh.bad), 1
   return "\n".join([head] + [f"  {d}" for d in sh.detail]
                    + [f"  bars: doc/acceptance_go2_go2w.md (accept_judge.SPEC); falls <= {FALLS_MAX} per scan mode"
-                      + (f", full payload <= {pay_falls} on 5-15 cm" if pay_falls is not None else "")]), rc
+                      + (f", full payload <= {pay_falls} on " + ("5-15 cm" if aj.full_top(r, "full") else "every band")
+                         if pay_falls is not None else "")]), rc
 
 
 def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) -> tuple[str, int]:

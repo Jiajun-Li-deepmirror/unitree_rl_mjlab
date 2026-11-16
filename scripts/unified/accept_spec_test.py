@@ -293,6 +293,20 @@ def main() -> int:
     check(first.startswith("FAIL") and "停住缺脚：15-18cm" in first, f"unloaded: 15-18 cm judged ({first[:120]})")
     first = acceptance("Go2", "top_full_1215", full={"feet": {"12-15cm": 0.5, "_": 1.0}})
     check(first.startswith("FAIL") and "满载 停住缺脚：12-15cm" in first, f"full payload: 12-15 cm judged ({first[:120]})")
+    # the Go2W (FULL_ALL_BANDS, the user 2026-11-16): the full payload judged on every band, 15-18 cm too
+    check(aj.FULL_ALL_BANDS == frozenset({"Go2W"}) and aj.full_top("Go2", "full") == "15-18cm" and aj.full_top("Go2W", "full") is None,
+          "FULL_ALL_BANDS: the Go2W; the Go2 keeps 15-18 cm reported under the full payload")
+    gw_top = {k: v for k, v in top.items() if k not in ("kicks", "edge")}   # (legged counts: not the Go2W's)
+    first = acceptance("Go2W", "top_full_w", full=gw_top)
+    want = {"满载 停住缺脚", "满载 楼梯速度", "满载 楼梯停住", "满载 楼梯停滞", "满载 楼梯", "满载 楼梯朝向最大偏离超过 10°",
+            "满载 楼梯蛇行峰峰值超过 7 cm", "满载 楼梯走直线", "满载 下楼点头", "满载 上楼晃", "满载 小腿大腿磕台阶"}
+    got = {i.split("：")[0] for i in items(first)}
+    check(first.startswith("FAIL") and got == want, f"Go2W full payload, every item bad on 15-18 cm only: each fails ({sorted(got)})")
+    for over, name in (({"feet": {"15-18cm": 0.79, "_": 1.0}}, "满载 停住缺脚"), ({"falls": {("15-18cm", "up"): 1, "_": 0}}, "满载 楼梯"),
+                       ({"slide": {"15-18cm": 0.2, "_": 0.01}}, "满载 楼梯计数")):   # (pooled over the bands: 15-18 cm in)
+      first = acceptance("Go2W", f"top_full_w_{name}", full=over)
+      check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith(name),
+            f"Go2W full payload 15-18 cm {over}: {name} alone ({first[:140]})")
 
     # (5) a missing file: FAULT
     prefix = str(Path(tmp, "u_missing"))
@@ -346,6 +360,19 @@ def main() -> int:
     check(rc == 0 and out.startswith("PASS"), f"stairs gate: 2 falls per scan mode and 6 on 5-15 cm under load pass ({out.splitlines()[0][:160]})")
     out, rc = stairs_gate.judge("Go2", g, 5, True)
     check(rc == 1 and "满载 楼梯：摔倒 6" in out.splitlines()[0], f"stairs gate: 6 > 5 under load fails ({out.splitlines()[0][:160]})")
+    gw = str(Path(tmp, "u_gate_w"))
+    for mode in ("on", "off"):
+      write_set(f"{gw}_{mode}", "unl", True)
+      write_set(f"{gw}_typ_{mode}", "unl", True)
+      os.rename(f"{gw}_typ_{mode}_stairs.txt", f"{gw}_typ_{mode}.txt")
+      os.rename(f"{gw}_{mode}_stairs.txt", f"{gw}_{mode}.txt")
+    write_set(f"{gw}_payx", "full", True, falls={("12-15cm", "up"): 3, ("15-18cm", "up"): 3, "_": 0})
+    os.rename(f"{gw}_payx_stairs_pay.txt", f"{gw}_pay.txt")
+    out, rc = stairs_gate.judge("Go2W", gw, 6, True)
+    check(rc == 0 and out.startswith("PASS"), f"Go2W stairs gate: 3 + 3 falls on 12-18 cm under load = 6 pass ({out.splitlines()[0][:160]})")
+    out, rc = stairs_gate.judge("Go2W", gw, 5, True)
+    check(rc == 1 and "满载 楼梯：摔倒 6" in out.splitlines()[0],
+          f"Go2W stairs gate: the 15-18 cm falls count under load (6 > 5 fails) ({out.splitlines()[0][:160]})")
     write_set(f"{g}_on", "unl", False, falls={("5-8cm", "up"): 3, "_": 0}, kicks=0.36)
     os.rename(f"{g}_on_stairs.txt", f"{g}_on.txt")
     out, rc = stairs_gate.judge("Go2", g, 6, True)

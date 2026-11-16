@@ -540,7 +540,17 @@ SPEC_ROBOTS: frozenset[str] = frozenset({"Go2", "Go2W"})
 CONDS = ("unl", "typ", "full")
 COND_LABEL = {"unl": "", "typ": "常用负载 ", "full": "满载 "}
 COND_SFX = {"unl": "", "typ": "_typ", "full": "_pay"}
-FULL_TOP_BAND = "15-18cm"   # the full payload's stairs band that is reported, not judged
+FULL_TOP_BAND = "15-18cm"   # the full payload's stairs band that is reported, not judged (the Go2)
+# The robots whose full-payload stairs items are judged on every band, 5-18 cm (2026-11-16, the user via go2-home:
+# "可以" -- map3's risers are 15-18.6 cm almost everywhere and the full-load map3 reach is judged already): every
+# eval_stairs item, descent_probe's heading / meander, items 26 / 27, and the teacher gates' full-load falls
+FULL_ALL_BANDS: frozenset[str] = frozenset({"Go2W"})
+
+
+def full_top(r: str, cond: str) -> str | None:
+  """The band reported, not judged, in robot r's condition cond: 15-18 cm under the full payload for a robot not in
+  FULL_ALL_BANDS (the Go2), else none."""
+  return FULL_TOP_BAND if cond == "full" and r not in FULL_ALL_BANDS else None
 SPEC: dict[str, dict] = {
   "flat_speed": {"unl": (0.80, 1.20), "typ": (0.75, None), "full": (0.65, None)},   # share of the command per axis
   "drift": {"unl": 0.05, "typ": 0.05, "full": 0.08},                     # off-axis offset / travel (p10 and p90)
@@ -835,7 +845,7 @@ def spec_stairs(r: str, path: str, cond: str, sh: Sheet, label: str | None = Non
   if not t:
     sh.missing(f"{L}楼梯")
     return
-  top = FULL_TOP_BAND if cond == "full" else None
+  top = full_top(r, cond)
   judged = lambda b: b != top
   rep = (f"（只判 5–15 cm，{top} 只报告）" if top else "")
   # 11 speed per band and direction, share of the command
@@ -911,8 +921,8 @@ def spec_stairs(r: str, path: str, cond: str, sh: Sheet, label: str | None = Non
     over = [(b, d, v) for (b, d), v in st.items() if judged(b) and v > bar]
     if over:
       sh.fail(f"{L}楼梯停滞：" + "、".join(f"{b} {_ud(d)} {v:g}%" for b, d, v in over), sum((v - bar) / 100 for _b, _d, v in over))
-  # falls: every band (the full payload: 5-15 cm, 15-18 cm reported)
-  if cond == "full":
+  # falls: every band (the full payload of a robot not in FULL_ALL_BANDS: 5-15 cm, 15-18 cm reported)
+  if top:
     total = stairs_falls(path)
     bands = band_fall_counts(path)
     if total is None:
@@ -1055,7 +1065,7 @@ def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
   (drift3): 29 the base height / pitch std over the steady cruise (reported). The full payload: 26 and 27 judged on
   5-15 cm, 15-18 cm reported."""
   L = COND_LABEL[cond]
-  top = FULL_TOP_BAND if cond == "full" else None
+  top = full_top(r, cond)
   rep_ = f"（只判 5–15 cm，{top} 只报告）" if top else ""
   fp = flight_path(p["descent"])
   rows = {k: v for k, v in fp.items() if "pitch_rate" in v and "roll_rate" in v}
@@ -1116,7 +1126,7 @@ def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
   if not rows:
     sh.missing(f"{L}楼梯走直线（descent_probe）")
     return
-  top = FULL_TOP_BAND if cond == "full" else None
+  top = full_top(r, cond)
   hb, mb = SPEC["heading"][cond], SPEC["meander"].get(r, SPEC["meander"]["Go2"])[cond]
   rep = (f"（只判 5–15 cm，{top} 只报告）" if top else "")
   sh.detail.append(f"{L}楼梯朝向最大偏离 p90（<= {hb:g}°）{rep}：" + "，".join(f"{b} {_ud(d)} {v['hd_max_p90']:.1f}" for (b, d), v in rows.items()))

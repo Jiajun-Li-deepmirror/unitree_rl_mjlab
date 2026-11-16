@@ -13,8 +13,11 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
   - full payload (8 kg at the acceptance point 0.15, 0, 0.20).
 - Concrete numbers only; there is no "not worse than the deployed model" bar.
 - A foot that touches the tread without load does **not** count as down. The four-feet item is contact based.
-- Full-load stairs are judged on 5–15 cm only; 15–18 cm is measured and reported. This covers every eval_stairs item
-  and descent_probe's heading and meander.
+- Full-load stairs, the Go2: judged on 5–15 cm only; 15–18 cm is measured and reported. This covers every eval_stairs
+  item, descent_probe's heading and meander, and items 26 / 27.
+- Full-load stairs, the Go2W (the user, 2026-11-16, "可以"): judged on every band, 5–18 cm, at the full-load column's
+  values. Map3's risers are 15–18.6 cm almost everywhere (L0 / R2 up to 18.6, only F1_entry 14.9), and the full-load
+  map3 reach is judged already, so the eval_stairs bands match it (accept_judge.FULL_ALL_BANDS).
 - A reading near a bar gets 3 runs, judged on the pooled readings; the better run is never picked. This is a
   measurement rule (go2-home): the judge reads one file per test and condition.
 
@@ -51,17 +54,17 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 28 | top-landing extra steps / wheel lifts (顶部平台多余踏步/抬轮): per climb on map3's top landings, a wheel / foot on the landing's level that leaves the ground > 0.06 s with its apex > 2 cm, in the climb's end, the drive-up and the first stand (map3_stairs_probe, with item 21) | <= 1.0 | 1.0 | 1.0 |
 | 29 | flat body bob (平地颠、晃): the base height and pitch std per robot over the steady part (3 s on), 1.0 m/s forward and 0.6 m/s sideways (drift_all's BOB rows) | reported until w27d's reading (proposed 1 cm / 2°) | | |
 | 30 | stair stop-and-go (楼梯上走走停停): the coefficient of variation of the speed along the flight per robot, p50 per band and direction (descent_probe's SUMQ) | reported until w27d's reading (proposed 0.3) | | |
-| — | falls in every test | 0 | 0 | 0 (stairs: 5–15 cm) |
+| — | falls in every test | 0 | 0 | 0 (stairs: the Go2 5–15 cm, the Go2W every band) |
 
-Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the full load's 15–18 cm
-readings.
+Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the Go2's full-load 15–18 cm
+readings. The full-load column's "(5–15 cm)" applies to the Go2; the Go2W is judged on every band.
 
 The teacher gates use the same items and values where they already measure them, with no new tests:
 - stairs gate: both scan modes, the typical and the full payload;
 - flat gate: its own tests.
 
 They keep the teacher's fall tolerance: at most 2 per scan mode unloaded and typical, at most 6 under the full
-payload (5–15 cm). They run no descent_probe, so items 14 and 15 are judged in the students' acceptance only.
+payload (the Go2 on 5–15 cm, the Go2W over every band). They run no descent_probe, so items 14 and 15 are judged in the students' acceptance only.
 
 ## Tests per condition (accept.sh)
 
