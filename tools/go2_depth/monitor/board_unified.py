@@ -513,12 +513,18 @@ def main() -> int:
     # the robot's flow: teacher -> students -> acceptance -> delivery
     teachers = [(run, row) for run, row in mine if row["role"] == "teacher"]
     pick = d["picks"].get(f"unified_{key}_full.pick")
+    below = False
     if pick:
-      hand = any("HAND PICK" in l for l in d["logs"].get(f"unified_{key}.txt", []))
-      t_cell = ("人工选定（没有等到上限） " if hand else "已通过，选定 ") + "/".join(pick.split("/")[-2:])
+      t_log = d["logs"].get(f"unified_{key}.txt", [])
+      hand = any("HAND PICK" in l for l in t_log)
+      # a pick at the cap below the gate (teacher.sh: the best judged checkpoint) is not a pass
+      below = "below the gate" in ([l for l in t_log if "TEACHER PICK" in l] or [""])[-1]
+      t_cell = ("人工选定（没有等到上限） " if hand else "到上限没过门，选定最接近的 " if below
+                else "已通过，选定 ") + "/".join(pick.split("/")[-2:])
     elif any(row["status"] in ("training", "stalled") for _, row in teachers):
-      t_cell = "训练中：" + "；".join(f"{row['run'].replace('老师 ', '')} 第 {row['iter']} 步" for _, row in teachers
-                                  if row["status"] in ("training", "stalled")) + f"（上限 {teachers[0][1]['max']} 步）"
+      live_t = [row for _, row in teachers if row["status"] in ("training", "stalled")]
+      t_cell = "训练中：" + "；".join(f"{row['run'].replace('老师 ', '')} 第 {row['iter']} 步" for row in live_t
+                                  ) + f"（上限 {live_t[0]['max']} 步）"   # the running version's cap, not an old run's
     elif teachers:
       t_cell = "已停，没有通过"
     else:
@@ -545,7 +551,7 @@ def main() -> int:
     robots.append({"robot": R, "machine": box, "teacher": t_cell, "blind": cells["blind"], "depth": cells["depth"],
                    "accept": acc or "没有开始", "delivery": "；".join(deliv) or "没有",
                    "gpu": "" if not gpu else f"{gpu[0]}%，{gpu[1] / 1024:.1f} GB",
-                   "n_training": sum(1 for row in formal if row["status"] == "training"), "teacher_ok": int(bool(pick)),
+                   "n_training": sum(1 for row in formal if row["status"] == "training"), "teacher_ok": int(bool(pick) and not below),
                    "students_ok": sum(1 for k in ("blind", "depth") if d["picks"].get(f"unified_{key}_{k}.pick")),
                    "n_alerts": sum(row["n_alerts"] for row in formal), "n_late": sum(row["late"] for row in formal),
                    "n_bad": sum(1 for row in formal if row["status"] in ("stalled", "dead", "crashed") or row["faults"]),
