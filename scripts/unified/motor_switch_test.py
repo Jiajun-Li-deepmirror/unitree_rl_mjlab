@@ -14,7 +14,8 @@ No GPU. Each condition runs in its own process (the unified tasks resolve the ro
   (5) U_MODEL=legacy: no motor model; a bad U_MOTOR stops the build;
   (6) the Go2 is unchanged by the motor model (its build with and without U_MOTOR=builtin is the same).
 
-Local: PYTHONPATH=$PWD python scripts/unified/motor_switch_test.py"""
+Local: PYTHONPATH=$PWD python scripts/unified/motor_switch_test.py
+A tree without git (a box): GIT_DIR=<a clone>/.git, or MOTOR_TODAY_DIR=<a tree of 4d25c78's code>."""
 
 from __future__ import annotations
 
@@ -68,13 +69,22 @@ _today_dir = None
 
 
 def today_dir() -> str:
-  """Today's code (TODAY's src / jobs, git archive) in a temporary directory."""
+  """Today's code: MOTOR_TODAY_DIR (a tree of TODAY's code, e.g. a deployed one on a box without git), else TODAY's
+  src / jobs by git archive (a git checkout, or GIT_DIR) in a temporary directory."""
   global _today_dir
   if _today_dir is None:
     import tempfile
 
-    _today_dir = tempfile.mkdtemp(prefix="motor_today_")
-    subprocess.run(f"git archive {TODAY} src jobs | tar -x -C {_today_dir}", shell=True, check=True)
+    given = os.environ.get("MOTOR_TODAY_DIR")
+    if given:
+      assert os.path.isdir(os.path.join(given, "src")), f"MOTOR_TODAY_DIR={given}: no src/ there"
+      _today_dir = given
+    else:
+      _today_dir = tempfile.mkdtemp(prefix="motor_today_")
+      r = subprocess.run(f"git archive {TODAY} src jobs | tar -x -C {_today_dir}", shell=True, capture_output=True, text=True)
+      assert r.returncode == 0 and os.path.isdir(os.path.join(_today_dir, "src")), (
+        f"git archive {TODAY} failed ({r.stderr.strip()[-200:]}): run in a git checkout, set GIT_DIR, or set "
+        f"MOTOR_TODAY_DIR to a tree of {TODAY}'s code")
   return _today_dir
 
 
