@@ -1254,11 +1254,14 @@ MIN_SWITCH_TERMS = {"U_DESCENT_PITCH": ("descent_pitch",)}
 # weights (a stairs-quality item's multiplier works on its "base", the P weight). The minimal recipe has no stairs
 # quality (u_quality deleted, q stays 0), so a "by q" item runs on the progress instead, switched on from
 # U_MIN_ITEM_FROM (default MIN_ITEM_FROM) and tightening from its loose target to its own over the next 0.3.
-# U_MIN_ITEM_FLOOR=<min_scale>[,<init>]: the kept items' multiplier floor (a met item's cost fades to that share of its
-# weight: the cost acts while the reading misses the target) and where the multiplier starts (default 1). An item
+# U_MIN_ITEM_FLOOR=<min_scale>[,<init>[,<max_scale>]]: the kept items' multiplier floor (a met item's cost fades to that
+# share of its weight: the cost acts while the reading misses the target), where the multiplier starts (default 1)
+# and its cap (default the item's own: the stairs speed items' is 1.0 -- they can only weaken their cost). An item
 # without terms (a measured-only one) is logged. U_MIN_LOG_ITEMS=1: every other item stays measured and logged only
 # (no terms, not enforced): the training-time readings for the diagnosis before a candidate.
 MIN_ITEM_FROM = 0.3
+# U_MIN_WEIGHT=<term>:<weight>[,...] (2026-11-17, go2-home's C5: is_terminated -50 instead of -200): a term of the
+# minimal build (MIN_TERMS, a kept or a switch's term) at another weight; a term not in the build stops it.
 LOG_WEIGHT = 1e-8   # the logging terms sit at 1e-9; joint_acc_l2's -2.5e-7 is a real weight
 LOG_SOURCE_WEIGHT = 1e-9
 
@@ -1356,7 +1359,9 @@ def _min_items(cfg: ManagerBasedRlEnvCfg) -> list[dict]:
   frm = float(os.environ.get("U_MIN_ITEM_FROM", MIN_ITEM_FROM))
   assert 0.0 <= frm < 1.0, f"U_MIN_ITEM_FROM={frm}: a progress in [0, 1)"
   fl = [float(x) for x in os.environ.get("U_MIN_ITEM_FLOOR", "").split(",") if x.strip()]
-  assert len(fl) <= 2 and all(0.0 < x <= 1.0 for x in fl), "U_MIN_ITEM_FLOOR=<min_scale>[,<init>]: in (0, 1]"
+  assert len(fl) <= 3 and all(0.0 < x <= 1.0 for x in fl[:1]) and (len(fl) < 2 or fl[0] <= fl[1]) \
+    and (len(fl) < 3 or fl[1] <= fl[2] <= 10.0), \
+    "U_MIN_ITEM_FLOOR=<min_scale>[,<init>[,<max_scale>]]: 0 < min <= 1, min <= init <= max <= 10"
   out = []
   for c in built:
     c = {**c, "terms": list(c["terms"]), "params": dict(c["params"])}
@@ -1367,6 +1372,8 @@ def _min_items(cfg: ManagerBasedRlEnvCfg) -> list[dict]:
       if fl:
         c["min_scale"] = fl[0]
         c["init_scale"] = fl[1] if len(fl) > 1 else 1.0
+        if len(fl) > 2:
+          c["max_scale"] = fl[2]
         c["start_scale"] = max(c.get("start_scale", 1.0), fl[0])
       out.append(c)
     elif log_all:
@@ -1411,6 +1418,10 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
       cfg.rewards[k].weight = LOG_SOURCE_WEIGHT
     else:
       del cfg.rewards[k]
+  for kv in [x.strip() for x in os.environ.get("U_MIN_WEIGHT", "").split(",") if x.strip()]:
+    k, _, w = kv.partition(":")
+    assert k in cfg.rewards and w, f"U_MIN_WEIGHT={kv}: <term>:<weight>, a term of the minimal build"
+    cfg.rewards[k].weight = float(w)
   cfg.curriculum.pop("u_quality", None)
   if "u_constraints" in cfg.curriculum:
     cfg.curriculum["u_constraints"].params["items"] = items

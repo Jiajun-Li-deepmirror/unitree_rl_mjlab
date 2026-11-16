@@ -27,7 +27,7 @@ import os
 import sys
 
 SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_DESCENT_PITCH",
-            "U_MIN_ITEMS", "U_MIN_ITEM_FROM", "U_MIN_ITEM_FLOOR", "U_MIN_LOG_ITEMS", "U_MIN_KEEP_TERMS")
+            "U_MIN_ITEMS", "U_MIN_ITEM_FROM", "U_MIN_ITEM_FLOOR", "U_MIN_LOG_ITEMS", "U_MIN_KEEP_TERMS", "U_MIN_WEIGHT")
 
 
 def main() -> int:
@@ -156,6 +156,19 @@ def main() -> int:
               f"U_MIN_KEEP_TERMS={','.join(keep)}: " + ", ".join(f"{k} {ck.rewards[k].weight:g} ({getattr(ck.rewards[k].func, '__name__', '?')})" for k in keep)
               + "; the rest the minimal recipe's")
       check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_KEEP_TERMS": "nosuch"}), "U_MIN_KEEP_TERMS=nosuch stops the build")
+      # (10) U_MIN_WEIGHT (go2-home's C5) and the item cap (C4: the climb item's own cap is 1.0)
+      cw = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_WEIGHT": "is_terminated:-50"})
+      check(cw.rewards["is_terminated"].weight == -50.0 and set(cw.rewards) == set(cm.rewards)
+            and all(cw.rewards[k].weight == cm.rewards[k].weight for k in cm.rewards if k != "is_terminated"),
+            f"U_MIN_WEIGHT=is_terminated:-50: {cw.rewards['is_terminated'].weight:g}, the rest the minimal recipe's")
+      check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_WEIGHT": "descent_pitch:-4"}), "U_MIN_WEIGHT on a deleted term stops the build")
+      c4 = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "climb", "U_MIN_ITEM_FLOOR": "0.05,1,3"})
+      it4 = c4.curriculum["u_constraints"].params["items"]
+      check(len(it4) == 1 and it4[0]["terms"] == ["stair_speed_deficit"] and it4[0]["min_scale"] == 0.05
+            and it4[0]["init_scale"] == 1.0 and it4[0]["max_scale"] == 3.0 and it4[0]["by"] == "p"
+            and c4.rewards["stair_speed_deficit"].weight == c0.rewards["stair_speed_deficit"].weight
+            and set(c4.rewards) - set(cm.rewards) == {"stair_speed_deficit"},
+            f"U_MIN_ITEMS=climb U_MIN_ITEM_FLOOR=0.05,1,3: its cost stair_speed_deficit {c4.rewards['stair_speed_deficit'].weight:g} x [0.05, 3]")
       check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "nosuch"}), "U_MIN_ITEMS=nosuch stops the build")
       cp = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "slides", "U_DESCENT_PITCH": "4"})
       check({"wheel_nosing", "descent_pitch"} <= set(cp.rewards), "U_MIN_ITEMS beside an explicit probe switch: both kept")
