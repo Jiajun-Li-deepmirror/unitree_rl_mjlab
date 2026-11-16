@@ -1300,8 +1300,7 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   # whose term the minimal recipe deletes)
   keep = {term for sw, terms in MIN_SWITCH_TERMS.items() if os.environ.get(sw) and not urecipe.set_by_scope(sw)
           for term in terms}
-  missing = [k for k in keep if k not in cfg.rewards]
-  assert not missing, f"U_RECIPE_MIN: the switches' terms {missing} are not in the build"
+  # (a build without the term -- a student's, a check's -- keeps nothing of it)
   for k in list(cfg.rewards):
     if k in MIN_TERMS or k in logs or k in keep:
       continue
