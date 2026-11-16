@@ -1265,7 +1265,8 @@ SCORE_ITEMS = [
 ]
 SCORE_LEGGED_ONLY = {16}   # (17 / 19: the Go2's, x2 at its round)
 SCORE_COND_W = {"unl": 1.0, "typ": 1.0, "full": 0.5}
-REF_W27D_SCORE: dict[str, float] | None = None   # {"tier5": %, "total": %}: w27d's, once judged at this judge
+# w27d at judge 2e7dc6c (go2-home 2026-11-16, fresh wall / slope files from 2371e69; gates 1 / 2 pass, gate 3 fails)
+REF_W27D_SCORE: dict[str, float] | None = {"tier5": 100.0, "total": 82.6}
 
 
 def _n(x) -> int:
