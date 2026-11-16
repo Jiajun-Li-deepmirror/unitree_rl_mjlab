@@ -37,8 +37,7 @@ Every other item (3–30 without 25, item 2's heading, item 24) is a target: jud
 printed after the gates as "目标未达" in the loop's order -- the stairs' stop held and the slide-back first (the user's
 safety note), then by the distance to the target -- each with w27d's reading. The judge writes the target table
 <prefix>_targets.md beside the verdict (item, condition, target, the new reading, w27d's, met / not met): a deployed
-model is replaced only after the user's own look at it (not a gate). Item 22's target: the recovery p90 <= 0.5 s; its
-falls count in gate 3.
+model is replaced only after the user's own look at it (not a gate). Item 22 (the push) was dropped (2026-11-16).
 
 Sample sizes stay fixed per test so the rate means one thing; the slope cells run 256 robots (were 64).
 
@@ -75,7 +74,7 @@ The numbers of every item; the gates' rows decide, the rest are targets.
 | 20 | stalled on the stairs, per band and direction | <= 5 % | 5 % | 5 % |
 | 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings, the drive-up along the landing under the deployed wall guard's profile (tinynav-sim: speed min(0.5, 1.5/s x (camera-to-wall − 0.45 m)), the camera 0.307 m ahead of the base: the Go2W stops ~0.76 m base-to-wall; it was a stop at 0.85 m), then stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); of the robots that took the top, the share whose front foot / wheel rises more than 10 cm above the first stand or that fall on the landing -- the larger of (A) drive-up + first stand and (B) turn + last stand | <= 5 % | 5 % | 5 % |
 | 24 | depth noise (深度噪声; the depth student only, added 2026-11-16 by the user via go2-home): items 10-20 again on the -RealEdge task (Unitree-<R>-U-Student-Depth-Stairs-RealEdge: the real camera's latency, frame timing, depth errors and mounting spread, edge smoothing on every capture), next to the clean run; labelled 相机误差 | the clean bars | the clean bars | the clean bars |
-| 22 | push (抗推): one 1.0 m/s velocity push on the base (the user, 2026-11-16: first 0.5, then 1.0; 0.5 still run and reported), base frame +x / -x / +y / -y, 3 s into the run, standing, 1.0 m/s forward and 0.5 m/s sideways (push_test.py, 64 robots per group); the recovery (the base back within 0.3 m/s of the command for 0.5 s) reported | 0 falls | 0 | 0 |
+| 22 | push (抗推): DROPPED by the user 2026-11-16 (real users rarely push the robot); not run, not in gate 3. Training keeps its pushes (dr=wide, ±1.25 m/s); push_test.py stays a tool | — | — | — |
 | 23 | slopes and rough ground (斜坡和不平地面): a 15° ramp up and a 15° ramp down (box geoms: 2 m flat, 6 m run, 2 m flat) and rough ground ±3 cm (the training's random-rough generator), walked across at 0.5 and 1.0 m/s, 64 robots per cell (slope_rough_test.py); reached = 7.5 m along within 7.5 / v x 1.5 + 2 s; the worst of the 6 cells | >= 95 %, 0 falls | 95 %, 0 | 90 %, 0 |
 | 26 | pitch / roll rate on the flights (下楼点头、上楼晃): RMS per robot, p50 per band; the descents' pitch rate, the climbs' roll rate (descent_probe --straight's SUM) | <= 45 °/s | 45 °/s | 45 °/s (5–15 cm) |
 | 27 | shin / thigh strikes on the steps (小腿大腿磕台阶): % of the flight's steps with a front / rear calf or thigh on the steps, per band, direction and side (descent_probe's SUMQ) | <= 2 % | 2 % | 2 % (5–15 cm) |
@@ -102,7 +101,7 @@ Every test runs in all three conditions:
 - gait (the Go2W only);
 - the map3 flights with and without the operator (noop, op).
 - the top landings facing the wall (wall; item 21), after the map3 flights.
-- push (item 22) and slopes / rough ground (item 23), with the flat tests.
+- slopes / rough ground (item 23), with the flat tests (item 22's push: dropped).
 - Items 26, 27 and 30 come from the descent run, 28 from the wall run, 29 from drift3: no runs of their own.
 - the depth student only (item 24): stairs and the map3 flights again on the -RealEdge task (stairsedge, noopedge,
   opedge); accept_judge --edge makes them required.

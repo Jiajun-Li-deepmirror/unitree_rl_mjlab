@@ -13,7 +13,8 @@ On the built configurations (no GPU), per robot:
   (4) the commands (but the D fields), the events (but the payload's limit), the observations and the terminations
       as in the plain build;
   (5) a bad value stops the build; the play build is the plain play build;
-  (6) a robot not in MIN_ROBOTS (the Go2: train.py registers every robot's tasks) keeps its plain build.
+  (6) a robot not in MIN_ROBOTS (the Go2: train.py registers every robot's tasks) keeps its plain build;
+  (7) an explicit probe switch (MIN_SWITCH_TERMS: U_DESCENT_PITCH=4) keeps its term at its weight, the rest as (2).
 Prints the minimal recipe: terms, weights, curricula.
 
 Local: PYTHONPATH=$PWD python scripts/unified/recipe_min_test.py [--robots Go2W,Go2]"""
@@ -25,7 +26,7 @@ import dataclasses
 import os
 import sys
 
-SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0")
+SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_DESCENT_PITCH")
 
 
 def main() -> int:
@@ -125,6 +126,11 @@ def main() -> int:
     check(obs(c0) == obs(cm) and terms(c0) == terms(cm), "the observations and the terminations unchanged")
     # (5)
     check(fails(robot, {"U_RECIPE_MIN": "2"}), "U_RECIPE_MIN=2 stops the build")
+    # (7) an explicit probe switch keeps its terms (MIN_SWITCH_TERMS; go2w_base_dp4_s0, 2026-11-16)
+    cd = build(robot, {"U_RECIPE_MIN": "1", "U_DESCENT_PITCH": "4"})
+    check("descent_pitch" in cd.rewards and cd.rewards["descent_pitch"].weight == -4.0
+          and {k: v.weight for k, v in cd.rewards.items() if k != "descent_pitch"} == kept,
+          f"U_RECIPE_MIN=1 U_DESCENT_PITCH=4: descent_pitch at weight {cd.rewards['descent_pitch'].weight if 'descent_pitch' in cd.rewards else None}, the rest the minimal recipe's")
     p0, pm = build(robot, play=True), build(robot, {"U_RECIPE_MIN": "1"}, play=True)
     check(set(p0.rewards) == set(pm.rewards) and twist(p0) == twist(pm) and events(p0) == events(pm),
           "the play build is the plain play build")

@@ -351,10 +351,7 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     # the path on a flight (2026-11-15, the user: the weaving and the heading on the stairs; accept_judge.py's
     # FLIGHT_HEADING_*): the stairs traverse spawned square to the steps, every condition
     pool $pay ${P}_descent$X.txt $W scripts/unified/descent_probe.py $TE $CK --straight --envs-per-tile $(tn 18)
-    # item 22 (2026-11-16): one base push, 4 directions, standing / walking (a spec robot, every condition): judged at
-    # 1.0 m/s (the user), 0.5 reported
-    [ $SPEC = 1 ] && pool $pay ${P}_push$X.txt $W scripts/unified/push_test.py --task $TF $CK --num-envs $(tn 64) \
-      --push 1.0 --also 0.5
+    # (item 22, the push, dropped by the user 2026-11-16: real users rarely push the robot; push_test.py kept as a tool)
     # item 23 (2026-11-16): a 15 deg ramp up and down, rough ground +-3 cm, at 0.5 and 1.0 m/s
     # (256 robots per cell: the fall rate's sample, the user 2026-11-16 -- w27d's cells read 1 vs 6 falls on two runs at 64)
     [ $SPEC = 1 ] && pool $pay ${P}_slope$X.txt $W scripts/unified/slope_rough_test.py --task $TE $CK --num-envs $(tn 256)

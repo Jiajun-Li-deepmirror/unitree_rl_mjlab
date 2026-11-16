@@ -202,6 +202,15 @@ def effective(robot) -> dict[str, str]:
   return {k: os.environ.get(k, v) for k, v in recipe(robot).items()}
 
 
+_SCOPE_ADDED: list[set[str]] = []   # the switches the open scopes put in the environment (set_by_scope)
+
+
+def set_by_scope(key: str) -> bool:
+  """Whether the recipe table set the switch (an open scope added it), not the environment itself (2026-11-16: the
+  minimal recipe keeps an explicit probe switch's terms, teacher_env.MIN_SWITCH_TERMS)."""
+  return any(key in s for s in _SCOPE_ADDED)
+
+
 @contextmanager
 def scope(robot):
   """The robot's recipe in the environment for the duration: the switches the environment does not set itself.
@@ -209,9 +218,11 @@ def scope(robot):
   reach the next one's build. Nested scopes of one robot are harmless (the inner one finds everything set)."""
   add = {k: v for k, v in recipe(robot).items() if k not in os.environ}
   os.environ.update(add)
+  _SCOPE_ADDED.append(set(add))
   try:
     yield
   finally:
+    _SCOPE_ADDED.pop()
     for k in add:
       os.environ.pop(k, None)
 

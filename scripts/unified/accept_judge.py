@@ -1207,8 +1207,7 @@ TARGET_FIRST = ("楼梯停住", "楼梯计数：滑回")
 # w27d's readings beside the targets (doc/experiments_go2w.md's reference rows; go2-home's measurements 2026-11-16,
 # unloaded / typical / full; items 3-20 passed there but for the full load's flat falls)
 REF_W27D = {
-  "面前是墙不抬腿": "15.1 / 7.3 / 5.8 %（旧 0.85 m 接近）", "抗推": "1.0 m/s 摔 0 / 5 / 63（768）",
-  "斜坡和不平地面": "96.9 / 92.2 / 87.5 %", "下楼点头": "15-18 cm 51.1 / 48.7 / 38.5 °/s", "上楼晃": "<= 25 °/s",
+  "面前是墙不抬腿": "15.1 / 7.3 / 5.8 %（旧 0.85 m 接近）", "斜坡和不平地面": "96.9 / 92.2 / 87.5 %", "下楼点头": "15-18 cm 51.1 / 48.7 / 38.5 °/s", "上楼晃": "<= 25 °/s",
   "小腿大腿磕台阶": "<= 1.2 %", "顶部平台多余踏步": "3.21 / 2.82 / 2.95 次", "平地颠晃": "直行 0.04 cm / 0.04°，横移 0.5-0.9 cm / 3.5-4.1°",
   "楼梯走走停停": "<= 0.25", "相机误差": "通过（满载楼梯摔 1）",
 }
@@ -1250,7 +1249,7 @@ def test_falls(kind: str, path: str) -> tuple[int, int] | None:
 
 
 FALL_KINDS = ("am", "drift3", "spinalt", "march", "clock", "stand", "loadstand", "stopmove", "gait", "stairs", "descent",
-              "push", "slope", "wall", "noop", "op")
+              "slope", "wall", "noop", "op")   # (item 22's push dropped 2026-11-16: not in the pool)
 
 
 def fall_rate(r: str, p: dict[str, str], cond: str, edge: bool, only_present: bool = False) -> tuple[float | None, list[str], list[str]]:
@@ -1350,7 +1349,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False,
     spec_flight(r, p["descent"], cond, sh)
     spec_wall(r, p["wall"], cond, sh)
     spec_motion(r, p, cond, sh)
-    spec_push(r, p["push"], cond, sh)
+    # (item 22, the push: dropped by the user 2026-11-16 -- real users rarely push the robot; spec_push kept unused)
     spec_slope(r, p["slope"], cond, sh)
     edge = expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge"))
     if edge:

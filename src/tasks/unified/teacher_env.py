@@ -1238,6 +1238,11 @@ MIN_TERMS = {
   "wheel_flat_step_air": -30.0, "wheel_slide_back": -4.0,
 }
 MIN_DEFAULTS = {"U_PAYLOAD_TRAIN_MAX": "12", "U_HARD_FIXED": "1"}
+# A probe switch set explicitly beside U_RECIPE_MIN=1 (in the environment, not by the recipe table) keeps the reward
+# terms it adds, at its own weight (2026-11-16, go2-home's go2w_base_dp4_s0: U_DESCENT_PITCH=4 on the minimal recipe --
+# the table's own U_DESCENT_PITCH=4 is the 68-term recipe's, and the minimal recipe deletes its term):
+# switch -> the terms it adds
+MIN_SWITCH_TERMS = {"U_DESCENT_PITCH": ("descent_pitch",)}
 LOG_WEIGHT = 1e-8   # the logging terms sit at 1e-9; joint_acc_l2's -2.5e-7 is a real weight
 LOG_SOURCE_WEIGHT = 1e-9
 
@@ -1291,8 +1296,14 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   sources = _log_sources(cfg, logs) - set(MIN_TERMS) - logs
   for k, w in MIN_TERMS.items():   # (today's weights; recipe_min_test checks they equal the plain build's)
     cfg.rewards[k].weight = w
+  # (explicit: set by the environment, not by the recipe table's scope -- the Go2W's table carries U_DESCENT_PITCH=4,
+  # whose term the minimal recipe deletes)
+  keep = {term for sw, terms in MIN_SWITCH_TERMS.items() if os.environ.get(sw) and not urecipe.set_by_scope(sw)
+          for term in terms}
+  missing = [k for k in keep if k not in cfg.rewards]
+  assert not missing, f"U_RECIPE_MIN: the switches' terms {missing} are not in the build"
   for k in list(cfg.rewards):
-    if k in MIN_TERMS or k in logs:
+    if k in MIN_TERMS or k in logs or k in keep:
       continue
     if k in sources:
       cfg.rewards[k].weight = LOG_SOURCE_WEIGHT
