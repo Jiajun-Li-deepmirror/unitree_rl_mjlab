@@ -1177,6 +1177,18 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
       new[name] = term
   payload = cfg.events["base_payload"].params
   payload["ramp_steps"] = 0   # the event's own iteration ramp off: the progress sets the limit
+  # U_PAYLOAD_TRAIN_MAX=<kg> (2026-11-16, go2-home's single-factor arm A: "payload max 12 kg, the test stays 8"): the
+  # training payload's limit instead of the robot table's train_payload max -- the payload event's heavy_max at the
+  # full progress (curriculum.progress_payload's full_max) and so the light / heavy shares' reference
+  # (env.u_payload_full). The payload point's box and the acceptance's payloads are unchanged. Unset or empty: the
+  # table's value. At most 3x the table's limit (a typo guard).
+  train_max = os.environ.get("U_PAYLOAD_TRAIN_MAX", "")
+  if train_max:
+    kg = float(train_max)
+    assert 0.0 < kg <= 3.0 * float(payload["heavy_max"]), (
+      f"U_PAYLOAD_TRAIN_MAX={train_max!r}: a limit in (0, {3.0 * float(payload['heavy_max']):g}] kg "
+      f"(the table's {payload['heavy_max']} kg x 3)")
+    payload["heavy_max"] = kg
   new["u_payload"] = CurriculumTermCfg(func=ucur.progress_payload, params={"event_name": "base_payload",
                                                                          "full_max": payload["heavy_max"]})
   if quality[0] or quality[1]:   # the M -> P reward differences, along the stairs quality q
