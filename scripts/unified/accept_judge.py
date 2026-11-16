@@ -254,7 +254,10 @@ def stairs_heading(path: str) -> tuple[float | None, float | None]:
 # typical payload are judged on every band as before. Every robot not listed: every band (the user's option 1, the
 # default). The teacher's stairs gate (stairs_gate.py) and the students' acceptance (judge below) read the same set.
 # U_JUDGE_LOADED_TOP_REPORTED="Go2,..." adds robots for a test run.
-LOADED_TOP_REPORTED: frozenset[str] = frozenset({"Go2"})   # (2026-11-14 12:30, trigger (a): G11's per-band readings)
+# 2026-11-16 (the user, ~13:40 answering go2-home's As2 sheet, question 1 (a), relayed by go2-depth 14:50: every robot):
+# the full payload's 15-18 cm falls are reported on every robot, judged on 5-15 cm only -- Go2 since 11-14, now Go2W,
+# As2, As2W, B2 and B2W too. Unloaded and the typical payload stay judged on every band.
+LOADED_TOP_REPORTED: frozenset[str] = frozenset({"Go2", "Go2W", "As2", "As2W", "B2", "B2W"})
 LOADED_TOP_BAND = "15-18cm"
 
 
