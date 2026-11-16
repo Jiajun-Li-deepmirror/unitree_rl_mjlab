@@ -16,6 +16,12 @@ The model to come close to is the deployed lineage g27b (blind) → w27d (depth)
 judge (go2-home), w27d passes the stairs and flat gates on its own legacy robot model and on the aligned (uros) model.
 How it was trained, stage by stage: go2-depth's lineage table, built from each run's params/env.yaml.
 
+## Reference runs (judged, not trained)
+
+| date | model | where | physics | verdict under the spec | conclusion |
+|---|---|---|---|---|---|
+| 11-16 ~18:20 | w27d (deployed Go2W depth; go2-home) | go2-home's card, tree uprobe_f40fd87; verdict logs/checks/u_go2w_base_w27d_verdict.txt, seed repeats in _s1 / _s2 | the legacy model it trained on (old tree, built-in actuators) | everything passes except the full-load flat falls (bar 0), all of them backward (-1.0, 0, 0): per seed accept_matrix 2/48, gait_fb 1-2/96, gait clock 0-2/48; rear-wheel lift ~5 % there; wheels down 94.6 / 95.1 / 97.1 % passes once pooled (bar 95) | the user (11-16, "可以"): the falls bar stays 0 at full load; w27d stays deployed as the reference |
+
 ## Runs
 
 | date | run | box | commit | switches | the single change and why | control | gates at 6000 (spec) | conclusion |
