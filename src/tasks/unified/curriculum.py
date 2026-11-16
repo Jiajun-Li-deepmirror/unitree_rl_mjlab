@@ -743,17 +743,19 @@ def progress_payload(
   event_name: str,
   full_max: float,
   p_full: float = 0.5,
+  fixed: bool = False,
 ) -> dict[str, torch.Tensor]:
   """The payload event's heavy_max (mdp.base_payload_point: the heavy robots' payload is uniform on [0, heavy_max])
   = full_max x the smaller of env.u_progress / p_full and 0.5 + 0.5 x the stairs quality q (env.u_quality), at most
   full_max: half the limit by the progress alone, the rest as the robot learns to place its feet on the stairs
   (2026-11-12, the from-zero retrain: the full payload at progress 0.5 came before the robots climbed, and the stairs
-  quality stage then had to be learned under it). Read at each robot's reset."""
+  quality stage then had to be learned under it). Read at each robot's reset. fixed (U_PAYLOAD_FULL0=1, go2-home's arm
+  D 2026-11-16, as the deployed g27b lineage trained): full_max from iteration 0, no ramp."""
   del env_ids
   env.u_payload_full = full_max   # the robot's payload limit: the light / heavy shares (constraints.payload_mask)
   q = getattr(env, "u_quality", 0.0)
   if os.environ.get("U_PAYLOAD_Q") == "0":   # a probe's switch (teacher_env._probe_switches): half the limit, no more
     q = 0.0
-  limit = full_max * min(ramp(getattr(env, "u_progress", 0.0), 0.0, p_full), 0.5 + 0.5 * q)
+  limit = full_max if fixed else full_max * min(ramp(getattr(env, "u_progress", 0.0), 0.0, p_full), 0.5 + 0.5 * q)
   env.event_manager.get_term_cfg(event_name).params["heavy_max"] = limit
   return {"heavy_max": torch.tensor(limit)}

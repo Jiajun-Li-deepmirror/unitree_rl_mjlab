@@ -1208,6 +1208,90 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   cfg.curriculum = new
 
 
+# go2-home's single-factor arms after A (payload 12 kg) and B (4096 robots), 2026-11-16 (the user's experiment round):
+# D = the hard actions at their full share from iteration 0, as the deployed g27b / w27d lineage trained them; C1 / C2
+# = the training wider than the acceptance (commands / randomization at 1.25x). Every piece off unless set.
+HARD_FIXED = {"U_MARCH_FIXED": "0.5", "U_FAST_STOP": "0.75,0.3", "U_PAYLOAD_FULL0": "1"}
+
+
+def _round_switches(cfg: ManagerBasedRlEnvCfg) -> None:
+  """After the curriculum is built (the training and the students' builds; not the play build):
+    U_HARD_FIXED=1        arm D, the bundle of the three pieces below at HARD_FIXED's values; a piece set in the
+                          environment wins over the bundle, an empty value turns that piece off;
+    U_MARCH_FIXED=<share> the march in place at <share> of the flat zero commands from iteration 0: the twist's
+                          march_prob, and the recipe's ramp of it (0.05 -> 0.5 over steps 24000-60000) removed;
+    U_FAST_STOP=<stop>,<side>  the emergency stop: <stop> of the flat commands that follow a fast one are a stand
+                          (stop_after_fast_prob; fast = stop_after_fast_share of the range), and <side> of the flat
+                          commands walk sideways at 75-100 % of the vy limit (fast_side_prob) -- w27d's training had
+                          0.75 / 0.3; not with U_FAST_SIDE;
+    U_PAYLOAD_FULL0=1     the full payload limit from iteration 0 (curriculum.progress_payload's fixed), the heavy
+                          share as the payload event has it (0.5);
+    U_CMD_WIDE=<k>        arm C1: the final command ranges (curriculum u_commands' final) x k, the initial ones
+                          unchanged (1.25: vx -1.25..1.875, vy +-0.75, wz +-1.875);
+    U_DR_WIDE=<k>         arm C2: the randomization's spread x k -- the foot friction's ends (lo / k, hi x k), the
+                          base CoM offset (the payload event's base_com_range), the kp / kd scales and the joint
+                          armature scales around 1, the actuator lag's top (rounded), the encoder bias, the joint
+                          friction / damping tops; the push and the payload unchanged.
+  The zero command on flat (flat_mode_probs' stand 0.20) and the stop on a flight (stair_standing_prob 0.40) are
+  fixed shares already. scripts/unified/round_cd_test.py checks every piece."""
+  env = os.environ
+  bundle = env.get("U_HARD_FIXED", "")
+  assert bundle in ("", "0", "1"), f"U_HARD_FIXED={bundle!r}: 1 or unset"
+  val = lambda k: env[k] if k in env else (HARD_FIXED[k] if bundle == "1" and k in HARD_FIXED else "")
+  tw = cfg.commands["twist"]
+  v = val("U_MARCH_FIXED")
+  if v:
+    share = float(v)
+    assert 0.0 < share <= 0.8, f"U_MARCH_FIXED={v}: a share in (0, 0.8]"
+    tw.march_prob = share
+    if "ramps" in cfg.curriculum:
+      ramps = cfg.curriculum["ramps"].params["ramps"]
+      cfg.curriculum["ramps"].params["ramps"] = [r for r in ramps if not (r.get("kind") == "command"
+                                                                          and r.get("key") == "march_prob")]
+  v = val("U_FAST_STOP")
+  if v:
+    assert not env.get("U_FAST_SIDE"), "U_FAST_STOP sets the fast strafes' share: not with U_FAST_SIDE"
+    parts = v.split(",")
+    assert len(parts) == 2, f"U_FAST_STOP={v}: <stop>,<side>"
+    stop, side = float(parts[0]), float(parts[1])
+    assert 0.0 < stop <= 1.0 and 0.0 <= side <= 0.5, f"U_FAST_STOP={v}: stop in (0, 1], side in [0, 0.5]"
+    tw.stop_after_fast_prob = stop
+    tw.fast_side_prob = side
+  v = val("U_PAYLOAD_FULL0")
+  if v:
+    assert v == "1", f"U_PAYLOAD_FULL0={v}: 1 or unset"
+    cfg.curriculum["u_payload"].params["fixed"] = True
+  v = env.get("U_CMD_WIDE", "")
+  if v:
+    k = float(v)
+    assert 1.0 < k <= 2.0, f"U_CMD_WIDE={v}: a factor in (1, 2]"
+    fin = cfg.curriculum["u_commands"].params["final"]
+    cfg.curriculum["u_commands"].params["final"] = {
+      key: (None if r is None else (r[0] * k, r[1] * k)) for key, r in fin.items()}
+  v = env.get("U_DR_WIDE", "")
+  if v:
+    k = float(v)
+    assert 1.0 < k <= 2.0, f"U_DR_WIDE={v}: a factor in (1, 2]"
+    ev = cfg.events
+    around1 = lambda r: (1.0 - (1.0 - r[0]) * k, 1.0 + (r[1] - 1.0) * k)
+    p = ev["foot_friction"].params
+    p["ranges"] = (p["ranges"][0] / k, p["ranges"][1] * k)
+    if "base_com_range" in ev["base_payload"].params:
+      ev["base_payload"].params["base_com_range"] = ev["base_payload"].params["base_com_range"] * k
+    p = ev["pd_gains"].params
+    p["kp_range"], p["kd_range"] = around1(p["kp_range"]), around1(p["kd_range"])
+    p = ev["actuator_delay"].params
+    p["lag_range"] = (p["lag_range"][0], int(round(p["lag_range"][1] * k)))
+    p = ev["encoder_bias"].params
+    p["bias_range"] = (p["bias_range"][0] * k, p["bias_range"][1] * k)
+    for name, term in ev.items():
+      if name.startswith(("u_joint_friction_", "u_joint_damping_")):
+        r = term.params["ranges"]
+        term.params["ranges"] = (r[0], r[1] * k)
+      elif name.startswith("u_joint_armature_"):
+        term.params["ranges"] = around1(term.params["ranges"])
+
+
 def _probe_switches(cfg: ManagerBasedRlEnvCfg, items: list[dict]) -> None:
   """Switches for the probes (2026-11-12: the Go2W teachers' returns went from +28 to -29 within 400 iterations of the
   stairs quality stage -- the slide and idle multipliers at 2.7 and 1.6, the episodes ended by an illegal contact
@@ -1754,6 +1838,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
         cfg.curriculum["u_progress"].params["q_row"] = float(os.environ["U_Q_ROW"])
       if os.environ.get("U_Q_HEALTH"):
         cfg.curriculum["u_progress"].params["q_back"] = float(os.environ["U_Q_HEALTH"])
+      _round_switches(cfg)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":
