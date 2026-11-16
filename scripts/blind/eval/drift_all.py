@@ -48,6 +48,8 @@ p.add_argument("--cmds", default="", help="A-B: only the commands A..B of the li
                "robots per command in a smaller simulation (2026-11-13: the students' stage-2 gate runs the list in "
                "two halves beside their training; the halves' outputs concatenated read as one run's)")
 payload_opt.add(p)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 CMDS = [
   (0.5, 0.0, 0.0), (1.0, 0.0, 0.0), (-0.5, 0.0, 0.0),
@@ -59,6 +61,8 @@ if args.cmds:
   CMDS = CMDS[_a : _b + 1]
 
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
 n = args.num_envs
 cfg.scene.num_envs = n * len(CMDS)

@@ -28,10 +28,14 @@ p.add_argument("--march", type=float, default=None, help="march in place (the co
 p.add_argument("--handover", type=float, default=0.0, help="for the first T s the joints hold the default stance (zero actions, wheels braked) with the payload on, then the policy takes over (11-08, the user: the robot stands up loaded, then switches to the policy); falls before T are reported apart")
 p.add_argument("--trace", type=float, default=0.0, help="print the fallen robots' base height / roll / pitch / velocity every 0.1 s over the first T s")
 p.add_argument("--no-splay", action="store_true", help="no reset hip splay (robots start from the default stance +- the joint noise)")
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 GROUPS = [("stand", None)]  # one group of all robots, for jobs/fall_diag.py
 
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 cfg.scene.num_envs = args.num_envs
 cfg.episode_length_s = args.seconds + 5.0
 cfg.events.pop("push_robot", None)

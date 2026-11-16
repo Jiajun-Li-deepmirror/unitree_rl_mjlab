@@ -30,10 +30,14 @@ p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--envs", type=int, default=32)
 payload_opt.add(p)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 
 for march in (False, True):
   cfg = load_env_cfg(args.task, play=True)
+  if args.seed is not None:
+    cfg.seed = args.seed
   payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
   cfg.scene.num_envs = args.envs
   cfg.episode_length_s = 1000.0
@@ -88,6 +92,8 @@ for march in (False, True):
 
 SPLAY = 0.14  # rad (8 deg)
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 cfg.scene.num_envs = args.envs
 cfg.episode_length_s = 1000.0
 cfg.events.pop("push_robot", None)

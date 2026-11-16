@@ -46,10 +46,14 @@ p.add_argument("--tol", type=float, default=0.2)
 p.add_argument("--envs-per-cmd", type=int, default=32)
 p.add_argument("--lin-accel", type=float, default=0.0)
 p.add_argument("--yaw-accel", type=float, default=0.0)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 
 n = args.envs_per_cmd
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 cfg.scene.num_envs = len(CMDS) * n
 cfg.episode_length_s = 1000.0
 agent_cfg = load_rl_cfg(args.task)

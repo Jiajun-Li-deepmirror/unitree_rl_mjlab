@@ -58,10 +58,14 @@ p.add_argument("--envs-per-group", type=int, default=256)
 p.add_argument("--lin-accel", type=float, default=0.0)
 p.add_argument("--yaw-accel", type=float, default=0.0)
 payload_opt.add(p)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 
 n = args.envs_per_group
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
 cfg.scene.num_envs = len(GROUPS) * n
 cfg.episode_length_s = 1000.0

@@ -31,6 +31,8 @@ p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--num-envs", type=int, default=128, help="robots per group")
 p.add_argument("--payload", default=None, help="kg,x,y,z fixed point mass on the base (else 0 kg)")
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 
 MOVES = [("strafe left 0.6", (0.0, 0.6, 0.0)), ("strafe right 0.6", (0.0, -0.6, 0.0)), ("turn 1.0", (0.0, 0.0, 1.0)),
@@ -40,6 +42,8 @@ n = args.num_envs
 T_STAND, T_DRIVE, T_STOP, T_MOVE, T_END = 2.0, 3.0, 3.0, 3.0, 2.0
 
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 cfg.scene.num_envs = n * len(GROUPS)
 cfg.episode_length_s = T_STAND + T_DRIVE + T_STOP + T_MOVE + T_END + 5.0
 cfg.events.pop("push_robot", None)

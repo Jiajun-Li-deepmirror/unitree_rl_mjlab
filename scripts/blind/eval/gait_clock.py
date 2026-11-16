@@ -53,10 +53,14 @@ p.add_argument("--clock-task", help="task whose foot_gait reward defines the clo
 p.add_argument("--min-match", type=float, default=0.8)
 p.add_argument("--max-speed", type=float, default=1.0, help="judge |vx| up to this")
 p.add_argument("--envs-per-cmd", type=int, default=16)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 
 n = args.envs_per_cmd
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 clock_task = args.clock_task or args.task
 gait = (cfg if clock_task == args.task else load_env_cfg(clock_task)).rewards.get("foot_gait")
 assert gait is not None, f"{clock_task} has no foot_gait reward (no gait clock)"

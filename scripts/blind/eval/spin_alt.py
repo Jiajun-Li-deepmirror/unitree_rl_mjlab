@@ -35,10 +35,14 @@ p.add_argument("--turns", type=int, default=8)
 p.add_argument("--yaw-accel", type=float, default=0.0)
 p.add_argument("--stand", type=float, default=2.0)
 payload_opt.add(p)
+p.add_argument("--seed", type=int, default=None,
+               help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
 SEQS = [(0.5, 3.0), (1.0, 2.0), (1.5, 1.5)]  # (wz rad/s, seconds per turn)
 
 cfg = load_env_cfg(args.task, play=True)
+if args.seed is not None:
+  cfg.seed = args.seed
 payload_opt.apply(cfg, args.payload)   # the loaded run (2026-11-11), else as before
 n = args.num_envs
 cfg.scene.num_envs = n * len(SEQS)
