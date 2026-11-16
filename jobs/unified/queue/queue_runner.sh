@@ -28,7 +28,7 @@ setst() { echo "$*" >> $S; }
 line_of() { grep -v '^\s*#' $Q 2>/dev/null | awk -v n="$1" '$1 == n' | head -n 1; }
 gate_free() { ! pgrep -f "accept.sh Go2W teacher" > /dev/null; }
 free_mb() { nvidia-smi --query-gpu=memory.total,memory.used --format=csv,noheader,nounits | head -n 1 | awk -F', *' '{print $1 - $2}'; }
-log "runner up (max $MAXR runs, $FREE MiB free to start one${DRY:+, dry $DRY})"
+log "runner up (max $MAXR runs, $FREE MiB free to start one$([ $DRY = 1 ] && echo ', a dry run'))"
 declare -A WAITLOG
 while :; do
   [ -f logs/jobs/go2w_queue_$BOX.stop ] && { log "stop file: the runner ends"; exit 0; }
