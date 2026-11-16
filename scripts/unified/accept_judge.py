@@ -343,6 +343,26 @@ def flight_heading_judged(r: str) -> bool:
   return r in FLIGHT_HEADING_JUDGED or r in {x for x in os.environ.get("U_JUDGE_FLIGHT_HEADING", "").split(",") if x}
 
 
+# The meander on a flight judged (2026-11-16, the user via go2-home: the stairs meander becomes a bar, reversing 11-15's
+# "需要训练蛇行幅度，但是不用门槛"): descent_probe --straight's meander_pp (the robots' p50 of the lateral weave's peak-to-
+# peak on the flight, cm) at most the robot's bar in every band and direction, unloaded and with the typical payload;
+# the full payload reported only. Bars per robot: go2-home proposed them from the deployed references (max p-p over
+# the bands, unloaded / typical: Go2 v3_fe 7.2 / 8.6, go2_blind_v4 5.7 / 7.6, unified students 6.6-7.2 / 6.4; Go2W
+# w27d up 3.9, down 0.7), the user said "可以" (~15:20 CST). Robots not listed report it. A reading within 0.5 cm of
+# the bar gets 3 runs, judged pooled (go2-home's measurement rule; not in this judge). U_JUDGE_MEANDER="As2:6,Go2W:4"
+# adds or overrides robots for a test run.
+MEANDER_BAR_CM: dict[str, float] = {"Go2": 8.0, "Go2W": 5.0}
+
+
+def meander_bar(r: str) -> float | None:
+  extra = {}
+  for tok in os.environ.get("U_JUDGE_MEANDER", "").split(","):
+    if ":" in tok:
+      k, v = tok.split(":", 1)
+      extra[k.strip()] = float(v)
+  return extra.get(r, MEANDER_BAR_CM.get(r))
+
+
 def flight_path(path: str) -> dict[tuple[str, str], dict[str, float]]:
   """descent_probe.py's SUM / SUMLAT lines: (band, direction) -> their readings ({} if none)."""
   out: dict[tuple[str, str], dict[str, float]] = {}
@@ -353,24 +373,35 @@ def flight_path(path: str) -> dict[tuple[str, str], dict[str, float]]:
   return out
 
 
-def flight_path_lines(r: str, path: str, label: str, judged: bool) -> tuple[list[str], list[str]]:
-  """(bad, detail) for one condition's descent_probe file: the heading item (judged when `judged`), the meander and
-  the calf contacts (reported)."""
+def flight_path_lines(r: str, path: str, label: str, judged: bool,
+                      meander: float | None = None) -> tuple[list[str], list[str]]:
+  """(bad, detail) for one condition's descent_probe file: the heading item (judged when `judged`), the meander
+  (judged against `meander` cm when given) and the calf contacts (reported)."""
   fp = flight_path(path)
   rows = {k: v for k, v in fp.items() if "hd_max_p90" in v}
   tag = "判" if judged else "只报告，下一版起判"
   if not rows:
-    return ([f"{label}楼梯朝向最大偏离：未测"] if judged else []), [f"{label}楼梯走直线（descent_probe）：未测"]
+    bad = ([f"{label}楼梯朝向最大偏离：未测"] if judged else []) + ([f"{label}楼梯蛇行：未测"] if meander is not None else [])
+    return bad, [f"{label}楼梯走直线（descent_probe）：未测"]
   ud = lambda d: "上" if d == "up" else "下"
   over = [f"{b} {ud(d)} {v['hd_max_p90']:.1f}°" for (b, d), v in rows.items() if v["hd_max_p90"] > FLIGHT_HEADING_BAR_DEG]
+  mtag = f"判，上限 {meander:g} cm" if meander is not None else "只报告，cm"
   detail = [f"{label}楼梯朝向最大偏离 p90（{tag}，上限 {FLIGHT_HEADING_BAR_DEG:g}°）：" + "，".join(
               f"{b} {ud(d)} {v['hd_max_p90']:.1f}" for (b, d), v in rows.items()),
-            f"{label}楼梯蛇行峰峰值 p50（只报告，cm）：" + "，".join(
+            f"{label}楼梯蛇行峰峰值 p50（{mtag}）：" + "，".join(
               f"{b} {ud(d)} {v.get('meander_pp', float('nan')):.1f}" for (b, d), v in rows.items()),
             f"{label}楼梯小腿磕台阶（只报告，每段 前 / 后）：" + "，".join(
               f"{b} {ud(d)} {v.get('front_calf', float('nan')):.1f}/{v.get('rear_calf', float('nan')):.1f}"
               for (b, d), v in fp.items())]
   bad = [f"{label}楼梯朝向最大偏离超过 {FLIGHT_HEADING_BAR_DEG:g}°：" + "、".join(over)] if judged and over else []
+  if meander is not None:
+    missing = [f"{b} {ud(d)}" for (b, d), v in rows.items() if "meander_pp" not in v]
+    if missing:
+      bad.append(f"{label}楼梯蛇行：未测（" + "、".join(missing) + "）")
+    m_over = [f"{b} {ud(d)} {v['meander_pp']:.1f} cm" for (b, d), v in rows.items()
+              if "meander_pp" in v and v["meander_pp"] > meander]
+    if m_over:
+      bad.append(f"{label}楼梯蛇行峰峰值超过 {meander:g} cm：" + "、".join(m_over))
   return bad, detail
 
 
@@ -589,11 +620,12 @@ def judge(argv: list[str]) -> int:
     detail.append("常用负载：本机型没有这一档，不测")
   # the path on a flight (descent_probe --straight): the heading judged unloaded and typical, the full payload reported
   hj = flight_heading_judged(r)
+  mb = meander_bar(r)
   has_typ = expect_typ or os.path.exists(f"{prefix}_descent_typ.txt")
-  for label, sfx, judged in (("", "", hj), ("常用负载 ", "_typ", hj), ("满载 ", "_pay", False)):
+  for label, sfx, judged, mbar in (("", "", hj, mb), ("常用负载 ", "_typ", hj, mb), ("满载 ", "_pay", False, None)):
     if sfx == "_typ" and not has_typ:
       continue
-    fb, fd = flight_path_lines(r, f"{prefix}_descent{sfx}.txt", label, judged)
+    fb, fd = flight_path_lines(r, f"{prefix}_descent{sfx}.txt", label, judged, mbar)
     bad += fb
     detail += fd
   print(verdict_line(bad))
