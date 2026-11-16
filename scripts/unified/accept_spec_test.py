@@ -69,7 +69,9 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
     f"  (0.0, 0.0, 1.0) | -158 -157 -156 | -0.03 0.00 0.03 | -0.03 0.00 0.03 | 0.03 {g['spin']:.3f} | 0.03 0.06 | 0/768",
   ]
   drift += [f"BOB (1.0, 0.0, 0.0) | height std cm p50 {g['bobh']:.2f} p90 0.60 | pitch std deg p50 {g['bobp']:.2f} p90 1.10 | robots 768",
-            f"BOB (0.0, 0.6, 0.0) | height std cm p50 {g['bobhs']:.2f} p90 0.70 | pitch std deg p50 {g['bobps']:.2f} p90 4.30 | robots 768"]
+            f"BOB (0.0, 0.6, 0.0) | height std cm p50 {g['bobhs']:.2f} p90 0.70 | pitch std deg p50 {g['bobps']:.2f} p90 4.30 | robots 768",
+            "COT (1.0, 0.0, 0.0) | p50 0.042 p90 0.045 | mass p50 19.5 kg | robots 768",
+            "COT (0.0, 0.6, 0.0) | p50 0.409 p90 0.430 | mass p50 19.5 kg | robots 768"]
   w("drift3", "\n".join(drift) + "\n")
   w("spinalt", f"       +-0.5 x 3 |  {g['spinalt']:.3f}  0.26        |  0.15  0.26        |  5.27  5.95             | 0/768\n")
   stand = [f"        rest |   0.02     0.0 |     {g['creep']:.2f}  0.17    0.05 |   {g['lift']:.1f}    0.00 |  0.001   0.000  0.000 | 0/768",
@@ -81,7 +83,8 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   w("clock", f"           (0.2, 0, 0) |         {g['clock']}% |         1.62 |  0/48 | ok\n"
              "           (1.5, 0, 0) |         55% |         2.62 |  0/48 | -\ngait clock: failed 0 of 1 judged commands\n")
   w("loadstand", "x: 60 s at the zero command, falls 0/768 at t []\n"
-                 f"  posture: leg-joint deviation from the default stance after 3 s, each robot's max: p50 0.08 p90 {g['stand']:.3f} rad\n")
+                 f"  posture: leg-joint deviation from the default stance after 3 s, each robot's max: p50 0.08 p90 {g['stand']:.3f} rad\n"
+                 "TAU2 legs sum tau^2 (N^2 m^2, each robot's mean after 3 s): p50 812.0 p90 900.0 | mass p50 19.5 kg | robots 768\n")
   w("stopmove", "x: 384 robots per group\n" + f"forward 0.5 after stop | 0.069 {g['stop']:.3f}       |   FR_thigh_joint -0.23 |  -0.5     | 0.89 0.94         | 0.08   | 0/384\n")
   if wheeled:
     w("gait", "".join(f" ({c}, 0.0, 0.0) |   x99% |   {g['wheels']:.1f}% | 0 0 0 0 | 0 0 | 0/96 |   0%\n" for c in aj.at.NOLIFT))
@@ -124,6 +127,8 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
                 f"{bv('cv', b, d):.3f} speed_cv_p90 0.400")
       ds.append(f"SUMLAT {b} {d} meander 0.6 meander_pp {bv('mpp', b, d):.3f} sway 0.3 drift 0.7 hd_mean 0.6 hd_max 1.9 "
                 f"vy 0.05 wz 9.4 hd_max_p90 {bv('hd', b, d):.3f} n 72")
+  ds += ["ENERGY 12-15cm up | J per m of rise p50 410.0 p90 480.0 | over m g p50 2.14 | rise m p50 1.10 | mass p50 19.5 kg | robots 72",
+         "ENERGY 15-18cm up | J per m of rise p50 455.0 p90 520.0 | over m g p50 2.38 | rise m p50 1.30 | mass p50 19.5 kg | robots 72"]
   w("descent", "\n".join(ds) + "\n")
   # push_test: item 22's line
   w("push", f"ALL push (item 22): falls {g['pfalls']} of 768 robots; recovered within 0.3 m/s: p50 0.08 s, p90 {g['r90']:.2f} s, "
@@ -292,6 +297,9 @@ def main() -> int:
     check("×5 档 93.3%" in sl and any("项 18（×5）楼梯计数：80%" in x for x in lines), f"the target score: x5 tier 93.3 %, item 18 80 % ({sl.strip()[:120]})")
     md = open(str(Path(tmp, "u_score")) + "_targets.md").read()
     check("the x5 tier 93.3 %" in md and "| item | condition | target |" in md, "the targets table: the score and the rows")
+    el = next((x for x in lines if "能耗" in x), "")
+    check("运输成本 前进 1.0 0.042" in el and "站立 Σ τ² 腿 812 N²m²" in el and "上楼 15-18cm 455 J/m（2.38 mg）" in el,
+          f"item 31: the energy line, reported ({el.strip()[:140]})")
     lines = acceptance_lines("Go2W", "score_full")
     check(any("×5 档 100.0%，总分 100.0%" in x for x in lines), "the target score at good readings: 100 / 100 %")
     # gate 3: one test over the 1 % cap; the pooled rate over its bar with every test under 1 %

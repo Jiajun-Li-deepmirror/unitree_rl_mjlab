@@ -205,6 +205,13 @@ def main() -> int:
   # calf contact onsets, front and rear -- a few MB for the whole run
   yaw0 = robot.data.heading_w.clone()
   p0 = robot.data.root_link_pos_w[:, :2].clone()
+  # acceptance item 31 (c) (2026-11-16, report only): the positive mechanical work on the flight (the actuators, legs
+  # and wheels) and the base's rise across it (its height on leaving the flight minus on entering it)
+  from src.tasks.unified import energy
+  act_ids = energy.act_joint_ids(robot)
+  e_fl = zeros()
+  z_in = torch.full((n,), float("nan"), device=dev)
+  z_out = torch.full((n,), float("nan"), device=dev)
   tr: dict[str, list] = {q: [] for q in ("x", "y", "yaw", "vy", "wz", "d", "act", "fc", "rc")}
   for _ in range(int(round(FLIGHT[1] / max(abs(a.vx), 0.1) * 2.0 / dt))):
     with torch.no_grad():
@@ -229,6 +236,10 @@ def main() -> int:
       A["wr2"] += w[:, 0] ** 2 * f
       A["wp2"] += w[:, 1] ** 2 * f
     on_fl = act & (d >= FLIGHT[0]) & (d <= FLIGHT[1])
+    e_fl += energy.pos_power(robot, act_ids) * dt * on_fl.float()
+    zb = robot.data.root_link_pos_w[:, 2]
+    z_in = torch.where(on_fl & torch.isnan(z_in), zb, z_in)
+    z_out = torch.where(on_fl, zb, z_out)
     touching = torch.zeros(n, dtype=torch.bool, device=dev)
     fc_on = torch.zeros(n, dtype=torch.bool, device=dev)
     rc_on = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -373,6 +384,24 @@ def main() -> int:
             f"{100 * ST['rear'][m].sum() / max(fl_n[m].sum(), 1):.2f} speed_cv_p50 "
             f"{np.median(cv[mc]) if mc.any() else float('nan'):.3f} speed_cv_p90 "
             f"{np.percentile(cv[mc], 90) if mc.any() else float('nan'):.3f}")
+  # item 31 (c): J per metre of rise on the up flights (every robot that did not fall and rose > 0.2 m on the flight:
+  # the up flights often outlast the probe, the work and the rise are over the same part), and the same over m g
+  # (1.0 = only the lift's own work)
+  mass = np_(energy.total_mass(env, robot))
+  rise = np_(z_out - z_in)
+  ef = np_(e_fl)
+  ok_up = ~np_(fell) & (rise > 0.2)
+  for lvl in range(NUM_ROWS):
+    m = ok_up & (lv == lvl) & (dr == "up")
+    if m.any():
+      jm = ef[m] / rise[m]
+      print(f"ENERGY {band(lvl)} up | J per m of rise p50 {np.median(jm):.1f} p90 {np.percentile(jm, 90):.1f} | over m g "
+            f"p50 {np.median(jm / (mass[m] * 9.81)):.2f} | rise m p50 {np.median(rise[m]):.2f} | mass p50 {np.median(mass[m]):.1f} kg"
+            f" | robots {int(m.sum())}")
+    else:
+      mu = (lv == lvl) & (dr == "up")
+      print(f"ENERGY {band(lvl)} up | no robot rose 0.2 m (rise m p50 {np.nanmedian(rise[mu]) if np.isfinite(rise[mu]).any() else float('nan'):.2f}, "
+            f"on the flight {int(np.isfinite(rise[mu]).sum())} of {int(mu.sum())}, fell {int(np_(fell)[mu].sum())})")
   lateral(tr, np_(yaw0), np_(p0), lv, dr, dt)
   env.close()
   return 0

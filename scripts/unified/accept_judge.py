@@ -1080,6 +1080,41 @@ def spec_slope(r: str, path: str, cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}不平地面转弯：轮子卡住 {ts}")
 
 
+def energy_rows(p: dict[str, str]) -> dict[str, str]:
+  """Item 31's readings (src/tasks/unified/energy.py): drift_all's COT rows, long_stand's TAU2 line (the loadstand
+  file), descent_probe's ENERGY rows. {name: text}; absent ones left out."""
+  out = {}
+  try:
+    txt = open(p["drift3"], errors="replace").read()
+    for c, name in (("(1.0, 0.0, 0.0)", "前进 1.0"), ("(0.0, 0.6, 0.0)", "横移 0.6")):
+      m = re.search(r"^COT " + re.escape(c) + r" \| p50 (\S+) p90 (\S+)", txt, re.M)
+      if m:
+        out[f"运输成本 {name}"] = f"{float(m.group(1)):.3f}"
+  except OSError:
+    pass
+  try:
+    m = re.search(r"^TAU2 .*?p50 (\S+) p90 (\S+)", open(p["loadstand"], errors="replace").read(), re.M)
+    if m:
+      out["站立 Σ τ² 腿"] = f"{float(m.group(1)):.0f} N²m²"
+  except OSError:
+    pass
+  try:
+    for m in re.finditer(r"^ENERGY (\S+) up \| J per m of rise p50 (\S+) p90 \S+ \| over m g p50 (\S+)",
+                         open(p["descent"], errors="replace").read(), re.M):
+      if m.group(1) in ("12-15cm", "15-18cm"):
+        out[f"上楼 {m.group(1)}"] = f"{float(m.group(2)):.0f} J/m（{float(m.group(3)):.2f} mg）"
+  except OSError:
+    pass
+  return out
+
+
+def spec_energy(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
+  """Item 31, energy (2026-11-16, go2-home): reported only until w27d is measured and the bars set; not in the score."""
+  L = COND_LABEL[cond]
+  e = energy_rows(p)
+  sh.detail.append(f"{L}能耗（项 31，只报告，待定标）：" + ("，".join(f"{k} {v}" for k, v in e.items()) if e else "读不出（旧文件）"))
+
+
 def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
   """Items 26-30 (2026-11-16, the user via go2-home: "都加"). From descent_probe's SUM / SUMQ lines (the descent file,
   already run): 26 the descents' pitch rate and the climbs' roll rate (RMS per robot, p50) per band; 27 the share of
@@ -1378,6 +1413,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False,
     spec_flight(r, p["descent"], cond, sh)
     spec_wall(r, p["wall"], cond, sh)
     spec_motion(r, p, cond, sh)
+    spec_energy(r, p, cond, sh)
     # (item 22, the push: dropped by the user 2026-11-16 -- real users rarely push the robot; spec_push kept unused)
     spec_slope(r, p["slope"], cond, sh)
     edge = expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge"))

@@ -81,6 +81,12 @@ tr = []  # (t, z, roll, pitch, vx, wz, legs |q - q0| max) per step over the firs
 POSTURE_SETTLE = 3.0
 leg_ids = [i for i, n in enumerate(robot.joint_names) if "wheel" not in n]
 dev_max = torch.zeros(env.num_envs, device=env.device)
+# acceptance item 31 (b) (2026-11-16, report only): sum of tau^2 over the leg actuators, each robot's mean after the
+# settle (the standing heat proxy)
+from src.tasks.unified import energy  # noqa: E402
+act_ids = energy.act_joint_ids(robot)
+tau2 = torch.zeros(env.num_envs, device=env.device)
+tau2_n = 0
 for k in range(steps):
   cmd.vel_command_b[:] = 0.0
   cmd.time_left[:] = 1e9
@@ -102,6 +108,8 @@ for k in range(steps):
   if k * env.step_dt >= POSTURE_SETTLE:
     d = (robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]).abs().amax(dim=1)
     dev_max = torch.where(fell, dev_max, torch.maximum(dev_max, d))
+    tau2 += energy.leg_tau2(robot, act_ids)
+    tau2_n += 1
   if k * env.step_dt < args.trace:
     gq = robot.data.projected_gravity_b
     tr.append((k * env.step_dt, robot.data.root_link_pos_w[:, 2].clone(), torch.rad2deg(torch.atan2(gq[:, 1], -gq[:, 2])),
@@ -137,4 +145,8 @@ if args.trace > 0 and tr:
       print(f"    {t:4.1f} {float(z[e]):.3f} {float(rl[e]):6.1f} {float(pt[e]):6.1f} {float(vx[e]):6.2f} {float(wz[e]):6.2f}")
     zs = torch.stack([r[1] for r in tr])
   print(f"  all robots at {tr[-1][0]:.1f} s: z p50 {float(tr[-1][1].median()):.3f}, |pitch| p90 {float(tr[-1][3].abs().quantile(0.9)):.1f}")
+if (~fell).any() and tau2_n:
+  t2 = (tau2 / tau2_n)[~fell]
+  print(f"TAU2 legs sum tau^2 (N^2 m^2, each robot's mean after {POSTURE_SETTLE:g} s): p50 {float(t2.median()):.1f} "
+        f"p90 {float(t2.quantile(0.9)):.1f} | mass p50 {float(energy.total_mass(env, robot)[~fell].median()):.1f} kg | robots {int((~fell).sum())}")
 env.close()

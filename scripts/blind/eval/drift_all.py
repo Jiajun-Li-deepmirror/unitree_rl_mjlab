@@ -28,6 +28,8 @@ from dataclasses import asdict
 
 import torch
 
+from src.tasks.unified import energy  # item 31
+
 import mjlab.tasks  # noqa: F401
 import src.tasks  # noqa: F401
 from mjlab.envs import ManagerBasedRlEnv
@@ -51,6 +53,7 @@ payload_opt.add(p)
 p.add_argument("--seed", type=int, default=None,
                help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as before")
 args = p.parse_args()
+
 CMDS = [
   (0.5, 0.0, 0.0), (1.0, 0.0, 0.0), (-0.5, 0.0, 0.0),
   (0.0, 0.3, 0.0), (0.0, -0.3, 0.0), (0.0, 0.6, 0.0), (0.0, -0.6, 0.0),
@@ -101,6 +104,12 @@ planar = C[:, :2].norm(dim=1, keepdim=True).clamp(min=1e-6)
 # BOB_FROM_S on), their std -- the straight commands' rows "BOB ..." after the table (no new run)
 BOB_FROM_S = 3.0
 bob = {q: torch.zeros(env.num_envs, device=env.device) for q in ("n", "z", "z2", "p", "p2")}
+# acceptance item 31 (a) (2026-11-16, energy; report only): the cost of transport over the same steady part -- the
+# positive mechanical power (actuators: legs and wheels) integrated, over the total mass (the payload in) x g x the
+# distance travelled
+act_ids = energy.act_joint_ids(robot)
+e_pos = torch.zeros(env.num_envs, device=env.device)
+p_bob0 = None
 for k in range(int(args.seconds / env.step_dt)):
   cmd.vel_command_b[:] = C
   if args.lin_accel > 0:
@@ -114,6 +123,9 @@ for k in range(int(args.seconds / env.step_dt)):
   fell |= dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
   far = torch.maximum(far, (robot.data.root_link_pos_w[:, :2] - p0).norm(dim=1))
   if (k + 1) * env.step_dt >= BOB_FROM_S:
+    if p_bob0 is None:
+      p_bob0 = robot.data.root_link_pos_w[:, :2].clone()
+    e_pos += energy.pos_power(robot, act_ids) * env.step_dt * (~fell).float()
     gz = robot.data.projected_gravity_b
     pit = torch.rad2deg(torch.atan2(gz[:, 0], -gz[:, 2]))
     zb = robot.data.root_link_pos_w[:, 2]
@@ -145,6 +157,18 @@ for i, c in enumerate(CMDS):
 bn = bob["n"].clamp(min=1)
 zstd = 100 * torch.sqrt((bob["z2"] / bn - (bob["z"] / bn) ** 2).clamp(min=0))
 pstd = torch.sqrt((bob["p2"] / bn - (bob["p"] / bn) ** 2).clamp(min=0))
+mass = energy.total_mass(env, robot)   # (read at the end: the payload event may ramp it in)
+dist = (robot.data.root_link_pos_w[:, :2] - p_bob0).norm(dim=1) if p_bob0 is not None else None
+cot = e_pos / (mass * 9.81 * dist.clamp(min=1e-3)) if dist is not None else None
+for i, c in enumerate(CMDS):
+  if cot is None or c[2] != 0.0 or (c[0] == 0.0 and c[1] == 0.0):
+    continue
+  g = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  g[i * n : (i + 1) * n] = True
+  ok = g & ~fell & (dist > 0.5)
+  if ok.any():
+    cq = cot[ok].quantile(q[1:]).tolist()
+    print(f"COT {str(c)} | p50 {cq[0]:.3f} p90 {cq[1]:.3f} | mass p50 {float(mass[ok].median()):.1f} kg | robots {int(ok.sum())}")
 for i, c in enumerate(CMDS):
   if c[2] != 0.0 or (c[0] == 0.0 and c[1] == 0.0):
     continue
