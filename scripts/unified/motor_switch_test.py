@@ -165,6 +165,30 @@ check("error" not in l and all(x["effort_limit"] not in (21.8, 32.7) for x in l.
       all(v[0] == 0.0 for k, v in l.get("joints", {}).items()), "U_MODEL=legacy: no motor model")
 x = probe("Go2W", "Unitree-Go2W-U-Teacher-Flat", True, U_MOTOR="pd")
 check("error" in x and "U_MOTOR" in x["error"], "U_MOTOR=pd stops the build")
+print("(7) U_MOTOR_PART (go2-home's F1a / F1b):")
+for task, play in (("Unitree-Go2W-U-Teacher", False), ("Unitree-Go2W-U-Teacher-Stairs", True)):
+  g, b = got.get((task, play)) or probe("Go2W", task, play), probe("Go2W", task, play, U_MOTOR="builtin")
+  pe, pj = probe("Go2W", task, play, U_MOTOR_PART="effort"), probe("Go2W", task, play, U_MOTOR_PART="joint")
+  if any("error" in x for x in (g, b, pe, pj)):
+    check(False, f"builds: {[x.get('error') for x in (g, b, pe, pj) if 'error' in x]}")
+    continue
+  ae, aj, ab = ({group(x["expr"]): x for x in y["acts"]} for y in (pe, pj, b))
+  # effort: the motor's limits, every joint value and the randomization's kind as built-in
+  check(all(abs(ae[k]["effort_limit"] - LIM[k]) < 1e-9 for k in LIM)
+        and all(ae[k]["frictionloss"] == ab[k]["frictionloss"] and ae[k]["armature"] == ab[k]["armature"] for k in OLD_ARM)
+        and pe["joints"] == b["joints"] and {group(k): v for k, v in pe["force"].items()} == {group(k): v for k, v in g["force"].items()}
+        and all(v[1] == "abs" and v[0][0] == 0.0 for k, v in pe["dr"].items() if not k.startswith("u_joint_armature")),
+        f"{task}{' play' if play else ''}: effort = the limits 21.8 / 32.7, joints and randomization built-in")
+  # joint: the built-in limits, the motor's joint values, its scaled randomization
+  check(all(abs(aj[k]["effort_limit"] - OLD[k]) < 1e-9 for k in OLD)
+        and all(aj[k]["frictionloss"] == 0.2 and aj[k]["armature"] == 0.01 for k in OLD_ARM)
+        and pj["joints"] == g["joints"] and pj["dr"] == g["dr"]
+        and {group(k): v for k, v in pj["force"].items()} == {group(k): v for k, v in b["force"].items()},
+        f"{task}{' play' if play else ''}: joint = 23.7 / 35.55, friction 0.2, armature 0.01, damping 0.1, the scaled randomization")
+x = probe("Go2W", "Unitree-Go2W-U-Teacher-Flat", True, U_MOTOR_PART="torque")
+check("error" in x and "U_MOTOR_PART" in x["error"], "U_MOTOR_PART=torque stops the build")
+x = probe("Go2W", "Unitree-Go2W-U-Teacher-Flat", True, U_MOTOR_PART="effort", U_MOTOR="builtin")
+check("error" in x and "U_MOTOR_PART" in x["error"], "U_MOTOR_PART with U_MOTOR=builtin stops the build")
 print("(6) the Go2:")
 g0 = probe("Go2", "Unitree-Go2-U-Teacher-Stairs", False)
 g1 = probe("Go2", "Unitree-Go2-U-Teacher-Stairs", False, U_MOTOR="builtin")

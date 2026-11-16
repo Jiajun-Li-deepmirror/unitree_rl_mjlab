@@ -585,7 +585,8 @@ def _add_joint_dr(cfg: ManagerBasedRlEnvCfg, motor: str | None = None) -> None:
   motor's factors (uros.MOTOR_JOINT_DR)."""
   from src.assets.robots import uros
 
-  mdr = uros.MOTOR_JOINT_DR[motor] if motor is not None else None
+  # (U_MOTOR_PART=effort: the torque limits alone -- the randomization as built-in, a share of the new limits)
+  mdr = uros.MOTOR_JOINT_DR[motor] if motor is not None and uros.motor_part() != "effort" else None
   for a in cfg.scene.entities["robot"].articulation.actuators:
     expr = tuple(getattr(a, "target_names_expr", ()) or getattr(getattr(a, "base_cfg", None), "target_names_expr", ()))
     group = next((g for g in ("hip", "thigh", "calf") if any(g in e for e in expr)), None)

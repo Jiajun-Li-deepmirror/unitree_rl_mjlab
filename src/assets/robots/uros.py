@@ -64,6 +64,30 @@ MOTORS: dict[str, dict[str, dict[str, dict[str, float]]]] = {
 }
 MOTOR_JOINT_DAMPING = {"gom8010": 0.1}   # passive, every leg joint (hip / thigh / calf)
 MOTOR_JOINT_DR = {"gom8010": {"friction": (0.5, 1.5), "damping": (0.5, 1.5), "armature": (0.7, 1.3)}}
+# U_MOTOR_PART=effort|joint (2026-11-17, go2-home's forward tests F1a / F1b: the motor model is the common factor of
+# the runs that stop climbing): one half of the motor model, the other half built-in. effort: the torque limits alone
+# (the joints' friction, armature, passive damping and their randomization as built-in -- the built-in randomization
+# is a share of the effort limit, so it follows the new limits); joint: the friction loss, armature, passive damping
+# and the scaled randomization alone (the built-in torque limits). Not with U_MOTOR=builtin.
+MOTOR_PART_SWITCH = "U_MOTOR_PART"
+
+
+def motor_part() -> str | None:
+  """U_MOTOR_PART's half of the motor model (None: the whole of it)."""
+  v = os.environ.get(MOTOR_PART_SWITCH) or None
+  assert v in (None, "effort", "joint"), f"{MOTOR_PART_SWITCH}={v!r}: effort, joint or unset"
+  assert v is None or (os.environ.get(MOTOR_SWITCH) or None) is None, f"{MOTOR_PART_SWITCH}: not with {MOTOR_SWITCH}=builtin"
+  return v
+
+
+def _part(over: dict[str, float]) -> dict[str, float]:
+  """A joint group's motor overrides, U_MOTOR_PART's half of them."""
+  p = motor_part()
+  if p == "effort":
+    return {k: v for k, v in over.items() if k == "effort_limit"}
+  if p == "joint":
+    return {k: v for k, v in over.items() if k != "effort_limit"}
+  return over
 
 
 def motor(params: str | None = None) -> str | None:
@@ -73,6 +97,7 @@ def motor(params: str | None = None) -> str | None:
   assert v in (None, "builtin"), f"{MOTOR_SWITCH}={v!r}: builtin or unset"
   m = _params(params).get("motor")
   assert m in (None,) + tuple(MOTORS), f"motor={m!r}: one of {tuple(MOTORS)}"
+  motor_part()   # (checks U_MOTOR_PART on every build, also beside U_MOTOR=builtin)
   if v == "builtin" or not active(params):
     return None
   return m
@@ -89,7 +114,7 @@ def _with_joint_damping(fn, damping: float):
 def spec_fn(robot: str, fn):
   """The robot's spec function with the motor model's passive joint damping on the leg joints."""
   m = motor()
-  if m is None or robot not in MOTORS[m]:
+  if m is None or robot not in MOTORS[m] or motor_part() == "effort":
     return fn
   return functools.partial(_with_joint_damping, fn, MOTOR_JOINT_DAMPING[m])
 
@@ -118,5 +143,5 @@ def articulation(robot: str, art):
   m = motor()
   if m is not None and robot in MOTORS[m]:
     over = MOTORS[m][robot]
-    acts = tuple(dataclasses.replace(a, **over.get(_group(a), {})) for a in acts)
+    acts = tuple(dataclasses.replace(a, **_part(over.get(_group(a), {}))) for a in acts)
   return dataclasses.replace(art, actuators=acts)
