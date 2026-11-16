@@ -530,6 +530,461 @@ def typical(r: str, prefix: str, wheeled: bool) -> tuple[list[str], list[str]]:
   return bad, detail
 
 
+# ==== The Go2 / Go2W acceptance specification (2026-11-16, signed by the user; doc/acceptance_go2_go2w.md) ====
+# Three conditions with the same items, the values per condition: unloaded (files PREFIX_<test>.txt), the typical
+# payload (_typ) and the full payload (_pay, 8 kg at the acceptance point). Concrete numbers only. The full payload's
+# stairs (every eval_stairs item, descent_probe's heading and meander) judged on 5-15 cm, 15-18 cm reported. Read by
+# the students' acceptance (judge below, for the robots in SPEC_ROBOTS) and by the teacher gates (stairs_gate.py,
+# flat_gate.py: the same items and values where they measure them, the teacher's fall tolerance).
+SPEC_ROBOTS: frozenset[str] = frozenset({"Go2", "Go2W"})
+CONDS = ("unl", "typ", "full")
+COND_LABEL = {"unl": "", "typ": "常用负载 ", "full": "满载 "}
+COND_SFX = {"unl": "", "typ": "_typ", "full": "_pay"}
+FULL_TOP_BAND = "15-18cm"   # the full payload's stairs band that is reported, not judged
+SPEC: dict[str, dict] = {
+  "flat_speed": {"unl": (0.80, 1.20), "typ": (0.75, None), "full": (0.65, None)},   # share of the command per axis
+  "drift": {"unl": 0.05, "typ": 0.05, "full": 0.08},                     # off-axis offset / travel (p10 and p90)
+  "drift_head": {c: (3.0, 8.0) for c in CONDS},                            # heading p50 / p10-p90, deg
+  "spin_end_p90": {"unl": 0.20, "typ": 0.20, "full": 0.30},               # m
+  "spinalt_end_p50": {"unl": 0.25, "typ": 0.25, "full": 0.35},            # m
+  "stop_lift": {c: 1.0 for c in CONDS},                                    # % of the rest group's time in the air
+  "stop_creep": {"Go2": {"unl": 1.0, "typ": 1.0, "full": 2.0}, "Go2W": {"unl": 1.5, "typ": 1.5, "full": 2.5}},   # cm
+  "stop_brake": {"unl": 30.0, "typ": 30.0, "full": 40.0},                 # cm, the stop from 1.0 m/s fwd / back
+  "march_td": {c: 0.5 for c in CONDS},                                     # touchdowns / s per foot
+  "march_reset": {"unl": 2.0, "typ": 2.0, "full": 3.0},                   # deg, the worst hip's mean after
+  "march_drift": {"unl": 5.0, "typ": 5.0, "full": 8.0},                   # cm
+  "clock": {"unl": 80.0, "typ": 80.0, "full": 70.0},                      # % match, every judged command
+  "stance_stand": {"unl": 0.17, "typ": 0.17, "full": 0.20},               # rad, p90 standing 60 s
+  "stance_stop": {"unl": 0.15, "typ": 0.15, "full": 0.18},                # rad, p90 after an emergency stop
+  "wheels_down": {"unl": 98.0, "typ": 98.0, "full": 95.0},                # % (wheeled)
+  "map3_op": {"unl": 95.0, "typ": 95.0, "full": 90.0},                    # % reached, with the operator
+  "map3_noop": {"unl": 90.0, "typ": 90.0, "full": 85.0},                  # % reached, without
+  "stairs_speed": {"unl": (0.80, 1.20), "typ": (0.75, None), "full": (0.65, None)},   # share of the command per band
+  "stop_held": {"unl": 95.0, "typ": 95.0, "full": 90.0},                  # % within 0.5 m, per band and direction
+  "four_feet": {"unl": 0.90, "typ": 0.90, "full": 0.80},                  # per band and direction
+  "heading": {"unl": 8.0, "typ": 8.0, "full": 10.0},                      # deg, max p90 per band and direction
+  "meander": {"Go2": {"unl": 8.0, "typ": 8.0, "full": 10.0}, "Go2W": {"unl": 5.0, "typ": 5.0, "full": 7.0}},   # cm
+  "edge": {"unl": 0.10, "typ": 0.10, "full": 0.12},                       # legged
+  "kicks_up": {"unl": 0.35, "typ": 0.35, "full": 0.40},                   # legged, per step on the climbs
+  "slips": {"unl": 0.06, "typ": 0.06, "full": 0.07},                      # legged, per step
+  "slide_back": {"unl": 0.039, "typ": 0.039, "full": 0.05},               # wheeled
+  "mid": {"unl": 0.76, "typ": 0.76, "full": 0.72},                        # legged
+  "stalled": {c: 5.0 for c in CONDS},                                      # % per band and direction
+}
+SPEC_LONG_TERM = {"kicks_up": 0.245, "slips": 0.0245, "mid": 0.80}   # reported beside the readings
+
+
+def spec_robot(r: str) -> bool:
+  return r in SPEC_ROBOTS
+
+
+class Sheet:
+  """The judged items of one judgment: bad (item strings "<label><name>：<reason>"), detail lines, and the gap (the
+  summed relative shortfall, for the teacher's pick at the cap)."""
+
+  def __init__(self) -> None:
+    self.bad: list[str] = []
+    self.detail: list[str] = []
+    self.gap = 0.0
+
+  def fail(self, item: str, gap: float = 1.0) -> None:
+    self.bad.append(item)
+    self.gap += max(gap, 0.01)
+
+  def missing(self, item: str) -> None:
+    self.bad.append(item if "未测" in item else item + "：未测")
+
+  def missing_only(self) -> bool:
+    return bool(self.bad) and all(any(w in b for w in MISSING) for b in self.bad)
+
+
+def _ud(d: str) -> str:
+  return "上" if d == "up" else "下"
+
+
+def _files(prefix: str, cond: str) -> dict[str, str]:
+  sfx = COND_SFX[cond]
+  return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent")}
+
+
+def am_rows(path: str) -> list[tuple[str, list[int], int]] | None:
+  """accept_matrix's 44 rows: (command, the commanded axes' actual / command in %, falls); None if not all 44."""
+  rows = re.findall(r"^\s*(\([^)]*\)) \|\s*(.*?) \|\s*(\d+)/(\d+) \| (?:ok|FAIL)", txt(path), re.M)
+  if len(rows) != 44:
+    return None
+  return [(c, [int(x) for x in re.findall(r"[xyw](-?\d+)%", a)], int(k)) for c, a, k, _n in rows]
+
+
+def clock_rows(path: str) -> list[tuple[str, float, int, str]] | None:
+  """gait_clock's rows: (command, match %, falls, verdict) -- the judged ones carry ok / FAIL; None without rows."""
+  rows = re.findall(r"^\s*(\([^)]*\))\s*\|\s*([\d.]+|nan)%\s*\|\s*[\d.na]+\s*\|\s*(\d+)/\d+\s*\|\s*(\S+)", txt(path), re.M)
+  if not rows:
+    return None
+  return [(c, float(m) if m != "nan" else float("nan"), int(f), v) for c, m, f, v in rows]
+
+
+def spec_flat(r: str, p: dict[str, str], cond: str, sh: Sheet, label: str | None = None, falls_max: int = 0) -> None:
+  """Items 1-9 (flat) of one condition's files p (kind -> path) into sh; label: the item prefix (default the
+  condition's)."""
+  L = COND_LABEL[cond] if label is None else label
+  wheeled = r in at.WHEELED
+  # 1 flat speed, 44 commands
+  lo, hi = SPEC["flat_speed"][cond]
+  rows = am_rows(p["am"])
+  if rows is None:
+    sh.missing(f"{L}平地速度")
+  else:
+    slow = [(c, v) for c, rs, _k in rows for v in rs if v < 100 * lo]
+    fast = [(c, v) for c, rs, _k in rows for v in rs if hi is not None and v > 100 * hi]
+    falls = sum(k for _c, _rs, k in rows)
+    sh.detail.append(f"{L}平地速度（44 条指令，{'%.0f-%.0f%%' % (100 * lo, 100 * hi) if hi else '>= %.0f%%' % (100 * lo)}）："
+                     f"最低 {min((v for _c, rs, _k in rows for v in rs), default=float('nan'))}%，摔 {falls}")
+    if slow:
+      sh.fail(f"{L}平地速度：偏慢 " + "、".join(f"{c} {v}%" for c, v in slow[:6]), sum(lo - v / 100 for _c, v in slow))
+    if fast:
+      sh.fail(f"{L}平地速度：超速 " + "、".join(f"{c} {v}%" for c, v in fast[:6]), sum(v / 100 - hi for _c, v in fast))
+    if falls > falls_max:
+      sh.fail(f"{L}平地速度：摔倒 {falls}", 1.0)
+  # 2 drift and heading; 3 spin in place (drift_all's spins)
+  d = at.drift_vals(p)
+  bar = SPEC["drift"][cond]
+  h50, h90 = SPEC["drift_head"][cond]
+  bar_spin = SPEC["spin_end_p90"][cond]
+  if not d:
+    sh.missing(f"{L}跑偏")
+    sh.missing(f"{L}原地旋转")
+  else:
+    drift_bad, head_bad, worst = [], [], 0.0
+    for c, v in d.items():
+      if c[2] != 0.0:
+        continue
+      sideways = c[1] != 0.0
+      travel = abs(v["across"][1]) if sideways else abs(v["along"][1])
+      off = v["along"] if sideways else v["across"]
+      share = max(abs(off[0]), abs(off[2])) / travel if travel > 0 else float("nan")
+      worst = max(worst, share) if share == share else worst
+      if travel > 0 and share > bar:
+        drift_bad.append(f"{c} {100 * share:.1f}%")
+      if abs(v["head"][1]) > h50 or max(abs(v["head"][0]), abs(v["head"][2])) > h90:
+        head_bad.append(f"{c} {v['head'][1]:+.1f}°（{v['head'][0]:+.1f}~{v['head'][2]:+.1f}）")
+    sh.detail.append(f"{L}跑偏：最大 {100 * worst:.1f}%（上限 {100 * bar:g}%），朝向 p50 <= {h50:g}°、p10 / p90 <= {h90:g}°")
+    if drift_bad:
+      sh.fail(f"{L}跑偏：超过 {100 * bar:g}% " + "、".join(drift_bad), worst / bar - 1.0)
+    if head_bad:
+      sh.fail(f"{L}跑偏：转头 " + "、".join(head_bad))
+    dfalls = sum(v["fell"] for v in d.values())
+    if dfalls > falls_max:
+      sh.fail(f"{L}跑偏：摔倒 {dfalls}")
+    spins = {c: v for c, v in d.items() if c[0] == c[1] == 0.0 and c[2] != 0.0}
+    if not spins:
+      sh.missing(f"{L}原地旋转")
+    else:
+      far = [(c, v["end"][-1]) for c, v in spins.items() if v["end"][-1] > bar_spin]
+      sh.detail.append(f"{L}原地旋转：终点 p90 最大 {max(v['end'][-1] for v in spins.values()):.2f} m（上限 {bar_spin:g}）")
+      if far:
+        sh.fail(f"{L}原地旋转：漂移 " + "、".join(f"{c} {x:.2f} m" for c, x in far), max(x for _c, x in far) / bar_spin - 1.0)
+  # 4 alternating spins
+  sa = at.spinalt_vals(p)
+  bar = SPEC["spinalt_end_p50"][cond]
+  if not sa:
+    sh.missing(f"{L}交替原地转")
+  else:
+    far = [(k, v["end"][0]) for k, v in sa.items() if v["end"][0] > bar]
+    sh.detail.append(f"{L}交替原地转：终点 p50 最大 {max(v['end'][0] for v in sa.values()):.2f} m（上限 {bar:g}）")
+    if far:
+      sh.fail(f"{L}交替原地转：漂移 " + "、".join(f"±{k[0]:g} {x:.2f} m" for k, x in far), max(x for _k, x in far) / bar - 1.0)
+    sf = sum(v["fell"] for v in sa.values())
+    if sf > falls_max:
+      sh.fail(f"{L}交替原地转：摔倒 {sf}")
+  # 5 stop: lift, creep, brake from 1.0 m/s
+  g = at.stand_vals(p)
+  if "rest" not in g:
+    sh.missing(f"{L}停车")
+  else:
+    lift, creep = SPEC["stop_lift"][cond], SPEC["stop_creep"].get(r, SPEC["stop_creep"]["Go2"])[cond]
+    brake = SPEC["stop_brake"][cond]
+    worst_creep = max(v["creep"] for v in g.values())
+    brakes = {k: g[k]["stop_cm"] for k in ("fwd 1.0", "back 1.0") if k in g}
+    sh.detail.append(f"{L}停车：离地 {g['rest']['air']:.1f}%（上限 {lift:g}），蠕动最大 {worst_creep:.2f} cm（上限 {creep:g}），"
+                     f"1.0 m/s 刹停 " + "、".join(f"{k} {v:.1f} cm" for k, v in brakes.items()) + f"（上限 {brake:g}）")
+    if g["rest"]["air"] > lift:
+      sh.fail(f"{L}停车：离地 {g['rest']['air']:.1f}%", g["rest"]["air"] / lift - 1.0)
+    if worst_creep > creep:
+      sh.fail(f"{L}停车：蠕动 {worst_creep:.2f} cm", worst_creep / creep - 1.0)
+    over = {k: v for k, v in brakes.items() if v > brake}
+    if over:
+      sh.fail(f"{L}停车：刹停远 " + "、".join(f"{k} {v:.1f} cm" for k, v in over.items()), max(over.values()) / brake - 1.0)
+    if len(brakes) < 2:
+      sh.missing(f"{L}停车 1.0 m/s 刹停")
+    gf = sum(v["fell"] for v in g.values())
+    if gf > falls_max:
+      sh.fail(f"{L}停车：摔倒 {gf}")
+  # 6 march: touchdowns, hip reset, drift
+  rv = at.reset_vals(p)
+  if rv is None:
+    sh.missing(f"{L}原地踏步")
+  else:
+    td, rs, dr = SPEC["march_td"][cond], SPEC["march_reset"][cond], SPEC["march_drift"][cond]
+    sh.detail.append(f"{L}原地踏步：踏步 {rv['td']:.2f}/s（>= {td:g}），复位后 {rv['after']:.1f}°（<= {rs:g}），漂移 {rv['drift']:.1f} cm（<= {dr:g}）")
+    if rv["td"] < td:
+      sh.fail(f"{L}原地踏步：不踏步 {rv['td']:.2f}/s", 1.0 - rv["td"] / td)
+    if rv["after"] > rs:
+      sh.fail(f"{L}原地踏步：没复位 {rv['after']:.1f}°", rv["after"] / rs - 1.0)
+    if rv["drift"] > dr:
+      sh.fail(f"{L}原地踏步：漂移 {rv['drift']:.1f} cm", rv["drift"] / dr - 1.0)
+    if rv["fell"] > falls_max:
+      sh.fail(f"{L}原地踏步：摔倒 {rv['fell']}")
+  # 7 gait clock: every judged command at least the condition's match
+  cr = clock_rows(p["clock"])
+  bar = SPEC["clock"][cond]
+  if cr is None:
+    sh.missing(f"{L}步态节奏")
+  else:
+    judged = [(c, m, f) for c, m, f, v in cr if v in ("ok", "FAIL")]
+    low = [(c, m) for c, m, _f in judged if not m >= bar]
+    cf = sum(f for _c, _m, f, _v in cr)
+    sh.detail.append(f"{L}步态节奏：判 {len(judged)} 条，最低 {min((m for _c, m, _f in judged), default=float('nan')):.0f}%（>= {bar:g}%），摔 {cf}")
+    if not judged:
+      sh.missing(f"{L}步态节奏")
+    if low:
+      sh.fail(f"{L}步态节奏：不合拍 " + "、".join(f"{c} {m:.0f}%" for c, m in low[:6]),
+              sum(1.0 - (m / bar if m == m else 0.0) for _c, m in low))
+    if cf > falls_max:
+      sh.fail(f"{L}步态节奏：摔倒 {cf}")
+  # 8 zero-command stance: standing 60 s, after an emergency stop
+  sp, sl = stand_posture(p["loadstand"])
+  mp, mf = stopmove(p["stopmove"])
+  b1, b2 = SPEC["stance_stand"][cond], SPEC["stance_stop"][cond]
+  sh.detail.append(f"{L}零指令站姿：静站 p90 {sp} rad（<= {b1:g}），3 s 后摔 {sl}；急停后 p90 {mp} rad（<= {b2:g}），摔 {mf}")
+  if sp is None or mp is None:
+    sh.missing(f"{L}零指令站姿")
+  else:
+    if sp > b1:
+      sh.fail(f"{L}零指令站姿：静站 {sp:.3f} rad", sp / b1 - 1.0)
+    if mp > b2:
+      sh.fail(f"{L}零指令站姿：急停后 {mp:.3f} rad", mp / b2 - 1.0)
+    if (sl or 0) + (mf or 0) > falls_max:
+      sh.fail(f"{L}零指令站姿：摔倒 {(sl or 0) + (mf or 0)}")
+  # 9 wheels down (wheeled)
+  if wheeled:
+    n = at.nolift_vals(p)
+    bar = SPEC["wheels_down"][cond]
+    if n is None:
+      sh.missing(f"{L}四轮着地")
+    else:
+      sh.detail.append(f"{L}四轮着地：最低 {min(n['down']):.1f}%（>= {bar:g}），摔 {n['fell']}")
+      if min(n["down"]) < bar:
+        sh.fail(f"{L}四轮着地：抬轮 {min(n['down']):.1f}%", 1.0 - min(n["down"]) / bar)
+      if n["fell"] > falls_max:
+        sh.fail(f"{L}四轮着地：摔倒 {n['fell']}")
+
+
+def tile_counts(path: str, skip_band: str | None = None) -> dict[str, float | None]:
+  """eval_stairs --metrics' tile rows pooled, without skip_band's tiles: legged steps / kicks on the climbs / slips /
+  mid / edge (step-weighted), wheeled step-ups / slide-back (step-up-weighted). None for a count with no tile."""
+  t = txt(path)
+  legged = re.findall(r"^tile (\S+) (up|down) \S+: steps ([\d.]+), kicks ([\d.]+|-), slips ([\d.]+|-), mid ([\d.]+|-), "
+                      r"edge ([\d.]+|-)", t, re.M)
+  wheeled = re.findall(r"^tile (\S+) (up|down) \S+: step-ups ([\d.]+), slide-back ([\d.]+|-)", t, re.M)
+  out: dict[str, float | None] = {}
+  if legged:
+    acc = {k: [0.0, 0.0] for k in ("kicks_up", "slips", "mid", "edge")}
+    steps = 0.0
+    for b, d, n, k, s, m, e in legged:
+      if b == skip_band:
+        continue
+      n = float(n)
+      steps += n
+      for key, v, use in (("kicks_up", k, d == "up"), ("slips", s, True), ("mid", m, True), ("edge", e, True)):
+        if use and v != "-":
+          acc[key][0] += float(v) * n
+          acc[key][1] += n
+    out["steps"] = steps
+    out.update({k: (a / w if w else None) for k, (a, w) in acc.items()})
+  if wheeled:
+    ups, sb = 0.0, [0.0, 0.0]
+    for b, d, n, s in wheeled:
+      if b == skip_band:
+        continue
+      ups += float(n)
+      if s != "-":
+        sb[0] += float(s) * float(n)
+        sb[1] += float(n)
+    out["ups"] = ups
+    out["slide_back"] = sb[0] / sb[1] if sb[1] else None
+  return out
+
+
+def spec_stairs(r: str, path: str, cond: str, sh: Sheet, label: str | None = None, falls_max: int = 0) -> None:
+  """Items 11-13 and 16-20 and the falls of one eval_stairs output into sh. The full payload: judged on 5-15 cm,
+  15-18 cm reported."""
+  L = COND_LABEL[cond] if label is None else label
+  wheeled = r in at.WHEELED
+  t = txt(path)
+  if not t:
+    sh.missing(f"{L}楼梯")
+    return
+  top = FULL_TOP_BAND if cond == "full" else None
+  judged = lambda b: b != top
+  rep = (f"（只判 5–15 cm，{top} 只报告）" if top else "")
+  # 11 speed per band and direction, share of the command
+  lo, hi = SPEC["stairs_speed"][cond]
+  sp = [(m.group(1), m.group(2), float(m.group(3)) if m.group(3) != "nan" else float("nan"))
+        for m in re.finditer(r"^speed\s+(\d+-\d+cm)\s+(up|down) \| (?:[\d.]+|nan) m/s x([\d.]+|nan) of the command", t, re.M)]
+  if not sp:
+    sh.missing(f"{L}楼梯速度")
+  else:
+    off = [(b, d, v) for b, d, v in sp if judged(b) and not (v >= lo and (hi is None or v <= hi))]
+    sh.detail.append(f"{L}楼梯速度（命令的倍数，{f'{lo:g}-{hi:g}' if hi else f'>= {lo:g}'}）{rep}：" +
+                     "，".join(f"{b} {_ud(d)} {v:.2f}" for b, d, v in sp))
+    if off:
+      sh.fail(f"{L}楼梯速度：" + "、".join(f"{b} {_ud(d)} x{v:.2f}" for b, d, v in off),
+              sum(1.0 if v != v else (lo - v) if v < lo else (v - hi) for _b, _d, v in off))
+  # 12 stop held within 0.5 m, per band and direction
+  bar = SPEC["stop_held"][cond]
+  ss = [(m.group(1), m.group(2), float(m.group(3)), int(m.group(4))) for m in re.finditer(
+    r"^stop-stay\s+(\d+-\d+cm)\s+(up|down) \| stayed (\d+)% \(within [\d.]+ m\).*?n (\d+)", t, re.M)]
+  if not ss:
+    sh.missing(f"{L}楼梯停住")
+  else:
+    away = [(b, d, v) for b, d, v, n in ss if judged(b) and n > 0 and v < bar]
+    sh.detail.append(f"{L}楼梯停住（0.5 m 内，>= {bar:g}%）{rep}：" + "，".join(f"{b} {_ud(d)} {v:.0f}%" for b, d, v, _n in ss))
+    if away:
+      sh.fail(f"{L}楼梯停住：" + "、".join(f"{b} {_ud(d)} {v:.0f}%" for b, d, v in away),
+              sum((bar - v) / bar for _b, _d, v in away))
+  # 13 four feet at the stop, per band and direction
+  bar = SPEC["four_feet"][cond]
+  ft = [(m.group(1), m.group(2), float(m.group(3))) for m in re.finditer(
+    r"^\s*(\d+-\d+cm)\s+(up|down)\s*\|.*\|\s*\d+%\s+\d+%\s+[\d.]+\s+([\d.]+)\s*$", t, re.M)]
+  if not ft:
+    sh.missing(f"{L}停住四脚")
+  else:
+    short = [(b, d, v) for b, d, v in ft if judged(b) and v < bar]
+    sh.detail.append(f"{L}停住四脚（>= {bar:g}）{rep}：" + "，".join(f"{b} {_ud(d)} {v:.2f}" for b, d, v in ft))
+    if short:
+      sh.fail(f"{L}停住缺脚：" + "、".join(f"{b} {_ud(d)} {v:.2f}" for b, d, v in short), sum(bar - v for _b, _d, v in short))
+  # 16-19 the counts (judged on enough events)
+  tc = tile_counts(path, top)
+  if wheeled:
+    n, v, bar = tc.get("ups"), tc.get("slide_back"), SPEC["slide_back"][cond]
+    sh.detail.append(f"{L}楼梯计数{rep}：上台阶 {n}，滑回 {v}（<= {bar:g}）")
+    if n is None or v is None:
+      sh.missing(f"{L}楼梯计数")
+    elif n < MIN_STAIR_EVENTS:
+      sh.missing(f"{L}楼梯计数：未测（上台阶 {n:.0f} 次，少于 {MIN_STAIR_EVENTS}）")
+    elif v > bar:
+      sh.fail(f"{L}楼梯计数：滑回 {v:.3f}", v / bar - 1.0)
+  else:
+    n = tc.get("steps")
+    sh.detail.append(f"{L}楼梯计数{rep}：落脚 {n}，" + "，".join(
+      f"{k} {'-' if tc.get(k) is None else f'{tc[k]:.3f}'}" for k in ("edge", "kicks_up", "slips", "mid")) +
+      "；长期目标（只报告）" + "，".join(f"{k} {v}" for k, v in SPEC_LONG_TERM.items()))
+    if n is None:
+      sh.missing(f"{L}楼梯计数")
+    elif n < MIN_STAIR_EVENTS:
+      sh.missing(f"{L}楼梯计数：未测（落脚 {n:.0f} 次，少于 {MIN_STAIR_EVENTS}）")
+    else:
+      for k, name, sense in (("edge", "踩边", "max"), ("kicks_up", "上楼踢立面", "max"), ("slips", "打滑", "max"),
+                             ("mid", "踩中间", "min")):
+        v, bar = tc.get(k), SPEC[k][cond]
+        if v is None:
+          sh.missing(f"{L}楼梯计数 {name}")
+        elif (sense == "max" and v > bar) or (sense == "min" and v < bar):
+          sh.fail(f"{L}楼梯计数：{name} {v:.3f}", (v / bar - 1.0) if sense == "max" else (bar / max(v, 1e-6) - 1.0))
+  # 20 stalled, per band and direction
+  st = stairs_stalled(path)
+  bar = SPEC["stalled"][cond]
+  if not st:
+    sh.missing(f"{L}楼梯停滞")
+  else:
+    over = [(b, d, v) for (b, d), v in st.items() if judged(b) and v > bar]
+    if over:
+      sh.fail(f"{L}楼梯停滞：" + "、".join(f"{b} {_ud(d)} {v:g}%" for b, d, v in over), sum((v - bar) / 100 for _b, _d, v in over))
+  # falls: every band (the full payload: 5-15 cm, 15-18 cm reported)
+  if cond == "full":
+    total = stairs_falls(path)
+    bands = band_fall_counts(path)
+    if total is None:
+      sh.missing(f"{L}楼梯摔倒")
+      return
+    topf = sum(v for (b, _d), v in bands.items() if b == FULL_TOP_BAND) if bands else None
+    falls = total - topf if topf is not None else total
+    sh.detail.append(f"{L}楼梯摔倒：{falls}（5–15 cm" + (f"；{FULL_TOP_BAND} {topf}，只报告）" if topf is not None else "；分档读不出，全部计入）"))
+  else:
+    falls = stairs_falls(path)
+    if falls is None:
+      sh.missing(f"{L}楼梯摔倒")
+      return
+    sh.detail.append(f"{L}楼梯摔倒：{falls}")
+  if falls > falls_max:
+    sh.fail(f"{L}楼梯：摔倒 {falls}", 1.0 + 0.1 * (falls - falls_max))
+
+
+def spec_map3(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
+  """Item 10: map3 reach with / without the operator; map3's speed reported."""
+  L = COND_LABEL[cond]
+  s = at.stairs_vals(p)
+  if s is None:
+    sh.missing(f"{L}楼梯到达（map3）")
+    return
+  bo, bn = SPEC["map3_op"][cond], SPEC["map3_noop"][cond]
+  sh.detail.append(f"{L}楼梯到达（map3）：带操作 {s['op']:.1f}%（>= {bo:g}），无操作 {s['no']:.1f}%（>= {bn:g}）；"
+                   f"速度（只报告）上 {s['sp_up']:.2f} 下 {s['sp_dn']:.2f}")
+  if s["op"] < bo - 1e-6:   # (a mean of 18 scenarios: 0.95 x 18 / 18 reads 94.999...)
+    sh.fail(f"{L}楼梯到达（map3）：带操作 {s['op']:.1f}%", (bo - s["op"]) / bo)
+  if s["no"] < bn - 1e-6:
+    sh.fail(f"{L}楼梯到达（map3）：无操作 {s['no']:.1f}%", (bn - s["no"]) / bn)
+
+
+def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
+  """Items 14 and 15: the heading's max p90 and the meander p-p p50 per band and direction (descent_probe
+  --straight), and its falls. The full payload: 5-15 cm, 15-18 cm reported."""
+  L = COND_LABEL[cond]
+  fp = flight_path(path)
+  rows = {k: v for k, v in fp.items() if "hd_max_p90" in v}
+  if not rows:
+    sh.missing(f"{L}楼梯走直线（descent_probe）")
+    return
+  top = FULL_TOP_BAND if cond == "full" else None
+  hb, mb = SPEC["heading"][cond], SPEC["meander"].get(r, SPEC["meander"]["Go2"])[cond]
+  rep = (f"（只判 5–15 cm，{top} 只报告）" if top else "")
+  sh.detail.append(f"{L}楼梯朝向最大偏离 p90（<= {hb:g}°）{rep}：" + "，".join(f"{b} {_ud(d)} {v['hd_max_p90']:.1f}" for (b, d), v in rows.items()))
+  sh.detail.append(f"{L}楼梯蛇行峰峰值 p50（<= {mb:g} cm）{rep}：" + "，".join(
+    f"{b} {_ud(d)} {v.get('meander_pp', float('nan')):.1f}" for (b, d), v in rows.items()))
+  sh.detail.append(f"{L}楼梯小腿磕台阶（只报告，每段 前 / 后）：" + "，".join(
+    f"{b} {_ud(d)} {v.get('front_calf', float('nan')):.1f}/{v.get('rear_calf', float('nan')):.1f}" for (b, d), v in fp.items()))
+  hj = {k: v for k, v in rows.items() if k[0] != top}
+  over = [(b, d, v["hd_max_p90"]) for (b, d), v in hj.items() if v["hd_max_p90"] > hb]
+  if over:
+    sh.fail(f"{L}楼梯朝向最大偏离超过 {hb:g}°：" + "、".join(f"{b} {_ud(d)} {x:.1f}°" for b, d, x in over),
+            sum(x / hb - 1.0 for _b, _d, x in over))
+  nom = [f"{b} {_ud(d)}" for (b, d), v in hj.items() if "meander_pp" not in v]
+  if nom:
+    sh.missing(f"{L}楼梯蛇行：未测（" + "、".join(nom) + "）")
+  mo = [(b, d, v["meander_pp"]) for (b, d), v in hj.items() if "meander_pp" in v and v["meander_pp"] > mb]
+  if mo:
+    sh.fail(f"{L}楼梯蛇行峰峰值超过 {mb:g} cm：" + "、".join(f"{b} {_ud(d)} {x:.1f} cm" for b, d, x in mo),
+            sum(x / mb - 1.0 for _b, _d, x in mo))
+  ff = sum(int(v.get("falls", 0)) for (b, _d), v in fp.items() if b != top and "falls" in v)
+  if ff:
+    sh.fail(f"{L}楼梯走直线：摔倒 {ff}")
+
+
+def spec_judge(r: str, prefix: str, expect_typ: bool) -> list[str]:
+  """The students' acceptance of a robot in SPEC_ROBOTS: the verdict line and the detail lines."""
+  sh = Sheet()
+  conds = ["unl"] + (["typ"] if expect_typ or os.path.exists(f"{prefix}_stairs_typ.txt") else []) + ["full"]
+  for cond in conds:
+    p = _files(prefix, cond)
+    spec_flat(r, p, cond, sh)
+    spec_map3(r, p, cond, sh)
+    spec_stairs(r, p["stairs"], cond, sh)
+    spec_flight(r, p["descent"], cond, sh)
+  if "typ" not in conds:
+    sh.detail.append("常用负载：本机型没有这一档，不测")
+  return [verdict_line(sh.bad)] + sh.detail
+
+
 def main(argv: list[str]) -> int:
   """accept_judge.py R PREFIX [--typical]: --typical (accept.sh, when the robot has a typical payload and the
   condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for."""
@@ -548,6 +1003,13 @@ def judge(argv: list[str]) -> int:
   r, prefix = argv[0], argv[1]
   wheeled = r in at.WHEELED
   at.STOP_FEET_DEPLOYED = {}   # the fixed bar (doc/redesign.md 2.2)
+  if spec_robot(r) and os.environ.get("U_JUDGE_OLD") != "1":   # (U_JUDGE_OLD=1: the judge before the spec, a comparison)
+    lines = spec_judge(r, prefix, expect_typ)
+    print(lines[0])
+    for line in lines[1:]:
+      print("  " + line)
+    _tail(prefix)
+    return 0
   p = {k: f"{prefix}_{k}.txt" for k in at.KINDS}
   cells = at.goal_cells(r, 1, "", p, [])
   goals = dict(GOALS)
@@ -631,6 +1093,12 @@ def judge(argv: list[str]) -> int:
   print(verdict_line(bad))
   for line in detail:
     print("  " + line)
+  _tail(prefix)
+  return 0
+
+
+def _tail(prefix: str) -> None:
+  """The report lines after the items: the unloaded / loaded readings side by side, the evaluation's randomization."""
   print("  空载 / 负载 对比（不判）：")
   for kind, label, fn in payload_gap.ITEMS:
     a = fn(payload_gap.files(prefix, False))
@@ -643,7 +1111,6 @@ def judge(argv: list[str]) -> int:
     print("  评估时的随机化：")
     for line in dr.splitlines():
       print("    " + line)
-  return 0
 
 
 if __name__ == "__main__":

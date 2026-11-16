@@ -168,7 +168,50 @@ def mode_checks(r: str, path: str, t: str, tag: str, bars: dict, bad: list, miss
   return gap
 
 
+def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[str, int]:
+  """The stairs gate of a robot in accept_judge.SPEC_ROBOTS (2026-11-16, the user's Go2 / Go2W specification,
+  doc/acceptance_go2_go2w.md): every eval_stairs item at the condition's bar -- both scan modes unloaded, both with the
+  typical payload (--typ), the seen mode with the full payload (--pay N: 5-15 cm judged, 15-18 cm reported) -- and the
+  teacher's fall tolerance (FALLS_MAX per scan mode unloaded and typical, N under the full payload). The counts (edge,
+  kicks on the climbs, slips, mid / slide-back) are hard items now: no HARDPASS. The heading and the meander: the
+  students' acceptance only (no descent_probe here)."""
+  sh = aj.Sheet()
+  for mode in ("on", "off"):
+    aj.spec_stairs(r, f"{prefix}_{mode}.txt", "unl", sh, label=f"scan {mode} ", falls_max=FALLS_MAX)
+  if typ:
+    for mode in ("on", "off"):
+      path = f"{prefix}_typ_{mode}.txt"
+      aj.spec_stairs(r, path, "typ", sh, label=f"常用负载 scan {mode} ", falls_max=FALLS_MAX)
+      cl = causes_lines(path)
+      if cl:
+        sh.detail.append(f"常用负载 scan {mode} fall causes (reported): " + " / ".join(cl))
+  if pay_falls is not None:
+    path = f"{prefix}_pay.txt"
+    aj.spec_stairs(r, path, "full", sh, label="满载 ", falls_max=pay_falls)
+    lr = aj.stairs_reach(path)
+    if lr:
+      sh.detail.append(f"满载 per band (reported): {lr}")
+    cl = causes_lines(path)
+    if cl:
+      sh.detail.append("满载 fall causes (reported): " + " / ".join(cl))
+  for mode in ("on", "off"):
+    ha, hu = aj.stairs_heading(f"{prefix}_{mode}.txt")
+    sh.detail.append(f"scan {mode}: heading {ha if ha is not None else '-'} deg (15-18cm up {hu if hu is not None else '-'}) (reported)")
+  if not sh.bad:
+    head, rc = "PASS (the spec's stairs items: both scan modes" + (", typical" if typ else "") + \
+      (", full payload" if pay_falls is not None else "") + ")", 0
+  elif sh.missing_only():
+    head, rc = "FAULT: " + "；".join(sh.bad), 4
+  else:
+    head, rc = f"FAIL (gap {sh.gap:.2f}): " + "；".join(sh.bad), 1
+  return "\n".join([head] + [f"  {d}" for d in sh.detail]
+                   + [f"  bars: doc/acceptance_go2_go2w.md (accept_judge.SPEC); falls <= {FALLS_MAX} per scan mode"
+                      + (f", full payload <= {pay_falls} on 5-15 cm" if pay_falls is not None else "")]), rc
+
+
 def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) -> tuple[str, int]:
+  if aj.spec_robot(r) and __import__("os").environ.get("U_JUDGE_OLD") != "1":
+    return spec_gate(r, prefix, pay_falls, typ)
   wheeled = r in at.WHEELED
   kind = "wheeled" if wheeled else "legged"
   entry = TEACHER_COUNT_BARS.get(r)

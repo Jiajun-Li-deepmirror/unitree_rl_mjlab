@@ -43,7 +43,31 @@ def clock_falls(path: str) -> int | None:
   return sum(int(n) for n in rows) if rows else None
 
 
+def spec_flat_gate(r: str, prefix: str) -> tuple[str, int]:
+  """The flat gate of a robot in accept_judge.SPEC_ROBOTS (2026-11-16, doc/acceptance_go2_go2w.md): items 1-9 at the
+  unloaded bars in both scan modes, no fall (the gate measures unloaded only). Gap 0.01 x the failed items, as
+  before (teacher.sh ranks a stairs pass that fails here before most stairs fails)."""
+  sh = aj.Sheet()
+  for mode in MODES:
+    q = f"{prefix}_{mode}"
+    p = {k: f"{q}_{k}.txt" for k in at.KINDS + ("loadstand", "stopmove")}
+    aj.spec_flat(r, p, "unl", sh, label=f"scan {mode} ")
+    reads = []
+    for _kind, label, fn in pg.ITEMS:
+      v = fn(pg.files(q, False))
+      reads.append(f"{label} {'-' if v is None else f'{v:.2f}'}")
+    sh.detail.append(f"scan {mode}: " + "，".join(reads) + " (reported)")
+  if not sh.bad:
+    return "\n".join(["PASS (the spec's flat items, both scan modes)"] + [f"  {d}" for d in sh.detail]), 0
+  if sh.missing_only():
+    return "\n".join(["FAULT: " + "；".join(sh.bad)] + [f"  {d}" for d in sh.detail]), 4
+  n = sum(1 for b in sh.bad if not any(w in b for w in aj.MISSING))
+  return "\n".join([f"FAIL (gap {0.01 * n:.2f}): " + "；".join(sh.bad)] + [f"  {d}" for d in sh.detail]), 1
+
+
 def judge(r: str, prefix: str) -> tuple[str, int]:
+  if aj.spec_robot(r) and __import__("os").environ.get("U_JUDGE_OLD") != "1":
+    return spec_flat_gate(r, prefix)
   wheeled = r in at.WHEELED
   at.STOP_FEET_DEPLOYED = {}
   goals = dict(FLAT_GOALS)

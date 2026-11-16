@@ -83,6 +83,9 @@ def main() -> int:
     bad, _ = aj.flight_path_lines("Go2W", str(Path(tmp, "none.txt")), "", False)
     check(bad == [], "reported: a missing file is no fail")
 
+    # (3) runs the judge before the spec (U_JUDGE_OLD=1): Go2 / Go2W are judged by accept_spec_test.py since
+    # 2026-11-16 (doc/acceptance_go2_go2w.md); this keeps the old path the other robots still take
+    os.environ["U_JUDGE_OLD"] = "1"
     # (3) the whole judge: unloaded under the bar, the typical payload over it on 15-18 cm down, the full payload over
     # it everywhere (reported only)
     prefix = str(Path(tmp, "u_x"))
@@ -100,6 +103,7 @@ def main() -> int:
       check("满载 楼梯朝向最大偏离超过" not in first, f"{r}: the full payload's heading reported only")
       check("楼梯朝向最大偏离超过" not in first.replace("常用负载 楼梯朝向最大偏离超过", ""),
             f"{r}: the unloaded heading (4 deg) not in the verdict")
+  os.environ.pop("U_JUDGE_OLD", None)
   print("ALL OK" if not fails else f"FAILED: {fails}")
   return 1 if fails else 0
 
