@@ -1182,7 +1182,7 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   # full progress (curriculum.progress_payload's full_max) and so the light / heavy shares' reference
   # (env.u_payload_full). The payload point's box and the acceptance's payloads are unchanged. Unset or empty: the
   # table's value. At most 3x the table's limit (a typo guard).
-  train_max = min_default("U_PAYLOAD_TRAIN_MAX")   # (U_RECIPE_MIN=1 brings 12 kg; _min_recipe)
+  train_max = min_default("U_PAYLOAD_TRAIN_MAX", robot)   # (U_RECIPE_MIN=1 brings 12 kg; _min_recipe)
   if train_max:
     kg = float(train_max)
     assert 0.0 < kg <= 3.0 * float(payload["heavy_max"]), (
@@ -1232,12 +1232,13 @@ LOG_WEIGHT = 1e-8   # the logging terms sit at 1e-9; joint_acc_l2's -2.5e-7 is a
 LOG_SOURCE_WEIGHT = 1e-9
 
 
-def min_default(name: str) -> str:
+def min_default(name: str, robot: URobot) -> str:
   """A switch's value: the environment's when set (an empty value: off), else the minimal recipe's default when
-  U_RECIPE_MIN=1, else off."""
+  U_RECIPE_MIN=1 and the robot is one of MIN_ROBOTS, else off."""
   if name in os.environ:
     return os.environ[name]
-  return MIN_DEFAULTS.get(name, "") if os.environ.get("U_RECIPE_MIN") == "1" else ""
+  on = os.environ.get("U_RECIPE_MIN") == "1" and robot.name in MIN_ROBOTS
+  return MIN_DEFAULTS.get(name, "") if on else ""
 
 
 def _log_sources(cfg: ManagerBasedRlEnvCfg, kept: set[str]) -> set[str]:
@@ -1256,10 +1257,13 @@ def _log_sources(cfg: ManagerBasedRlEnvCfg, kept: set[str]) -> set[str]:
   return out
 
 
-def _min_recipe(cfg: ManagerBasedRlEnvCfg) -> None:
+MIN_ROBOTS = frozenset({"Go2W"})   # the robots the minimal recipe is for (the others: unchanged)
+
+
+def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   v = os.environ.get("U_RECIPE_MIN", "")
   assert v in ("", "0", "1"), f"U_RECIPE_MIN={v!r}: 1 or unset"
-  if v != "1":
+  if v != "1" or robot.name not in MIN_ROBOTS:   # (train.py registers every robot's tasks: a Go2 build stays as it is)
     return
   missing = [k for k in MIN_TERMS if k not in cfg.rewards]
   assert not missing, f"U_RECIPE_MIN: the build has no {missing}"
@@ -1289,7 +1293,7 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg) -> None:
 HARD_FIXED = {"U_MARCH_FIXED": "0.5", "U_FAST_STOP": "0.75,0.3", "U_PAYLOAD_FULL0": "1"}
 
 
-def _round_switches(cfg: ManagerBasedRlEnvCfg) -> None:
+def _round_switches(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   """After the curriculum is built (the training and the students' builds; not the play build):
     U_HARD_FIXED=1        arm D, the bundle of the three pieces below at HARD_FIXED's values; a piece set in the
                           environment wins over the bundle, an empty value turns that piece off;
@@ -1310,7 +1314,7 @@ def _round_switches(cfg: ManagerBasedRlEnvCfg) -> None:
   The zero command on flat (flat_mode_probs' stand 0.20) and the stop on a flight (stair_standing_prob 0.40) are
   fixed shares already. scripts/unified/round_cd_test.py checks every piece."""
   env = os.environ
-  bundle = min_default("U_HARD_FIXED")   # (U_RECIPE_MIN=1 brings the bundle; _min_recipe)
+  bundle = min_default("U_HARD_FIXED", robot)   # (U_RECIPE_MIN=1 brings the bundle; _min_recipe)
   assert bundle in ("", "0", "1"), f"U_HARD_FIXED={bundle!r}: 1 or unset"
   val = lambda k: env[k] if k in env else (HARD_FIXED[k] if bundle == "1" and k in HARD_FIXED else "")
   tw = cfg.commands["twist"]
@@ -1913,8 +1917,8 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
         cfg.curriculum["u_progress"].params["q_row"] = float(os.environ["U_Q_ROW"])
       if os.environ.get("U_Q_HEALTH"):
         cfg.curriculum["u_progress"].params["q_back"] = float(os.environ["U_Q_HEALTH"])
-      _round_switches(cfg)
-      _min_recipe(cfg)
+      _round_switches(cfg, robot)
+      _min_recipe(cfg, robot)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":

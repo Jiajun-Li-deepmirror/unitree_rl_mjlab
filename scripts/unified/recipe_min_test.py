@@ -12,10 +12,11 @@ On the built configurations (no GPU), per robot:
       payload fixed from iteration 0; U_PAYLOAD_TRAIN_MAX= (empty) and U_HARD_FIXED= (empty) turn them off;
   (4) the commands (but the D fields), the events (but the payload's limit), the observations and the terminations
       as in the plain build;
-  (5) a bad value stops the build; the play build is the plain play build.
+  (5) a bad value stops the build; the play build is the plain play build;
+  (6) a robot not in MIN_ROBOTS (the Go2: train.py registers every robot's tasks) keeps its plain build.
 Prints the minimal recipe: terms, weights, curricula.
 
-Local: PYTHONPATH=$PWD python scripts/unified/recipe_min_test.py [--robots Go2W]"""
+Local: PYTHONPATH=$PWD python scripts/unified/recipe_min_test.py [--robots Go2W,Go2]"""
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXE
 
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  ap.add_argument("--robots", default="Go2W")
+  ap.add_argument("--robots", default="Go2W,Go2")
   a = ap.parse_args()
   names = [n for n in a.robots.split(",") if n]
   os.environ["U_ROBOTS"] = ",".join(names)
@@ -73,6 +74,11 @@ def main() -> int:
     robot = ROBOTS[n]
     print(f"{n}:")
     c0 = build(robot)
+    if n not in teacher_env.MIN_ROBOTS:   # (train.py registers every robot: a robot not in MIN_ROBOTS stays as it is)
+      c1 = build(robot, {"U_RECIPE_MIN": "1"})
+      check(set(c1.rewards) == set(c0.rewards) and twist(c1) == twist(c0) and events(c1) == events(c0)
+            and set(c1.curriculum) == set(c0.curriculum), f"{n} is not in MIN_ROBOTS: U_RECIPE_MIN=1 leaves its build as it is")
+      continue
     check(twist(build(robot, {"U_RECIPE_MIN": "0"})) == twist(c0) and set(build(robot, {"U_RECIPE_MIN": "0"}).rewards) == set(c0.rewards),
           "U_RECIPE_MIN=0: the plain build")
     cm = build(robot, {"U_RECIPE_MIN": "1"})
