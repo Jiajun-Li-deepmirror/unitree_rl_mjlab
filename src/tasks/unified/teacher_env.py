@@ -1182,7 +1182,7 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
   # full progress (curriculum.progress_payload's full_max) and so the light / heavy shares' reference
   # (env.u_payload_full). The payload point's box and the acceptance's payloads are unchanged. Unset or empty: the
   # table's value. At most 3x the table's limit (a typo guard).
-  train_max = os.environ.get("U_PAYLOAD_TRAIN_MAX", "")
+  train_max = min_default("U_PAYLOAD_TRAIN_MAX")   # (U_RECIPE_MIN=1 brings 12 kg; _min_recipe)
   if train_max:
     kg = float(train_max)
     assert 0.0 < kg <= 3.0 * float(payload["heavy_max"]), (
@@ -1206,6 +1206,81 @@ def _curriculum(cfg: ManagerBasedRlEnvCfg, robot: URobot, items: list[dict], con
     if "u_flat" in cfg.rewards:
       cfg.rewards["u_flat"].params.update({"min_n": 2, "min_q": 2})
   cfg.curriculum = new
+
+
+# The minimal recipe (2026-11-16, go2-home after the user's "如果都从选配方开始了，为什么还要跑A-D": the Go2W teacher from a
+# small reward set, at today's weights, with the training conditions of arms A and D). U_RECIPE_MIN=1:
+#   rewards      MIN_TERMS kept at their built weights; the logging terms (|weight| <= LOG_WEIGHT, the meters) kept;
+#                a removed term that a kept logging term reads (LOG_SOURCES: the stairs meter's climb and idle
+#                sources, the march-drift log's clock) stays as a source at LOG_WEIGHT; every other term deleted
+#   curriculum   u_quality (the M -> P weights along q) deleted; u_constraints keeps its machinery (the evaluation
+#                robots, the readings) with no items, so no multiplier acts; the ramps of deleted terms dropped;
+#                u_progress, u_episodes, u_commands, the tracking stds, terrain_levels, u_stairs_share, u_payload,
+#                u_heavy (logging) unchanged
+#   conditions   U_PAYLOAD_TRAIN_MAX=12 and U_HARD_FIXED=1 by default (min_default: a value set in the environment
+#                wins, an empty one turns it off); commands, DR, terrain, observations, terminations unchanged
+# scripts/unified/recipe_min_test.py lists and checks it.
+MIN_TERMS = {
+  "track_linear_velocity": 1.0, "track_angular_velocity": 1.0, "is_alive": 4.0, "is_terminated": -200.0,
+  "body_orientation": -1.0, "lin_vel_z_even": -2.0, "body_ang_vel": -0.05, "action_rate_l2": -0.05,
+  "joint_acc_l2": -2.5e-7, "joint_pos_limits": -10.0, "pose": 1.0, "foot_gait": 1.0,
+  "standing_position_hold": -10.0, "straight_drift": -3.0, "side_drift": -6.0, "leg_ground_contact": -1.0,
+  "wheel_flat_step_air": -30.0, "wheel_slide_back": -4.0,
+}
+MIN_DEFAULTS = {"U_PAYLOAD_TRAIN_MAX": "12", "U_HARD_FIXED": "1"}
+LOG_WEIGHT = 1e-8   # the logging terms sit at 1e-9; joint_acc_l2's -2.5e-7 is a real weight
+LOG_SOURCE_WEIGHT = 1e-9
+
+
+def min_default(name: str) -> str:
+  """A switch's value: the environment's when set (an empty value: off), else the minimal recipe's default when
+  U_RECIPE_MIN=1, else off."""
+  if name in os.environ:
+    return os.environ[name]
+  return MIN_DEFAULTS.get(name, "") if os.environ.get("U_RECIPE_MIN") == "1" else ""
+
+
+def _log_sources(cfg: ManagerBasedRlEnvCfg, kept: set[str]) -> set[str]:
+  """The reward terms that the kept logging terms read: their "term" / "terms" parameters, the stairs meter's event
+  terms and its climb term (constraints.meter's default foothold_height_gain)."""
+  out: set[str] = set()
+  for k in kept:
+    p = cfg.rewards[k].params or {}
+    if isinstance(p.get("term"), str):
+      out.add(p["term"])
+    out.update(p.get("terms") or ())
+    if isinstance(p.get("events"), dict):
+      out.update(v if isinstance(v, str) else v[0] for v in p["events"].values())
+    if getattr(cfg.rewards[k].func, "__name__", "") == "meter" or type(cfg.rewards[k].func).__name__ == "meter":
+      out.add(p.get("climb_term", "foothold_height_gain"))
+  return out
+
+
+def _min_recipe(cfg: ManagerBasedRlEnvCfg) -> None:
+  v = os.environ.get("U_RECIPE_MIN", "")
+  assert v in ("", "0", "1"), f"U_RECIPE_MIN={v!r}: 1 or unset"
+  if v != "1":
+    return
+  missing = [k for k in MIN_TERMS if k not in cfg.rewards]
+  assert not missing, f"U_RECIPE_MIN: the build has no {missing}"
+  logs = {k for k, t in cfg.rewards.items() if abs(t.weight) <= LOG_WEIGHT and k not in MIN_TERMS}
+  sources = _log_sources(cfg, logs) - set(MIN_TERMS) - logs
+  for k, w in MIN_TERMS.items():   # (today's weights; recipe_min_test checks they equal the plain build's)
+    cfg.rewards[k].weight = w
+  for k in list(cfg.rewards):
+    if k in MIN_TERMS or k in logs:
+      continue
+    if k in sources:
+      cfg.rewards[k].weight = LOG_SOURCE_WEIGHT
+    else:
+      del cfg.rewards[k]
+  cfg.curriculum.pop("u_quality", None)
+  if "u_constraints" in cfg.curriculum:
+    cfg.curriculum["u_constraints"].params["items"] = []
+  if "ramps" in cfg.curriculum:
+    ramps = cfg.curriculum["ramps"].params["ramps"]
+    cfg.curriculum["ramps"].params["ramps"] = [r for r in ramps if not r.get("kind", "").startswith("reward")
+                                               or r.get("name") in cfg.rewards]
 
 
 # go2-home's single-factor arms after A (payload 12 kg) and B (4096 robots), 2026-11-16 (the user's experiment round):
@@ -1235,7 +1310,7 @@ def _round_switches(cfg: ManagerBasedRlEnvCfg) -> None:
   The zero command on flat (flat_mode_probs' stand 0.20) and the stop on a flight (stair_standing_prob 0.40) are
   fixed shares already. scripts/unified/round_cd_test.py checks every piece."""
   env = os.environ
-  bundle = env.get("U_HARD_FIXED", "")
+  bundle = min_default("U_HARD_FIXED")   # (U_RECIPE_MIN=1 brings the bundle; _min_recipe)
   assert bundle in ("", "0", "1"), f"U_HARD_FIXED={bundle!r}: 1 or unset"
   val = lambda k: env[k] if k in env else (HARD_FIXED[k] if bundle == "1" and k in HARD_FIXED else "")
   tw = cfg.commands["twist"]
@@ -1839,6 +1914,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
       if os.environ.get("U_Q_HEALTH"):
         cfg.curriculum["u_progress"].params["q_back"] = float(os.environ["U_Q_HEALTH"])
       _round_switches(cfg)
+      _min_recipe(cfg)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":
