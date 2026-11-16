@@ -64,6 +64,16 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
   acceptance runs, videos and exports in a tree at or after the motor model's commit must set U_MOTOR=builtin; a
   tree before it builds them that way anyway. A run whose records (run_env.sh / the timeline's env_vars) show no
   motor= in its BLIND_PARAMS trained without it.
+- The training terrain terrain=wide (the user via go2-home, 2026-11-16: "可以"; the 1.25x rule, step 3), a robot
+  parameter like the motor model (robot table: terrain=wide next to model=uros and motor=gom8010; the Go2W only):
+  - stairs (every stairs and walled sub-terrain): step_height_range 0.05-0.23 m (was 0.05-0.20; the tests reach 18 cm,
+    map3's risers 18.6); the terrain curriculum's levels spread over the wider range;
+  - slopes: slope_range 0-0.36 rise / run (19.8 deg; was 0.25, 14 deg; item 23 tests 15 deg);
+  - random_rough unchanged (0.02-0.06 m; the test's +-3 cm is inside);
+  - training builds only (the teacher's and the students' trainings); every play / evaluation terrain stays.
+  **Rule: U_TERRAIN=base for the checkpoints trained before it** (every Go2W run up to and including go2w_min_s0 and
+  the runs launched on 36d0fe8 or before 1e…): their training terrain as it was; evaluation terrains do not depend on
+  it, so it matters only for a training or a resume. Tests: scripts/unified/terrain_wide_test.py.
 - Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
   ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
   gives ~15.9 N m at 1.5 m/s (~17 rad/s at the wheel).

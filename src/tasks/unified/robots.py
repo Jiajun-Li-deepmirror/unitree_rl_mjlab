@@ -205,6 +205,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
   _wall_fan(cfg, keys, final)
   if play:
     _play_wall_stop(cfg)
+  elif terrain == "map3":
+    _training_terrain(cfg, recipe["env"])
   if (v == "even" or tilt is not None) and robot.kind == "wheeled" and terrain == "map3":
     # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
     # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
@@ -229,6 +231,44 @@ def _wall_fan(cfg: ManagerBasedRlEnvCfg, keys: list[str], final: bool) -> None:
   fan = next((s for s in cfg.scene.sensors if s.name == WALL_FAN), None)
   if fan is not None:
     fan.pattern = replace(fan.pattern, angles_deg=(-d, 0.0, d))
+
+
+# The training terrain wider than the tests (2026-11-16, the user via go2-home: "可以"; the 1.25x rule, step 3), a
+# robot parameter like the motor model: terrain=wide in BLIND_PARAMS (src/robot_table.py; the Go2W). The training
+# build alone (map3's tiles, play=False: the teacher's and the students' trainings); every play / evaluation terrain
+# (eval_stairs' bands, map3, slope_rough_test) stays as it is. Today the stairs reach 0.20 m (the tests: 18 cm,
+# map3's risers 18.6) and the slopes 0.25 rise / run (14 deg; item 23 tests 15). wide: every stairs sub-terrain's
+# step_height_range 0.05-0.23 m and the slopes' slope_range 0-0.36 (19.8 deg); the terrain curriculum's levels spread
+# over the wider range (difficulty interpolates it); random_rough unchanged (0.02-0.06 m against the test's +-3 cm).
+# U_TERRAIN=base (an evaluation / old-checkpoint switch, off unless set): the training terrain before it.
+TERRAIN_SWITCH = "U_TERRAIN"
+TERRAINS = {"wide": {"step_height_range": (0.05, 0.23), "slope_range": (0.0, 0.36)}}
+
+
+def terrain_param(params: str) -> str | None:
+  """The robot's training terrain (terrain=... in BLIND_PARAMS); None without it or with U_TERRAIN=base."""
+  v = os.environ.get(TERRAIN_SWITCH) or None
+  assert v in (None, "base"), f"{TERRAIN_SWITCH}={v!r}: base or unset"
+  p = dict(kv.split("=", 1) for kv in params.split(",") if "=" in kv)
+  m = p.get("terrain")
+  assert m in (None,) + tuple(TERRAINS), f"terrain={m!r}: one of {tuple(TERRAINS)}"
+  return None if v == "base" else m
+
+
+def training_terrain(robot: "URobot") -> str | None:
+  """The robot's training terrain as its build reads it (terrain_param of its BLIND_PARAMS)."""
+  return terrain_param(unified_recipe(robot)["env"])
+
+
+def _training_terrain(cfg: ManagerBasedRlEnvCfg, params: str) -> None:
+  m = terrain_param(params)
+  gen = cfg.scene.terrain.terrain_generator if cfg.scene.terrain is not None else None
+  if m is None or gen is None:
+    return
+  w = TERRAINS[m]
+  subs = {k: replace(s, **{f: v for f, v in w.items() if hasattr(s, f)}) for k, s in gen.sub_terrains.items()}
+  # (new objects all the way up: the play build of the same import must not see them)
+  cfg.scene.terrain = replace(cfg.scene.terrain, terrain_generator=replace(gen, sub_terrains=subs))
 
 
 # U_WALL_STOP_PLAY=1 (an evaluation's diagnostic switch, off unless set): a play build keeps the key endwall's fan and

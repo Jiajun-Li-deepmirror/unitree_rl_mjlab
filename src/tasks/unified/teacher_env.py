@@ -59,7 +59,7 @@ from . import flat as uflat
 from . import recipe as urecipe
 from . import stick_slip
 from .models import PRIV_GROUP
-from .robots import URobot, base_env_cfg, robot_motor, unified_recipe
+from .robots import TERRAINS, URobot, base_env_cfg, robot_motor, training_terrain, unified_recipe
 
 # (foot_contact_forces stays critic-only: world-frame vectors, see symmetry.py)
 PRIVILEGED_ACTOR_TERMS = ("base_lin_vel", "foot_height", "foot_air_time", "foot_contact")
@@ -1007,7 +1007,7 @@ SLOPE_SHARE = 0.10   # of the episodes on the other ground (not stairs), half on
 SLOPE_MAX = 0.25     # the top row's gradient along the tile's axes (14 deg; 16 deg at most, between them)
 
 
-def _add_slopes(cfg: ManagerBasedRlEnvCfg) -> dict[str, float]:
+def _add_slopes(cfg: ManagerBasedRlEnvCfg, slope_max: float = SLOPE_MAX) -> dict[str, float]:
   """Two sloped tiles among the other ground: a pyramid hill (slope_down: the robot starts on its flat top, 3.5 m
   across along the tile's axes and 2 m square between them) and a pit (slope_up: at its bottom), one column each out
   of the flat ground's three, the gradient rising with the other ground's row from 0 to SLOPE_MAX (the slope runs
@@ -1022,7 +1022,7 @@ def _add_slopes(cfg: ManagerBasedRlEnvCfg) -> dict[str, float]:
   assert set(others) == {"random_rough", "flat"}, f"the other ground: {sorted(others)}"
   step = sum(s.proportion for s in subs.values()) / gen.num_cols   # one column
   assert subs["flat"].proportion > 2.5 * step, "the flat ground keeps a column"
-  hill = terrain_gen.HfPyramidSlopedTerrainCfg(proportion=step, slope_range=(0.0, SLOPE_MAX), platform_width=2.0)
+  hill = terrain_gen.HfPyramidSlopedTerrainCfg(proportion=step, slope_range=(0.0, slope_max), platform_width=2.0)
   new = {}
   for name, sub in subs.items():
     if name == "flat":   # before the flat tile, which stays next to the walled ones (blind_env_cfg's column order)
@@ -1923,7 +1923,9 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
   other_shares = None
   if terrain == "map3":
     _payload_point(cfg, robot)
-    other_shares = _add_slopes(cfg)
+    # (the training terrain's slopes: robots.TERRAINS -- terrain=wide, the Go2W: 0.36 in training; play SLOPE_MAX)
+    tw = None if play else training_terrain(robot)
+    other_shares = _add_slopes(cfg, TERRAINS[tw]["slope_range"][1] if tw else SLOPE_MAX)
     _add_riser_keepout(cfg, robot)
     _add_body_clear(cfg, robot)
     _add_stair_park(cfg)
