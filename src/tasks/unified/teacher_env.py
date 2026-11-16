@@ -1242,18 +1242,28 @@ def min_default(name: str, robot: URobot) -> str:
 
 
 def _log_sources(cfg: ManagerBasedRlEnvCfg, kept: set[str]) -> set[str]:
-  """The reward terms that the kept logging terms read: their "term" / "terms" parameters, the stairs meter's event
-  terms and its climb term (constraints.meter's default foothold_height_gain)."""
+  """The reward terms that the kept logging terms read: their "term" / "terms" / "climb_term" arguments -- given in
+  the params or the function's own defaults (constraints.march_reset reads march_hip_default by default, stop_creep
+  standing_position_hold, meter foothold_height_gain) -- and the stairs meter's event terms."""
+  import inspect
+
   out: set[str] = set()
   for k in kept:
-    p = cfg.rewards[k].params or {}
-    if isinstance(p.get("term"), str):
-      out.add(p["term"])
-    out.update(p.get("terms") or ())
+    f = cfg.rewards[k].func
+    call = f.__call__ if inspect.isclass(f) else f
+    try:
+      defaults = {n: v.default for n, v in inspect.signature(call).parameters.items()
+                  if v.default is not inspect.Parameter.empty}
+    except (TypeError, ValueError):
+      defaults = {}
+    p = {**defaults, **(cfg.rewards[k].params or {})}
+    for key in ("term", "climb_term"):
+      if isinstance(p.get(key), str):
+        out.add(p[key])
+    if isinstance(p.get("terms"), (list, tuple)):
+      out.update(x for x in p["terms"] if isinstance(x, str))
     if isinstance(p.get("events"), dict):
       out.update(v if isinstance(v, str) else v[0] for v in p["events"].values())
-    if getattr(cfg.rewards[k].func, "__name__", "") == "meter" or type(cfg.rewards[k].func).__name__ == "meter":
-      out.add(p.get("climb_term", "foothold_height_gain"))
   return out
 
 
