@@ -86,7 +86,7 @@ S2_LEARNING_RATE = 3e-5
 # "统一成 0.4–1.0"): the wheeled robots train at 0.4-1.0 (blind_env_cfg.py sets it on any terrain with stairs: a
 # high-friction wheel climbs a riser face, a simulator exploit), and their stairs check had it too, but the flat check
 # kept the default 0.3-1.6 -- outside the training's range. Both checks now draw from the training's range.
-CHECK_FRICTION = {"wheeled": (0.4, 1.0)}
+from .teacher_env import CHECK_FRICTION  # noqa: E402  (the teacher's checks take it too, 2026-11-16)
 
 
 def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3", real_edge: bool = False):

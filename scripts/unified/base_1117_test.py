@@ -41,7 +41,11 @@ out = {"subs": subs, "rewards": sorted(c.rewards) if not play else None,
        "pd": repr(ev["pd_gains"].params.get("kp_range")) if "pd_gains" in ev else None,
        "cmd_final": repr(c.curriculum["u_commands"].params.get("final")) if "u_commands" in (c.curriculum or {}) else None,
        "effort": [(a.base_cfg if isinstance(a, DelayedActuatorCfg) else a).effort_limit for a in c.scene.entities["robot"].articulation.actuators],
-       "events": sorted(ev)}
+       "events": sorted(ev),
+       "push": repr(ev["push_robot"].params.get("velocity_range")) if "push_robot" in ev else None,
+       "splay": repr(ev["reset_hip_splay"].params.get("splay_range")) if "reset_hip_splay" in ev else None,
+       "friction": repr(ev["foot_friction"].params.get("ranges")) if "foot_friction" in ev else None,
+       "push_interval": repr(ev["push_robot"].interval_range_s) if "push_robot" in ev else None}
 print("JSON" + json.dumps(out))
 '''
 ok = True
@@ -68,7 +72,7 @@ import src.robot_table as rt  # noqa: E402
 
 print("(1) the robot table:")
 gw = rt.ROBOTS["Go2W"]
-check(gw["params"].get("payload_box") == "tinynav", "the Go2W's params carry payload_box=tinynav")
+check(gw["params"].get("payload_box") == "tinynav" and gw["params"].get("dr") == "wide", "the Go2W's params carry payload_box=tinynav, dr=wide")
 check(gw["typical_payload"] == "4,0,0,0.10,0.15,0.08,0.10" and gw["accept_payload"] == "8,0.15,0,0.20",
       f"typical 4 kg in x +-0.15, y +-0.08, z 0-0.20; full {gw['accept_payload']} unchanged")
 check(rt.ROBOTS["Go2"]["typical_payload"] == "4,0,0,0.10,0.20,0.08,0.10" and "payload_box" not in rt.ROBOTS["Go2"]["params"],
@@ -91,6 +95,17 @@ check(len(fr) == 6 and all(v[1] == "scale" and close(v[0], (0.375, 1.625)) for v
       and len(ar) == 3 and all(close(v[0], (0.625, 1.375)) for v in ar.values()),
       "joint friction / damping x 0.375-1.625, armature x 0.625-1.375 (gom8010's centres, U_DR_WIDE around 1)")
 check(a["cmd_final"] != m["cmd_final"] and a["rewards"] == m["rewards"], "U_CMD_WIDE changes the final commands; the reward terms are the minimal recipe's")
+want_push = repr({"x": (-1.25, 1.25), "y": (-1.25, 1.25), "z": (-0.4, 0.4), "roll": (-0.52, 0.52), "pitch": (-0.52, 0.52), "yaw": (-0.78, 0.78)})
+check(a["push"] == want_push and a["push_interval"] == repr((5.0, 6.0)), f"dr=wide: push x / y +-1.25 m/s, the rest and the 5-6 s as before ({a['push']})")
+check(a["splay"] == repr((-0.175, 0.175)), f"dr=wide: the reset's hip splay +-0.175 rad ({a['splay']})")
+pb = probe(T, **BASE, U_DR_MODEL="base")
+check("error" not in pb and pb["push"] == repr({"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.4, 0.4), "roll": (-0.52, 0.52), "pitch": (-0.52, 0.52), "yaw": (-0.78, 0.78)})
+      and pb["splay"] == repr((-0.15, 0.15)), f"U_DR_MODEL=base: the push and the splay before it ({pb.get('push')}, {pb.get('splay')})")
+check(a["friction"] == repr((0.32, 1.25)), f"the training's foot friction with U_DR_WIDE: (0.32, 1.25) = 1.25x the checks' (0.4, 1.0) ({a['friction']})")
+fl = probe("Unitree-Go2W-U-Teacher-Flat", True)
+check("error" not in fl and fl["friction"] == repr((0.4, 1.0)), f"the teacher's -Flat check: foot friction (0.4, 1.0) as the students' (was the Go2's 0.3-1.6; {fl.get('friction')})")
+sd = probe("Unitree-Go2W-U-Student-Depth", U_RECIPE_MIN="1")
+check("error" not in sd and sd["push"] == want_push, "the depth student's training: the wide push too")
 print("(3) the off switch:")
 b = probe(T, **BASE, U_PAYLOAD_BOX="base")
 check("error" not in b and b["pos"] == repr(tuple(tuple(x) for x in gw["payload_point"])), f"U_PAYLOAD_BOX=base: the table's box {b.get('pos')}")
@@ -103,5 +118,6 @@ for task in (T, "Unitree-Go2W-U-Teacher-Stairs", "Unitree-Go2W-U-Teacher-Flat", 
   check(same, f"{task} play: the same with and without the training switches")
   if task == T:
     check(p["pos"] == repr(tuple(tuple(x) for x in gw["payload_point"])), f"{task} play: the table's payload box {p['pos']}")
+  check(p.get("push") is None, f"{task} play: no push event")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

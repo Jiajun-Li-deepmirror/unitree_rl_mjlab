@@ -86,7 +86,14 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
   and the redraw as before; the limit is the recipe's (the minimal recipe's 12 kg). Training builds only.
   **Rule: U_PAYLOAD_BOX=base for the checkpoints trained before it** (a commit before this one's). The acceptance's
   typical box for the Go2W became x ±0.15 at the same time (was ±0.20); the full-load point is unchanged.
-- Tomorrow's base (the user, 2026-11-16): the minimal recipe + gom8010 + terrain=wide + payload_box=tinynav +
+- The training randomization dr=wide (the user via go2-home, 2026-11-16: "好的"; go2-home's survey of every training
+  range against the tests, the 1.25x rule): the push's x / y +-1.25 m/s (was +-0.5; item 22 judges 1.0), the reset's
+  hip splay +-0.175 rad (was +-0.15; march_eval's reset splays 0.14). A robot parameter (robot table dr=wide, the
+  Go2W), training builds only. **Rule: U_DR_MODEL=base for the checkpoints trained before it.**
+- The checks' foot friction (2026-11-16): the teacher's -Flat check drew the Go2's default 0.3-1.6 for the Go2W; it now
+  takes the training's 0.4-1.0 as the students' checks always did (teacher_env CHECK_FRICTION). Training with
+  U_DR_WIDE=1.25 draws 0.32-1.25 = 1.25x of it. Teacher flat gates before this read on the wider 0.3-1.6.
+- Tomorrow's base (the user, 2026-11-16): the minimal recipe + gom8010 + terrain=wide + payload_box=tinynav + dr=wide +
   U_CMD_WIDE=1.25 + U_DR_WIDE=1.25, from zero; scripts/unified/base_1117_test.py checks that they compose (U_DR_WIDE
   widens the motor model's joint factors around 1: friction / damping x 0.375-1.625, armature x 0.625-1.375).
 - Open: the training's end-wall stop differs from the deployed guard (go2-home 2026-11-16, measured): the key endwall

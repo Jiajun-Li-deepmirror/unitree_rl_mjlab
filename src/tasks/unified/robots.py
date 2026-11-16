@@ -207,6 +207,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     _play_wall_stop(cfg)
   elif terrain == "map3":
     _training_terrain(cfg, recipe["env"])
+  if not play:
+    _training_dr(cfg, recipe["env"])
   if (v == "even" or tilt is not None) and robot.kind == "wheeled" and terrain == "map3":
     # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
     # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
@@ -301,6 +303,42 @@ def payload_box(robot: "URobot") -> tuple | None:
   m = p.get("payload_box")
   assert m in (None,) + tuple(PAYLOAD_BOXES), f"payload_box={m!r}: one of {tuple(PAYLOAD_BOXES)}"
   return None if (v == "base" or m is None) else PAYLOAD_BOXES[m]
+
+
+# The training randomization 1.25x the acceptance's tests where it was not (2026-11-16, the user via go2-home: "好的";
+# go2-home's survey of every training range against the tests): dr=wide in BLIND_PARAMS (the Go2W), training builds
+# only (the play builds have no push and no hip splay):
+#   push       the push event's x / y velocity range +-1.25 m/s (was +-0.5; item 22 judges 1.0 m/s), every 5-6 s as
+#              before; z and the angular pushes unchanged;
+#   hip splay  the reset's hip splay range +-0.175 rad (was +-0.15; march_eval's reset test splays 8 deg, 0.14 rad);
+#              its probability as before.
+# U_DR_MODEL=base (an old checkpoint's switch, off unless set): both as before it.
+DR_SWITCH = "U_DR_MODEL"
+DRS = {"wide": {"push_xy": 1.25, "hip_splay": 0.175}}
+
+
+def dr_param(params: str) -> str | None:
+  v = os.environ.get(DR_SWITCH) or None
+  assert v in (None, "base"), f"{DR_SWITCH}={v!r}: base or unset"
+  p = dict(kv.split("=", 1) for kv in params.split(",") if "=" in kv)
+  m = p.get("dr")
+  assert m in (None,) + tuple(DRS), f"dr={m!r}: one of {tuple(DRS)}"
+  return None if v == "base" else m
+
+
+def _training_dr(cfg: ManagerBasedRlEnvCfg, params: str) -> None:
+  m = dr_param(params)
+  if m is None:
+    return
+  w = DRS[m]
+  ev = cfg.events.get("push_robot")
+  if ev is not None:
+    vr = dict(ev.params["velocity_range"])
+    vr.update(x=(-w["push_xy"], w["push_xy"]), y=(-w["push_xy"], w["push_xy"]))
+    ev.params = {**ev.params, "velocity_range": vr}
+  ev = cfg.events.get("reset_hip_splay")
+  if ev is not None:
+    ev.params = {**ev.params, "splay_range": (-w["hip_splay"], w["hip_splay"])}
 
 
 # U_WALL_STOP_PLAY=1 (an evaluation's diagnostic switch, off unless set): a play build keeps the key endwall's fan and

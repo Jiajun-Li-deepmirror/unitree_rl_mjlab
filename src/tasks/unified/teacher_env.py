@@ -609,6 +609,7 @@ def _add_joint_dr(cfg: ManagerBasedRlEnvCfg, motor: str | None = None) -> None:
       mode="startup", func=dr.joint_armature, params={"asset_cfg": SceneEntityCfg("robot", joint_names=expr), **ar})
 
 
+CHECK_FRICTION = {"wheeled": (0.4, 1.0)}   # the checks' foot friction where it differs from the blind builder's default
 KEEPOUT_TERM = "riser_keepout"   # (no "u_" prefix: quality_diff takes it as a cost of the P keys the M keys lack)
 
 
@@ -1977,6 +1978,11 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":
     _fixed_payload(cfg)
+    # the checks' foot friction from the training's range (2026-11-16, go2-home's survey: the teacher's -Flat check
+    # still drew the Go2's default 0.3-1.6 for the Go2W, wider than its training 0.4-1.0 and than the students' checks
+    # -- the user's "统一成 0.4–1.0"); the students' builds set it too (students.CHECK_FRICTION)
+    if robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
+      cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:
