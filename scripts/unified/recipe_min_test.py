@@ -26,7 +26,8 @@ import dataclasses
 import os
 import sys
 
-SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_DESCENT_PITCH")
+SWITCHES = ("U_RECIPE_MIN", "U_PAYLOAD_TRAIN_MAX", "U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_DESCENT_PITCH",
+            "U_MIN_ITEMS", "U_MIN_ITEM_FROM", "U_MIN_ITEM_FLOOR", "U_MIN_LOG_ITEMS", "U_MIN_KEEP_TERMS")
 
 
 def main() -> int:
@@ -132,6 +133,32 @@ def main() -> int:
           and {k: v.weight for k, v in cd.rewards.items() if k != "descent_pitch"} == kept,
           f"U_RECIPE_MIN=1 U_DESCENT_PITCH=4: descent_pitch at weight {cd.rewards['descent_pitch'].weight if 'descent_pitch' in cd.rewards else None}, the rest the minimal recipe's")
     p0, pm = build(robot, play=True), build(robot, {"U_RECIPE_MIN": "1"}, play=True)
+    # (8) U_MIN_ITEMS: one item (a stairs-quality one -> on the progress), its cost term at the built weight
+    if n == "Go2W":
+      ci = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "slides", "U_MIN_ITEM_FLOOR": "0.05,0.2"})
+      its = ci.curriculum["u_constraints"].params["items"]
+      it = its[0] if len(its) == 1 else {}
+      check(len(its) == 1 and it.get("name") == "slides" and it.get("by") == "p" and it.get("activate") == 0.3
+            and it.get("min_scale") == 0.05 and it.get("init_scale") == 0.2 and "wheel_nosing" in ci.rewards
+            and ci.rewards["wheel_nosing"].weight == c0.rewards["wheel_nosing"].weight
+            and set(ci.rewards) - set(cm.rewards) == {"wheel_nosing"},
+            f"U_MIN_ITEMS=slides: one item on the progress from 0.3, floor 0.05 / start 0.2, wheel_nosing kept at "
+            f"{ci.rewards['wheel_nosing'].weight if 'wheel_nosing' in ci.rewards else None} ({len(its)} items)")
+      check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_LOG_ITEMS": "1"}), "U_MIN_LOG_ITEMS=1 stops the build (not ready)")
+      # (9) U_MIN_KEEP_TERMS: go2-home's climbing candidates -- the terms at their built weights and parameters
+      for keep in (["wheel_riser_lift"], ["stair_speed_deficit"], ["wheel_riser_lift", "stair_speed_deficit"]):
+        ck = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_KEEP_TERMS": ",".join(keep)})
+        same = all(ck.rewards[k].weight == c0.rewards[k].weight and rep(ck.rewards[k].params) == rep(c0.rewards[k].params)
+                   and ck.rewards[k].func is c0.rewards[k].func for k in keep)
+        check(set(ck.rewards) - set(cm.rewards) == set(keep) - set(cm.rewards) and same
+              and all(ck.rewards[k].weight == cm.rewards[k].weight for k in cm.rewards if k not in keep)
+              and twist(ck) == twist(cm) and events(ck) == events(cm),
+              f"U_MIN_KEEP_TERMS={','.join(keep)}: " + ", ".join(f"{k} {ck.rewards[k].weight:g} ({getattr(ck.rewards[k].func, '__name__', '?')})" for k in keep)
+              + "; the rest the minimal recipe's")
+      check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_KEEP_TERMS": "nosuch"}), "U_MIN_KEEP_TERMS=nosuch stops the build")
+      check(fails(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "nosuch"}), "U_MIN_ITEMS=nosuch stops the build")
+      cp = build(robot, {"U_RECIPE_MIN": "1", "U_MIN_ITEMS": "slides", "U_DESCENT_PITCH": "4"})
+      check({"wheel_nosing", "descent_pitch"} <= set(cp.rewards), "U_MIN_ITEMS beside an explicit probe switch: both kept")
     check(set(p0.rewards) == set(pm.rewards) and twist(p0) == twist(pm) and events(p0) == events(pm),
           "the play build is the plain play build")
     print(f"  the minimal recipe ({n}):")

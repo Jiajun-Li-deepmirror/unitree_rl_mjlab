@@ -1243,6 +1243,22 @@ MIN_DEFAULTS = {"U_PAYLOAD_TRAIN_MAX": "12", "U_HARD_FIXED": "1"}
 # the table's own U_DESCENT_PITCH=4 is the 68-term recipe's, and the minimal recipe deletes its term):
 # switch -> the terms it adds
 MIN_SWITCH_TERMS = {"U_DESCENT_PITCH": ("descent_pitch",)}
+# U_MIN_KEEP_TERMS=<term>[,...] (2026-11-16, go2-home's climbing candidates C1-C3 on the base: the minimal recipe does
+# not climb -- min_s0 at 4300 climbing row 0.001): terms the minimal recipe would delete stay at their built weights
+# and parameters (the table's switches as built, e.g. stair_speed_deficit as the ground-speed variant under
+# U_STAIR_SPEED_H=1); the terms they read stay as sources. No u_quality: a term's parameters that the 68-term recipe
+# moves along q (wheel_riser_lift's land_share / margin) stay at their built (M) values.
+# Threshold items on the minimal recipe (2026-11-16, go2-home's candidate rules, the user "行": a new constraint is an
+# item of u_constraints -- a target and an adaptive multiplier -- not a fixed-weight term). U_MIN_ITEMS=<item>[,...]:
+# the named items of the built list (constraint_items) stay, the rest go as before; their cost terms stay at the built
+# weights (a stairs-quality item's multiplier works on its "base", the P weight). The minimal recipe has no stairs
+# quality (u_quality deleted, q stays 0), so a "by q" item runs on the progress instead, switched on from
+# U_MIN_ITEM_FROM (default MIN_ITEM_FROM) and tightening from its loose target to its own over the next 0.3.
+# U_MIN_ITEM_FLOOR=<min_scale>[,<init>]: the kept items' multiplier floor (a met item's cost fades to that share of its
+# weight: the cost acts while the reading misses the target) and where the multiplier starts (default 1). An item
+# without terms (a measured-only one) is logged. U_MIN_LOG_ITEMS=1: every other item stays measured and logged only
+# (no terms, not enforced): the training-time readings for the diagnosis before a candidate.
+MIN_ITEM_FROM = 0.3
 LOG_WEIGHT = 1e-8   # the logging terms sit at 1e-9; joint_acc_l2's -2.5e-7 is a real weight
 LOG_SOURCE_WEIGHT = 1e-9
 
@@ -1285,6 +1301,83 @@ def _log_sources(cfg: ManagerBasedRlEnvCfg, kept: set[str]) -> set[str]:
 MIN_ROBOTS = frozenset({"Go2W"})   # the robots the minimal recipe is for (the others: unchanged)
 
 
+def _item_sources(c: dict, rewards: set[str]) -> set[str]:
+  """The reward terms a constraint item's measurement reads: the term names among its params and among the string
+  defaults of its metric function, through the wrappers' closures (ucons.by_payload / upto_common and the like). The
+  "rate:" / "lib:" / "flat:" / "evalfail:" readings come from the meters and the protocols, not from a term."""
+  def strings(x):
+    if isinstance(x, str):
+      yield x
+    elif isinstance(x, dict):
+      for v in x.values():
+        yield from strings(v)
+    elif isinstance(x, (list, tuple)):
+      for v in x:
+        yield from strings(v)
+
+  out = {s for s in strings(c.get("params", {})) if s in rewards}
+  m = c["metric"]
+  todo = [] if ":" in m else [ucons.CUSTOM.get(m) or ucons.METRICS.get(m)]
+  seen: set[int] = set()
+  while todo:
+    f = todo.pop()
+    if f is None or id(f) in seen:
+      continue
+    seen.add(id(f))
+    try:
+      out |= {v.default for v in inspect.signature(f).parameters.values()
+              if isinstance(v.default, str) and v.default in rewards}
+    except (TypeError, ValueError):
+      pass
+    for cell in getattr(f, "__closure__", None) or ():
+      x = cell.cell_contents
+      if isinstance(x, str) and x in ucons.METRICS:
+        todo.append(ucons.METRICS[x])
+      elif isinstance(x, str) and x in rewards:
+        out.add(x)
+      elif callable(x):
+        todo.append(x)
+  return out
+
+
+def _min_items(cfg: ManagerBasedRlEnvCfg) -> list[dict]:
+  """The constraint items the minimal recipe keeps (U_MIN_ITEMS, U_MIN_ITEM_FROM, U_MIN_ITEM_FLOOR, U_MIN_LOG_ITEMS;
+  see MIN_ITEM_FROM): [] when none is set."""
+  names = [x.strip() for x in os.environ.get("U_MIN_ITEMS", "").split(",") if x.strip()]
+  log_all = os.environ.get("U_MIN_LOG_ITEMS", "") == "1"
+  # (not yet: some measured-only items read terms built only beside their probe switches -- u_stop_place's
+  # U_STOP_PLACE term -- the first smoke stopped there, 2026-11-16)
+  assert not log_all, "U_MIN_LOG_ITEMS: not ready (measured-only items read terms the minimal recipe deletes)"
+  if "u_constraints" not in cfg.curriculum or not (names or log_all):
+    return []
+  built = cfg.curriculum["u_constraints"].params["items"]
+  unknown = [n for n in names if n not in {c["name"] for c in built}]
+  assert not unknown, f"U_MIN_ITEMS: no item {unknown} in the build ({[c['name'] for c in built]})"
+  frm = float(os.environ.get("U_MIN_ITEM_FROM", MIN_ITEM_FROM))
+  assert 0.0 <= frm < 1.0, f"U_MIN_ITEM_FROM={frm}: a progress in [0, 1)"
+  fl = [float(x) for x in os.environ.get("U_MIN_ITEM_FLOOR", "").split(",") if x.strip()]
+  assert len(fl) <= 2 and all(0.0 < x <= 1.0 for x in fl), "U_MIN_ITEM_FLOOR=<min_scale>[,<init>]: in (0, 1]"
+  out = []
+  for c in built:
+    c = {**c, "terms": list(c["terms"]), "params": dict(c["params"])}
+    if c["name"] in names:
+      if c.get("by") == "q":   # (no stairs quality in the minimal recipe)
+        c["by"], c["activate"] = "p", frm
+        c.pop("start", None)
+      if fl:
+        c["min_scale"] = fl[0]
+        c["init_scale"] = fl[1] if len(fl) > 1 else 1.0
+        c["start_scale"] = max(c.get("start_scale", 1.0), fl[0])
+      out.append(c)
+    elif log_all:
+      if c.get("by") == "q":
+        c["by"], c["activate"] = "p", frm
+        c.pop("start", None)
+      c["terms"], c["enforce"] = [], False
+      out.append(c)
+  return out
+
+
 def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   v = os.environ.get("U_RECIPE_MIN", "")
   assert v in ("", "0", "1"), f"U_RECIPE_MIN={v!r}: 1 or unset"
@@ -1300,6 +1393,16 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   # whose term the minimal recipe deletes)
   keep = {term for sw, terms in MIN_SWITCH_TERMS.items() if os.environ.get(sw) and not urecipe.set_by_scope(sw)
           for term in terms}
+  extra = [x.strip() for x in os.environ.get("U_MIN_KEEP_TERMS", "").split(",") if x.strip()]
+  unknown = [k for k in extra if k not in cfg.rewards]
+  assert not unknown, f"U_MIN_KEEP_TERMS: no term {unknown} in the build"
+  keep |= set(extra)
+  sources |= _log_sources(cfg, set(extra)) - set(MIN_TERMS) - logs - keep
+  items = _min_items(cfg)
+  keep |= {t for c in items if c.get("enforce", True) for t in c["terms"]}
+  # (the reward terms the kept items' measurements read -- a hold term's state, a drift term's -- stay as sources)
+  for c in items:
+    sources |= _item_sources(c, set(cfg.rewards)) - set(MIN_TERMS) - logs - keep
   # (a build without the term -- a student's, a check's -- keeps nothing of it)
   for k in list(cfg.rewards):
     if k in MIN_TERMS or k in logs or k in keep:
@@ -1310,7 +1413,7 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
       del cfg.rewards[k]
   cfg.curriculum.pop("u_quality", None)
   if "u_constraints" in cfg.curriculum:
-    cfg.curriculum["u_constraints"].params["items"] = []
+    cfg.curriculum["u_constraints"].params["items"] = items
   if "ramps" in cfg.curriculum:
     ramps = cfg.curriculum["ramps"].params["ramps"]
     cfg.curriculum["ramps"].params["ramps"] = [r for r in ramps if not r.get("kind", "").startswith("reward")
