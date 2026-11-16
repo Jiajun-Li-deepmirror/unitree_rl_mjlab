@@ -333,6 +333,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     # 1.0 m/s (the user), 0.5 reported
     [ $SPEC = 1 ] && pool $pay ${P}_push$X.txt $W scripts/unified/push_test.py --task $TF $CK --num-envs $(tn 64) \
       --push 1.0 --also 0.5
+    # item 23 (2026-11-16): a 15 deg ramp up and down, rough ground +-3 cm, at 0.5 and 1.0 m/s
+    [ $SPEC = 1 ] && pool $pay ${P}_slope$X.txt $W scripts/unified/slope_rough_test.py --task $TE $CK --num-envs $(tn 64)
     [ $EDGE = 1 ] && pool $pay ${P}_stairsedge$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE-RealEdge $CK \
       --envs-per-tile $(tn 18) --metrics
     fi

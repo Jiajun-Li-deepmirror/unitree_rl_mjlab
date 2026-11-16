@@ -39,7 +39,7 @@ GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, sp
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
             stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
-            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0)
+            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0)
 
 
 def band_val(v, b, d):
@@ -127,6 +127,10 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
             f"not recovered 0.0 % (falls at or after the push {g['pfalls']})\n"
             f"ALL push 0.5 (item 22, reported): falls {g['pfalls1']} of 768 robots; recovered within 0.3 m/s: p50 0.20 s, "
             f"p90 0.50 s, not recovered 1.0 % (falls at or after the push {g['pfalls1']})\n")
+  # slope_rough_test: item 23's rows and line
+  w("slope", " slope15 up   0.5 | reached 100.0 % | falls 0/64 | speed 0.91 | base rise +1.60 m\n"
+             f" slope15 down 1.0 | reached {g['slope']:5.1f} % | falls {g['sfalls']}/64 | speed 1.04 | base rise -1.65 m\n"
+             f"ALL slopes (item 23): reach min {g['slope']:.1f} % over 6 cells, falls {g['sfalls']} of 384 robots\n")
   # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
   share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
   w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand, the larger of the drive-up to 0.85 m + "
@@ -179,7 +183,7 @@ def main() -> int:
           "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0),
           "wall_lift": (5.0, 5.0, 5.0), "pitch_down": (45.0, 45.0, 45.0), "roll_up": (45.0, 45.0, 45.0),
           "strikes": (2.0, 2.0, 2.0), "top_steps": (1.0, 1.0, 1.0), "push_falls": (0, 0, 0),
-          "push_mps": (1.0, 1.0, 1.0)}
+          "push_mps": (1.0, 1.0, 1.0), "slope_reach": (95.0, 95.0, 90.0)}
   for k, v in want.items():
     check(tuple(S[k][c] for c in aj.CONDS) == v, f"SPEC {k} = {v}")
   check(S["drift_head"]["full"] == (3.0, 8.0), "drift heading p50 3 / p10-p90 8 deg")
@@ -247,6 +251,8 @@ def main() -> int:
       ("Go2W", "full", {"rtouch": {("12-15cm", "down"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
       ("Go2W", "unl", {"tops": 1.01}, "顶部平台多余踏步"), ("Go2", "full", {"tops": 1.2}, "顶部平台多余踏步"),
       ("Go2W", "unl", {"cv": 0.9}, None),
+      ("Go2W", "unl", {"slope": 94.0}, "斜坡和不平地面"), ("Go2", "typ", {"slope": 94.0}, "斜坡和不平地面"),
+      ("Go2W", "full", {"slope": 89.0}, "斜坡和不平地面"), ("Go2W", "unl", {"sfalls": 1}, "斜坡和不平地面"),
       ("Go2W", "unl", {"pfalls1": 7}, None), ("Go2W", "unl", {"pfalls": 1}, "抗推"), ("Go2", "typ", {"pfalls": 1}, "抗推"), ("Go2W", "full", {"pfalls": 2}, "抗推"),
     ]
     first = acceptance("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
@@ -269,7 +275,7 @@ def main() -> int:
              ("Go2", "unl", {"hd": 8.0}), ("Go2W", "unl", {"mpp": 5.0}), ("Go2", "full", {"mpp": 10.0}),
              ("Go2W", "full", {"wall": 5}), ("Go2", "typ", {"wall": 5}),
              ("Go2W", "unl", {"pitchr": 45.0, "rollr": 45.0}), ("Go2W", "typ", {"ftouch": 2.0, "rtouch": 2.0}),
-             ("Go2W", "full", {"tops": 1.0})]
+             ("Go2W", "full", {"tops": 1.0}), ("Go2W", "unl", {"slope": 95.0}), ("Go2W", "full", {"slope": 90.0})]
     for i, (r, cond, over) in enumerate(edges):
       first = acceptance(r, f"e{i}", **{cond: over})
       check(first == "PASS", f"{r} {cond} {over}: exactly the bar passes ({first[:160]})")

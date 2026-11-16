@@ -45,6 +45,7 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings, the drive-up along the landing to 0.85 m from the end wall (the deployed guard's stop), then stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); of the robots that took the top, the share whose front foot / wheel rises more than 10 cm above the first stand or that fall on the landing -- the larger of (A) drive-up + first stand and (B) turn + last stand | <= 5 % | 5 % | 5 % |
 | 24 | depth noise (深度噪声; the depth student only, added 2026-11-16 by the user via go2-home): items 10-20 again on the -RealEdge task (Unitree-<R>-U-Student-Depth-Stairs-RealEdge: the real camera's latency, frame timing, depth errors and mounting spread, edge smoothing on every capture), next to the clean run; labelled 相机误差 | the clean bars | the clean bars | the clean bars |
 | 22 | push (抗推): one 1.0 m/s velocity push on the base (the user, 2026-11-16: first 0.5, then 1.0; 0.5 still run and reported), base frame +x / -x / +y / -y, 3 s into the run, standing, 1.0 m/s forward and 0.5 m/s sideways (push_test.py, 64 robots per group); the recovery (the base back within 0.3 m/s of the command for 0.5 s) reported | 0 falls | 0 | 0 |
+| 23 | slopes and rough ground (斜坡和不平地面): a 15° ramp up and a 15° ramp down (box geoms: 2 m flat, 6 m run, 2 m flat) and rough ground ±3 cm (the training's random-rough generator), walked across at 0.5 and 1.0 m/s, 64 robots per cell (slope_rough_test.py); reached = 7.5 m along within 7.5 / v x 1.5 + 2 s; the worst of the 6 cells | >= 95 %, 0 falls | 95 %, 0 | 90 %, 0 |
 | 26 | pitch / roll rate on the flights (下楼点头、上楼晃): RMS per robot, p50 per band; the descents' pitch rate, the climbs' roll rate (descent_probe --straight's SUM) | <= 45 °/s | 45 °/s | 45 °/s (5–15 cm) |
 | 27 | shin / thigh strikes on the steps (小腿大腿磕台阶): % of the flight's steps with a front / rear calf or thigh on the steps, per band, direction and side (descent_probe's SUMQ) | <= 2 % | 2 % | 2 % (5–15 cm) |
 | 28 | top-landing extra steps / wheel lifts (顶部平台多余踏步/抬轮): per climb on map3's top landings, a wheel / foot on the landing's level that leaves the ground > 0.06 s with its apex > 2 cm, in the climb's end, the drive-up and the first stand (map3_stairs_probe, with item 21) | <= 1.0 | 1.0 | 1.0 |
@@ -70,7 +71,7 @@ Every test runs in all three conditions:
 - gait (the Go2W only);
 - the map3 flights with and without the operator (noop, op).
 - the top landings facing the wall (wall; item 21), after the map3 flights.
-- push (item 22), with the flat tests.
+- push (item 22) and slopes / rough ground (item 23), with the flat tests.
 - Items 26, 27 and 30 come from the descent run, 28 from the wall run, 29 from drift3: no runs of their own.
 - the depth student only (item 24): stairs and the map3 flights again on the -RealEdge task (stairsedge, noopedge,
   opedge); accept_judge --edge makes them required.

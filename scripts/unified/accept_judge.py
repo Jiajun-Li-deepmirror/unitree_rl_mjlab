@@ -577,6 +577,7 @@ SPEC: dict[str, dict] = {
   "top_steps": {c: 1.0 for c in CONDS},                                    # per climb, map3's top landings
   "push_falls": {c: 0 for c in CONDS},                                     # falls, 1.0 m/s base pushes (item 22)
   "push_mps": {c: 1.0 for c in CONDS},                                     # the judged push (the user 11-16; was 0.5)
+  "slope_reach": {"unl": 95.0, "typ": 95.0, "full": 90.0},                # %, the worst of the 6 cells (item 23)
 }
 # items 29 and 30 are reported until go2-home fixes their bars from w27d's readings (the proposals below)
 SPEC_REPORT = {"bob_height_cm": 1.0, "bob_pitch_deg": 2.0, "speed_cv": 0.3}
@@ -1019,6 +1020,33 @@ def spec_push(r: str, path: str, cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}抗推：摔倒 {v['falls']}")
 
 
+def slope_vals(path: str) -> tuple[float, int, int, list[str]] | None:
+  """slope_rough_test.py: (the worst cell's reach %, falls, robots, the cell rows); None without its ALL line."""
+  t = txt(path)
+  m = re.search(r"^ALL slopes \(item 23\): reach min ([\d.]+|nan) % over \d+ cells, falls (\d+) of (\d+) robots", t, re.M)
+  if not m:
+    return None
+  rows = re.findall(r"^ (\S+ ?\S*)\s+([\d.]+) \| reached\s+([\d.]+) % \| falls (\d+)/\d+", t, re.M)
+  return float(m.group(1)), int(m.group(2)), int(m.group(3)), [f"{a.strip()} {b} {float(c):.1f}%" for a, b, c, _f in rows]
+
+
+def spec_slope(r: str, path: str, cond: str, sh: Sheet) -> None:
+  """Item 23 (2026-11-16, the user via go2-home): a 15 deg ramp up and down and rough ground +-3 cm, at 0.5 and 1.0 m/s
+  (slope_rough_test.py): every cell's reach >= 95 % (unloaded, typical) / 90 % (full), 0 falls."""
+  L = COND_LABEL[cond]
+  v = slope_vals(path)
+  if v is None:
+    sh.missing(f"{L}斜坡和不平地面（slope_rough_test）")
+    return
+  worst, falls, n, rows = v
+  bar = SPEC["slope_reach"][cond]
+  sh.detail.append(f"{L}斜坡和不平地面：到达最低 {worst:.1f}%（>= {bar:g}%），摔倒 {falls}/{n}；" + "，".join(rows))
+  if worst < bar - 1e-9:
+    sh.fail(f"{L}斜坡和不平地面：到达 {worst:.1f}%", (bar - worst) / bar)
+  if falls:
+    sh.fail(f"{L}斜坡和不平地面：摔倒 {falls}")
+
+
 def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
   """Items 26-30 (2026-11-16, the user via go2-home: "都加"). From descent_probe's SUM / SUMQ lines (the descent file,
   already run): 26 the descents' pitch rate and the climbs' roll rate (RMS per robot, p50) per band; 27 the share of
@@ -1131,6 +1159,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False)
     spec_wall(r, p["wall"], cond, sh)
     spec_motion(r, p, cond, sh)
     spec_push(r, p["push"], cond, sh)
+    spec_slope(r, p["slope"], cond, sh)
     if expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge")):
       E = COND_LABEL[cond] + EDGE_LABEL
       spec_stairs(r, p["stairsedge"], cond, sh, label=E)
