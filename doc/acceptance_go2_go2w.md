@@ -85,8 +85,10 @@ They take the evaluation time up by about half.
 Item 21's notes (2026-11-16):
 - the shape: uprobe_s162's measure (the turn) plus the last stand, and the drive-up (go2-home: the user's complaint
   came from a robot on the landing with a wall ahead, the drive-up included). The drive-up runs at the climb's speed
-  (0.5 m/s) from the top until the wall is 0.85 m ahead; the reference is the front feet's lowest point in the first
-  stand that follows. The judged share is the larger of the two parts; a fall on the landing counts in both;
+  (0.5 m/s) from the top until the wall is 0.85 m ahead. In the drive-up and the first stand a lift counts from a front
+  foot's take-off at the landing's level (the bottom floor + the flight's rise, 3 cm tolerance, as item 28): the last
+  riser's step-up takes off from the tread below and is not a lift (measured 2026-11-16: with the first stand's lowest
+  point as the reference instead, 92 % of the pick's robots read as lifting in the drive-up, against 15 % in the turn). The judged share is the larger of the two parts; a fall on the landing counts in both;
 - front feet / wheels only. For the Go2 (legged) a turn in place steps, and the drive-up's first steps may still lift
   a foot over the last nosing, so its own step height counts. Before the bar is read as wall-induced on the Go2, its
   turn on flat ground should be measured as a control;

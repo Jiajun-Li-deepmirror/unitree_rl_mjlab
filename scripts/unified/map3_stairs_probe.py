@@ -227,7 +227,9 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   land = {q: torch.zeros(n, device=dev) for q in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off",
                                                   "turn_lift", "wall_sum", "wall_touch")}
   g0 = torch.full((n,), float("inf"), device=dev)          # the front feet's lowest height in the first stand
-  app_hi = torch.full((n,), -float("inf"), device=dev)     # their highest point in the drive-up and the first stand
+  app_lift = torch.zeros(n, device=dev)   # a front foot's highest rise above its take-off from the landing's level in
+                                          # the drive-up and the first stand (item 21's part A; the last riser's step-up
+                                          # takes off from the tread below, so it is not counted)
   lift_turn, lift_stand = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
   p_turn = torch.full((n, 2), float("nan"), device=dev)   # the base where the turn began
   turn_move = torch.zeros(n, device=dev)                  # its largest horizontal distance from there in the turn
@@ -333,6 +335,9 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     t_air = torch.where(start, torch.zeros_like(t_air), torch.where(air_on, t_air + dt, t_air))
     land_now = air_on & c4
     top_steps += (land_now & (t_air > TOP_AIR_S) & (z_apex - z_take > TOP_LIFT_M)).float()
+    a_win = (((phase == 3) | (phase == 4)) & alive)
+    rise_now = torch.where(air_on[:, :2], z_apex[:, :2] - z_take[:, :2], torch.zeros_like(z_take[:, :2])).amax(dim=1)
+    app_lift = torch.where(a_win, torch.maximum(app_lift, rise_now), app_lift)
     air_on = air_on & ~c4 & win
     prev4 = c4
     c = torch.stack([(torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N)
@@ -341,7 +346,6 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     land["wall_touch"] += (on_land & wall_c.any(dim=1)).float()
     fz = front_feet_z().min(dim=1).values, front_feet_z().max(dim=1).values
     g0 = torch.where(on_land & (phase == 4), torch.minimum(g0, fz[0]), g0)
-    app_hi = torch.where(alive & ((phase == 3) | (phase == 4)), torch.maximum(app_hi, fz[1]), app_hi)
     up = torch.where(torch.isfinite(g0), fz[1] - g0, zero)
     lift_turn = torch.where(on_land & (phase == 5), torch.maximum(lift_turn, up), lift_turn)
     lift_stand = torch.where(on_land & (phase == 6), torch.maximum(lift_stand, up), lift_stand)
@@ -364,7 +368,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
-          "lift_app": np_(torch.where(torch.isfinite(g0) & torch.isfinite(app_hi), app_hi - g0, torch.full_like(g0, float("nan")))),
+          "lift_app": np_(app_lift),
           "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move), "top_gap": np_(top_gap),
           "top_by_wall": np_(top_by_wall), "top_steps": np_(top_steps)}
 
@@ -518,9 +522,10 @@ def report(rows) -> None:
           f"(R3's top landing is 0.91 m wide with the stairwell's well unrailed on its west side: a turn that wanders "
           f"there falls in)")
   # acceptance item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿", bar <= 5 % in every condition;
-  # accept_judge.spec_wall): of the robots that took the top, those whose front foot / wheel rose more than 10 cm
-  # above the first stand's lowest -- (A) in the drive-up along the landing (to 0.85 m from the wall) or the first
-  # stand, (B) in the turn or the last stand -- or that fell between the top and the end; judged: the larger share
+  # accept_judge.spec_wall): of the robots that took the top, those whose front foot / wheel rose more than 10 cm --
+  # (A) in the drive-up along the landing (to 0.85 m from the wall) or the first stand, above its take-off at the
+  # landing's level, (B) in the turn or the last stand, above the first stand's lowest -- or that fell between the top
+  # and the end; judged: the larger share
   app_bad, ts_bad, nreach, nfell = 0, 0, 0, 0
   for r in rows:
     rch = r["reached"].astype(bool)
