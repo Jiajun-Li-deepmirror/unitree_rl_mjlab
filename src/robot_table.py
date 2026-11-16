@@ -47,9 +47,9 @@ ROBOTS: dict[str, dict] = {
                     "payload for training and acceptance); foot sphere 2.2 cm"),
   "Go2W": dict(kind="wheeled", train_payload="max=8,x=0.15,y=0.08,z=0.20", accept_payload="8,0.15,0,0.20",
                payload_point=((-0.25, 0.25), (-0.12, 0.12), (-0.05, 0.30)),
-               typical_payload="4,0,0,0.10,0.20,0.08,0.10",
-               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros", "motor": "gom8010", "terrain": "wide"},
-               notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40"),
+               typical_payload="4,0,0,0.10,0.15,0.08,0.10",
+               wall_stop=0.85, foot_r=0.022, wheel_r=0.086, wheel_scale=10, params={"model": "uros", "motor": "gom8010", "terrain": "wide", "payload_box": "tinynav"},
+               notes="payload: Unitree's walking figure ~8 kg (max ~12; 2026-11-12 the walking payload); leg kp 20/20/40; 2026-11-16 (the user): the typical mount box x +-0.15 as tinynav-sim's PAYLOAD_LIMITS (was +-0.20)"),
   "As2": dict(kind="legged", train_payload="max=15,x=0.15,y=0.08,z=0.20", accept_payload="15,0.15,0,0.20",
               # 2026-11-15 (the As2's first run on the unified flow; the values the user confirmed 2026-11-14,
               # "2 按建议"): the Go2's box and typical condition scaled by the body's size, half the walking payload

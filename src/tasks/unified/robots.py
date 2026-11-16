@@ -271,6 +271,26 @@ def _training_terrain(cfg: ManagerBasedRlEnvCfg, params: str) -> None:
   cfg.scene.terrain = replace(cfg.scene.terrain, terrain_generator=replace(gen, sub_terrains=subs))
 
 
+# The training payload's mount box aligned with tinynav-sim (2026-11-16, the user via go2-home: "可以"): its webpanel
+# PAYLOAD_LIMITS for the go2w are 12 kg, |x| 0.15, |y| 0.08, z 0-0.20 in the base frame; the training box is 1.25x of
+# it -- a robot parameter, payload_box=tinynav in BLIND_PARAMS (the Go2W). The training build alone (map3's tiles,
+# play=False; teacher_env._payload_point); the corner share and the redraw as before; the payload limit is the
+# recipe's (the minimal recipe's 12 kg). Before it: the robot table's payload_point, x +-0.25, y +-0.12, z -0.05-0.30.
+# U_PAYLOAD_BOX=base (an old checkpoint's switch, off unless set): the box before it.
+PAYLOAD_BOX_SWITCH = "U_PAYLOAD_BOX"
+PAYLOAD_BOXES = {"tinynav": ((-0.19, 0.19), (-0.10, 0.10), (0.0, 0.25))}
+
+
+def payload_box(robot: "URobot") -> tuple | None:
+  """The robot's training mount box from payload_box=... in its BLIND_PARAMS; None without it or with U_PAYLOAD_BOX=base."""
+  v = os.environ.get(PAYLOAD_BOX_SWITCH) or None
+  assert v in (None, "base"), f"{PAYLOAD_BOX_SWITCH}={v!r}: base or unset"
+  p = dict(kv.split("=", 1) for kv in unified_recipe(robot)["env"].split(",") if "=" in kv)
+  m = p.get("payload_box")
+  assert m in (None,) + tuple(PAYLOAD_BOXES), f"payload_box={m!r}: one of {tuple(PAYLOAD_BOXES)}"
+  return None if (v == "base" or m is None) else PAYLOAD_BOXES[m]
+
+
 # U_WALL_STOP_PLAY=1 (an evaluation's diagnostic switch, off unless set): a play build keeps the key endwall's fan and
 # the command's wall stop. Off (2026-11-16, go2-home for the user's acceptance): every play / evaluation build drops
 # them -- every model is judged on the same commands, and the deployed wall guard is outside the policy (a run with

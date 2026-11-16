@@ -9,7 +9,9 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 
 - The three conditions carry the **same items**; only the values may differ. The conditions are:
   - unloaded;
-  - typical payload (4 kg at the robot table's typical point);
+  - typical payload (4 kg, its mount drawn per robot from the robot table's typical box: the Go2W x ±0.15, y ±0.08,
+    z 0–0.20 m in the base frame since 2026-11-16, tinynav-sim's PAYLOAD_LIMITS (the user: "可以"; it was x ±0.20);
+    the Go2 x ±0.20, y ±0.08, z 0–0.20);
   - full payload (8 kg at the acceptance point 0.15, 0, 0.20).
 - Concrete numbers only; there is no "not worse than the deployed model" bar.
 - A foot that touches the tread without load does **not** count as down. The four-feet item is contact based.

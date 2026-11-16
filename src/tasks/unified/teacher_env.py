@@ -59,7 +59,7 @@ from . import flat as uflat
 from . import recipe as urecipe
 from . import stick_slip
 from .models import PRIV_GROUP
-from .robots import TERRAINS, URobot, base_env_cfg, robot_motor, training_terrain, unified_recipe
+from .robots import TERRAINS, URobot, base_env_cfg, payload_box, robot_motor, training_terrain, unified_recipe
 
 # (foot_contact_forces stays critic-only: world-frame vectors, see symmetry.py)
 PRIVILEGED_ACTOR_TERMS = ("base_lin_vel", "foot_height", "foot_air_time", "foot_contact")
@@ -927,7 +927,7 @@ def m_weights(factors: dict[str, float], items: list[dict], weights: dict, rewar
   return missing
 
 
-def _payload_point(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
+def _payload_point(cfg: ManagerBasedRlEnvCfg, robot: URobot, play: bool = False) -> None:
   """The payload's mount point drawn from the robot table's wide box (robot.payload_point; 2026-11-12, the user:
   "负载的重心偏移可以尽可能的大一些，因为我也不知道之后整机上会装在哪里"), in place of the blind chains' range. The
   event's corner share (heavy robots at the box's front or rear end, at its top) follows the box. Where the robots
@@ -936,7 +936,8 @@ def _payload_point(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
     return
   ev = cfg.events["base_payload"]
   assert ev.func is mdp.base_payload_point, "the training terrain's payload event is not the payload point"
-  box = tuple((float(lo), float(hi)) for lo, hi in robot.payload_point)
+  tn = None if play else payload_box(robot)   # (payload_box=tinynav, the Go2W: the training box 1.25x tinynav-sim's)
+  box = tuple((float(lo), float(hi)) for lo, hi in (tn or robot.payload_point))
   assert len(box) == 3 and all(lo <= hi for lo, hi in box), f"{robot.name}: payload_point {robot.payload_point}"
   ev.params["pos_ranges"] = box
 
@@ -1922,7 +1923,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     stick_slip.add(cfg)   # after the sensor and the privileged group
   other_shares = None
   if terrain == "map3":
-    _payload_point(cfg, robot)
+    _payload_point(cfg, robot, play)
     # (the training terrain's slopes: robots.TERRAINS -- terrain=wide, the Go2W: 0.36 in training; play SLOPE_MAX)
     tw = None if play else training_terrain(robot)
     other_shares = _add_slopes(cfg, TERRAINS[tw]["slope_range"][1] if tw else SLOPE_MAX)

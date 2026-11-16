@@ -74,6 +74,15 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
   **Rule: U_TERRAIN=base for the checkpoints trained before it** (every Go2W run launched on a commit before 06e2647:
   go2w_min_s0 and everything before it, and the runs launched on 36d0fe8): their training terrain as it was; evaluation terrains do not depend on
   it, so it matters only for a training or a resume. Tests: scripts/unified/terrain_wide_test.py.
+- The training payload's mount box payload_box=tinynav (the user via go2-home, 2026-11-16: "可以"; a robot parameter
+  like the motor model, the Go2W): 1.25x tinynav-sim's PAYLOAD_LIMITS (12 kg, |x| 0.15, |y| 0.08, z 0-0.20):
+  x ±0.19, y ±0.10, z 0-0.25 (was the robot table's payload_point x ±0.25, y ±0.12, z -0.05-0.30); the corner share
+  and the redraw as before; the limit is the recipe's (the minimal recipe's 12 kg). Training builds only.
+  **Rule: U_PAYLOAD_BOX=base for the checkpoints trained before it** (a commit before this one's). The acceptance's
+  typical box for the Go2W became x ±0.15 at the same time (was ±0.20); the full-load point is unchanged.
+- Tomorrow's base (the user, 2026-11-16): the minimal recipe + gom8010 + terrain=wide + payload_box=tinynav +
+  U_CMD_WIDE=1.25 + U_DR_WIDE=1.25, from zero; scripts/unified/base_1117_test.py checks that they compose (U_DR_WIDE
+  widens the motor model's joint factors around 1: friction / damping x 0.375-1.625, armature x 0.625-1.375).
 - Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
   ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
   gives ~15.9 N m at 1.5 m/s (~17 rad/s at the wheel).
