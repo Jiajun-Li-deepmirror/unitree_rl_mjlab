@@ -38,7 +38,8 @@ DIRS = ("up", "down")
 GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, spinalt=0.10, lift=0.0, creep=0.3,
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
-            stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100)
+            stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
+            rtouch=0.5, cv=0.2, tops=0.5)
 
 
 def band_val(v, b, d):
@@ -66,6 +67,8 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
     f"  (0.0, 0.3, 0.0) | -0.5 0.0 0.5 | {-g['drift'] * t:.3f} 0.00 {g['drift'] * t:.3f} | 1.9 {t:.2f} 2.1 | 0.1 0.2 | 0.1 0.2 | 0/768",
     f"  (0.0, 0.0, 1.0) | -158 -157 -156 | -0.03 0.00 0.03 | -0.03 0.00 0.03 | 0.03 {g['spin']:.3f} | 0.03 0.06 | 0/768",
   ]
+  drift += ["BOB (1.0, 0.0, 0.0) | height std cm p50 0.40 p90 0.60 | pitch std deg p50 0.80 p90 1.10 | robots 768",
+            "BOB (0.0, 0.6, 0.0) | height std cm p50 0.50 p90 0.70 | pitch std deg p50 0.90 p90 1.30 | robots 768"]
   w("drift3", "\n".join(drift) + "\n")
   w("spinalt", f"       +-0.5 x 3 |  {g['spinalt']:.3f}  0.26        |  0.15  0.26        |  5.27  5.95             | 0/768\n")
   stand = [f"        rest |   0.02     0.0 |     {g['creep']:.2f}  0.17    0.05 |   {g['lift']:.1f}    0.00 |  0.001   0.000  0.000 | 0/768",
@@ -112,7 +115,10 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   ds = []
   for b in BANDS:
     for d in DIRS:
-      ds.append(f"SUM {b} {d} rear_calf 1.00 rear_thigh 0.00 front_calf 3.00 front_thigh 0.00 roll_std 1.3 falls {bv('dfalls', b, d)}")
+      ds.append(f"SUM {b} {d} rear_calf 1.00 rear_thigh 0.00 front_calf 3.00 front_thigh 0.00 roll_std 1.3 pitch_std 1.1 "
+                f"roll_rate {bv('rollr', b, d):.1f} pitch_rate {bv('pitchr', b, d):.1f} falls {bv('dfalls', b, d)}")
+      ds.append(f"SUMQ {b} {d} front_touch {bv('ftouch', b, d):.2f} rear_touch {bv('rtouch', b, d):.2f} speed_cv_p50 "
+                f"{bv('cv', b, d):.3f} speed_cv_p90 0.400")
       ds.append(f"SUMLAT {b} {d} meander 0.6 meander_pp {bv('mpp', b, d):.3f} sway 0.3 drift 0.7 hd_mean 0.6 hd_max 1.9 "
                 f"vy 0.05 wz 9.4 hd_max_p90 {bv('hd', b, d):.3f} n 72")
   w("descent", "\n".join(ds) + "\n")
@@ -121,7 +127,9 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand, the larger of the drive-up to 0.85 m + "
             f"the first stand and the turn + the last stand (a fall on the landing counts): {g['wall']} of {g['wall_n']} "
             f"robots on the landing = {share:.1f} % (drive-up + stand {share:.1f} %, turn + stand 0.0 %, fell on the "
-            f"landing 0)\n")
+            f"landing 0)\n"
+            f"ALL top-landing steps (item 28): {round(g['tops'] * g['wall_n'])} steps / wheel lifts on the top landing over "
+            f"{g['wall_n']} climbs = {g['tops']:.2f} per climb (front {g['tops']:.2f}, rear 0.00; airborne > 0.06 s, apex > 2 cm)\n")
 
 
 def write_edge(prefix: str, cond: str, wheeled: bool, **over) -> None:
@@ -164,7 +172,8 @@ def main() -> int:
           "stop_held": (95.0, 95.0, 90.0), "four_feet": (0.9, 0.9, 0.8), "heading": (8.0, 8.0, 10.0),
           "edge": (0.10, 0.10, 0.12), "kicks_up": (0.35, 0.35, 0.40), "slips": (0.06, 0.06, 0.07),
           "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0),
-          "wall_lift": (5.0, 5.0, 5.0)}
+          "wall_lift": (5.0, 5.0, 5.0), "pitch_down": (45.0, 45.0, 45.0), "roll_up": (45.0, 45.0, 45.0),
+          "strikes": (2.0, 2.0, 2.0), "top_steps": (1.0, 1.0, 1.0)}
   for k, v in want.items():
     check(tuple(S[k][c] for c in aj.CONDS) == v, f"SPEC {k} = {v}")
   check(S["drift_head"]["full"] == (3.0, 8.0), "drift heading p50 3 / p10-p90 8 deg")
@@ -222,11 +231,26 @@ def main() -> int:
       ("Go2W", "full", {"mpp": {("8-12cm", "up"): 7.5, "_": 2.0}}, "楼梯蛇行峰峰值超过 7 cm"),
       ("Go2", "unl", {"dfalls": {("5-8cm", "up"): 1, "_": 0}}, "楼梯走直线"),
       ("Go2W", "unl", {"wall": 6}, "面前是墙不抬腿"), ("Go2W", "typ", {"wall": 6}, "面前是墙不抬腿"),
-      ("Go2", "full", {"wall": 6}, "面前是墙不抬腿"), ("Go2W", "full", {"wall_n": 0, "wall": 0}, "面前是墙不抬腿"),
+      ("Go2", "full", {"wall": 6}, "面前是墙不抬腿"),
+      ("Go2W", "unl", {"pitchr": {("12-15cm", "down"): 46.0, "_": 30.0}}, "下楼点头"),
+      ("Go2W", "typ", {"rollr": {("8-12cm", "up"): 46.0, "_": 30.0}}, "上楼晃"),
+      ("Go2", "full", {"pitchr": {("12-15cm", "down"): 46.0, "_": 30.0}}, "下楼点头"),
+      ("Go2W", "unl", {"pitchr": {("8-12cm", "up"): 60.0, "_": 30.0}, "rollr": {("8-12cm", "down"): 60.0, "_": 30.0}}, None),
+      ("Go2W", "unl", {"ftouch": {("15-18cm", "down"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
+      ("Go2", "typ", {"rtouch": {("5-8cm", "up"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
+      ("Go2W", "full", {"rtouch": {("12-15cm", "down"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
+      ("Go2W", "unl", {"tops": 1.01}, "顶部平台多余踏步"), ("Go2", "full", {"tops": 1.2}, "顶部平台多余踏步"),
+      ("Go2W", "unl", {"cv": 0.9}, None),
     ]
+    first = acceptance("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
+    check(first.startswith("FAIL") and sorted(i.split("：")[0] for i in items(first)) == ["满载 面前是墙不抬腿", "满载 顶部平台多余踏步"],
+          f"no robot on a top landing: items 21 and 28 fail ({first[:160]})")
     for i, (r, cond, over, name) in enumerate(cases):
       first = acceptance(r, f"c{i}", **{cond: over})
       it = items(first)
+      if name is None:   # the reading is not judged there (pitch rate up / roll rate down; the speed's CV, reported)
+        check(first == "PASS", f"{r} {cond} {over}: not judged, PASS ({first[:160]})")
+        continue
       label = aj.COND_LABEL[cond] + name
       good = first.startswith("FAIL") and len(it) == 1 and it[0].startswith(label)
       check(good, f"{r} {cond} {over}: FAIL on {label!r} only ({first[:160]})")
@@ -236,7 +260,9 @@ def main() -> int:
              ("Go2", "unl", {"op": 0.95, "noop": 0.90}), ("Go2", "full", {"feet": 0.80}), ("Go2", "unl", {"kicks": 0.35}),
              ("Go2", "unl", {"mid": 0.76}), ("Go2W", "unl", {"slide": 0.039}), ("Go2", "unl", {"stalled": 5}),
              ("Go2", "unl", {"hd": 8.0}), ("Go2W", "unl", {"mpp": 5.0}), ("Go2", "full", {"mpp": 10.0}),
-             ("Go2W", "full", {"wall": 5}), ("Go2", "typ", {"wall": 5})]
+             ("Go2W", "full", {"wall": 5}), ("Go2", "typ", {"wall": 5}),
+             ("Go2W", "unl", {"pitchr": 45.0, "rollr": 45.0}), ("Go2W", "typ", {"ftouch": 2.0, "rtouch": 2.0}),
+             ("Go2W", "full", {"tops": 1.0})]
     for i, (r, cond, over) in enumerate(edges):
       first = acceptance(r, f"e{i}", **{cond: over})
       check(first == "PASS", f"{r} {cond} {over}: exactly the bar passes ({first[:160]})")
@@ -245,7 +271,9 @@ def main() -> int:
     top = {"feet": {"15-18cm": 0.5, "_": 1.0}, "speed": {"15-18cm": 0.5, "_": 1.0}, "held": {"15-18cm": 50, "_": 100},
            "stalled": {"15-18cm": 30, "_": 0}, "kicks": {"15-18cm": 0.9, "_": 0.2}, "edge": {"15-18cm": 0.5, "_": 0.05},
            "falls": {("15-18cm", "down"): 3, "_": 0}, "hd": {"15-18cm": 15.0, "_": 3.0}, "mpp": {"15-18cm": 15.0, "_": 2.0},
-           "dfalls": {("15-18cm", "down"): 2, "_": 0}}
+           "dfalls": {("15-18cm", "down"): 2, "_": 0}, "pitchr": {("15-18cm", "down"): 80.0, "_": 30.0},
+           "rollr": {("15-18cm", "up"): 80.0, "_": 30.0}, "ftouch": {"15-18cm": 9.0, "_": 0.5},
+           "rtouch": {"15-18cm": 9.0, "_": 0.5}}
     first = acceptance("Go2", "top_full", full=top)
     check(first == "PASS", f"full payload, every stairs / flight item bad on 15-18 cm only: PASS ({first[:200]})")
     first = acceptance("Go2", "top_unl", unl={"feet": {"15-18cm": 0.5, "_": 1.0}})

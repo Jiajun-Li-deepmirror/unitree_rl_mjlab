@@ -97,6 +97,10 @@ p0 = robot.data.root_link_pos_w[:, :2].clone()
 fell = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 far = torch.zeros(env.num_envs, device=env.device)
 planar = C[:, :2].norm(dim=1, keepdim=True).clamp(min=1e-6)
+# acceptance item 29 (2026-11-16, flat body bob): the base height and pitch per robot over the steady part (from
+# BOB_FROM_S on), their std -- the straight commands' rows "BOB ..." after the table (no new run)
+BOB_FROM_S = 3.0
+bob = {q: torch.zeros(env.num_envs, device=env.device) for q in ("n", "z", "z2", "p", "p2")}
 for k in range(int(args.seconds / env.step_dt)):
   cmd.vel_command_b[:] = C
   if args.lin_accel > 0:
@@ -109,6 +113,16 @@ for k in range(int(args.seconds / env.step_dt)):
     obs, _, dones, extras = venv.step(policy(obs))
   fell |= dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
   far = torch.maximum(far, (robot.data.root_link_pos_w[:, :2] - p0).norm(dim=1))
+  if (k + 1) * env.step_dt >= BOB_FROM_S:
+    gz = robot.data.projected_gravity_b
+    pit = torch.rad2deg(torch.atan2(gz[:, 0], -gz[:, 2]))
+    zb = robot.data.root_link_pos_w[:, 2]
+    live = (~fell).float()
+    bob["n"] += live
+    bob["z"] += zb * live
+    bob["z2"] += zb * zb * live
+    bob["p"] += pit * live
+    bob["p2"] += pit * pit * live
 d_all = robot.data.heading_w - yaw0
 d_all = torch.rad2deg(torch.atan2(torch.sin(d_all), torch.cos(d_all)))
 rel_all = robot.data.root_link_pos_w[:, :2] - p0
@@ -128,4 +142,19 @@ for i, c in enumerate(CMDS):
   across = -ax[:, 1] * rel[:, 0] + ax[:, 0] * rel[:, 1]
   along = (ax * rel).sum(1)
   print(f"{str(c):>18} | {f3(d)}    | {m3(along)}  | {m3(across)}   | {m2(rel.norm(dim=1))}        | {m2(far[ok])}        | {int((fell & g).sum())}/{n}")
+bn = bob["n"].clamp(min=1)
+zstd = 100 * torch.sqrt((bob["z2"] / bn - (bob["z"] / bn) ** 2).clamp(min=0))
+pstd = torch.sqrt((bob["p2"] / bn - (bob["p"] / bn) ** 2).clamp(min=0))
+for i, c in enumerate(CMDS):
+  if c[2] != 0.0 or (c[0] == 0.0 and c[1] == 0.0):
+    continue
+  g = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  g[i * n : (i + 1) * n] = True
+  ok = g & ~fell & (bob["n"] > 10)
+  if not ok.any():
+    print(f"BOB {str(c)} | height std cm p50 nan p90 nan | pitch std deg p50 nan p90 nan | robots 0")
+    continue
+  zq, pq = zstd[ok].quantile(q[1:]).tolist(), pstd[ok].quantile(q[1:]).tolist()
+  print(f"BOB {str(c)} | height std cm p50 {zq[0]:.2f} p90 {zq[1]:.2f} | pitch std deg p50 {pq[0]:.2f} p90 {pq[1]:.2f} | "
+        f"robots {int(ok.sum())}")
 env.close()

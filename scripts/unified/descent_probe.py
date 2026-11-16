@@ -194,6 +194,10 @@ def main() -> int:
   c = {k: {q: zeros() for q in ("steps", "onsets", "edge", "fmax")} for k in segs}
   prev = {k: torch.zeros(n, dtype=torch.bool, device=dev) for k in segs}
   any_leg = zeros()
+  # acceptance items 27 and 30 (2026-11-16): the steps on the flight with a front / rear calf or thigh touching, and
+  # the speed along the spawn heading (its coefficient of variation per robot: stop-and-go)
+  side_touch = {s: zeros() for s in SIDES}
+  vq = {q: zeros() for q in ("n", "v", "v2")}
   post_steps = max(1, int(round(JOLT_S / dt)))
   since = torch.full((n,), 10 ** 6, device=dev)
   jl = {q: zeros() for q in ("post_n", "post_r", "post_p", "oth_n", "oth_r", "oth_p")}
@@ -247,6 +251,14 @@ def main() -> int:
       prev[k] = hit
       touching |= h
     any_leg += touching.float()
+    for s, legs in SIDES.items():
+      side_touch[s] += torch.stack([prev[k] & on_fl for k in segs if k[0] in legs]).any(dim=0).float()
+    head = torch.stack((torch.cos(yaw0), torch.sin(yaw0)), dim=1)
+    v_along = (robot.data.root_link_lin_vel_w[:, :2] * head).sum(dim=1)
+    fq = on_fl.float()
+    vq["n"] += fq
+    vq["v"] += v_along * fq
+    vq["v2"] += v_along * v_along * fq
     for tag, m in (("post", on_fl & (since < post_steps)), ("oth", on_fl & ~(since < post_steps))):
       jl[f"{tag}_n"] += m.float()
       jl[f"{tag}_r"] += w[:, 0].abs() * m.float()
@@ -267,6 +279,10 @@ def main() -> int:
   J = {q: np_(v) for q, v in jl.items()}
   fl_n = S["flight"]["n"]
   anyl = np_(any_leg)
+  ST = {s: np_(v) for s, v in side_touch.items()}
+  VQ = {q: np_(v) for q, v in vq.items()}
+  vmean = VQ["v"] / np.maximum(VQ["n"], 1)
+  cv = np.sqrt(np.maximum(VQ["v2"] / np.maximum(VQ["n"], 1) - vmean ** 2, 0)) / np.maximum(np.abs(vmean), 1e-6)
 
   def sway(z):
     A = S[z]
@@ -350,6 +366,13 @@ def main() -> int:
       print(f"SUM {band(lvl)} {direc} " + " ".join(f"{k} {v:.2f}" for k, v in vals.items())
             + f" roll_std {np.median(rstd[m]):.2f} pitch_std {np.median(pstd[m]):.2f} roll_rate {np.median(wr[m]):.1f}"
             f" pitch_rate {np.median(wp[m]):.1f} falls {int(np_(fell)[(lv == lvl) & (dr == direc)].sum())}")
+      # items 27 / 30: % of the flight's steps with a front / rear calf or thigh on the steps (pooled over the
+      # robots), and the forward speed's coefficient of variation along the flight (p50 / p90 over the robots)
+      mc = m & (vmean > 0.05)
+      print(f"SUMQ {band(lvl)} {direc} front_touch {100 * ST['front'][m].sum() / max(fl_n[m].sum(), 1):.2f} rear_touch "
+            f"{100 * ST['rear'][m].sum() / max(fl_n[m].sum(), 1):.2f} speed_cv_p50 "
+            f"{np.median(cv[mc]) if mc.any() else float('nan'):.3f} speed_cv_p90 "
+            f"{np.percentile(cv[mc], 90) if mc.any() else float('nan'):.3f}")
   lateral(tr, np_(yaw0), np_(p0), lv, dr, dt)
   env.close()
   return 0

@@ -364,9 +364,9 @@ def meander_bar(r: str) -> float | None:
 
 
 def flight_path(path: str) -> dict[tuple[str, str], dict[str, float]]:
-  """descent_probe.py's SUM / SUMLAT lines: (band, direction) -> their readings ({} if none)."""
+  """descent_probe.py's SUM / SUMLAT / SUMQ lines: (band, direction) -> their readings ({} if none)."""
   out: dict[tuple[str, str], dict[str, float]] = {}
-  for m in re.finditer(r"^SUM(?:LAT)? (\d+-\d+cm) (up|down) (.*)$", txt(path), re.M):
+  for m in re.finditer(r"^SUM(?:LAT|Q)? (\d+-\d+cm) (up|down) (.*)$", txt(path), re.M):
     toks = m.group(3).split()
     out.setdefault((m.group(1), m.group(2)), {}).update(
       {toks[i]: float(toks[i + 1]) for i in range(0, len(toks) - 1, 2)})
@@ -571,7 +571,13 @@ SPEC: dict[str, dict] = {
   "mid": {"unl": 0.76, "typ": 0.76, "full": 0.72},                        # legged
   "stalled": {c: 5.0 for c in CONDS},                                      # % per band and direction
   "wall_lift": {c: 5.0 for c in CONDS},                                    # % of the robots on map3's top landings
+  "pitch_down": {c: 45.0 for c in CONDS},                                  # deg/s, descents' pitch rate RMS p50
+  "roll_up": {c: 45.0 for c in CONDS},                                     # deg/s, climbs' roll rate RMS p50
+  "strikes": {c: 2.0 for c in CONDS},                                      # % of a flight's steps, front / rear
+  "top_steps": {c: 1.0 for c in CONDS},                                    # per climb, map3's top landings
 }
+# items 29 and 30 are reported until go2-home fixes their bars from w27d's readings (the proposals below)
+SPEC_REPORT = {"bob_height_cm": 1.0, "bob_pitch_deg": 2.0, "speed_cv": 0.3}
 SPEC_LONG_TERM = {"kicks_up": 0.245, "slips": 0.0245, "mid": 0.80}   # reported beside the readings
 
 
@@ -965,6 +971,82 @@ def spec_wall(r: str, path: str, cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}面前是墙不抬腿：{share:.1f}%", share / bar - 1.0)
 
 
+def top_steps(path: str) -> tuple[float, float, float, int] | None:
+  """map3_stairs_probe.py's item-28 line: (per climb, front, rear, climbs); None without the line."""
+  m = re.search(r"^ALL top-landing steps \(item 28\): \d+ steps .*? over (\d+) climbs = ([\d.]+|nan) per climb "
+                r"\(front ([\d.]+|nan), rear ([\d.]+|nan)", txt(path), re.M)
+  return (float(m.group(2)), float(m.group(3)), float(m.group(4)), int(m.group(1))) if m else None
+
+
+def bob_rows(path: str) -> dict[str, tuple[float, float, float, float]]:
+  """drift_all.py's item-29 rows: command -> (height std cm p50, p90, pitch std deg p50, p90)."""
+  out = {}
+  for m in re.finditer(r"^BOB (\([^)]*\)) \| height std cm p50 (\S+) p90 (\S+) \| pitch std deg p50 (\S+) p90 (\S+)",
+                       txt(path), re.M):
+    out[m.group(1)] = tuple(float(x) for x in m.groups()[1:])
+  return out
+
+
+def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
+  """Items 26-30 (2026-11-16, the user via go2-home: "都加"). From descent_probe's SUM / SUMQ lines (the descent file,
+  already run): 26 the descents' pitch rate and the climbs' roll rate (RMS per robot, p50) per band; 27 the share of
+  the flight's steps with a front / rear calf or thigh on the steps; 30 the forward speed's coefficient of variation
+  (reported). From map3_stairs_probe (the wall file): 28 the top-landing steps / wheel lifts per climb. From drift_all
+  (drift3): 29 the base height / pitch std over the steady cruise (reported). The full payload: 26 and 27 judged on
+  5-15 cm, 15-18 cm reported."""
+  L = COND_LABEL[cond]
+  top = FULL_TOP_BAND if cond == "full" else None
+  rep_ = f"（只判 5–15 cm，{top} 只报告）" if top else ""
+  fp = flight_path(p["descent"])
+  rows = {k: v for k, v in fp.items() if "pitch_rate" in v and "roll_rate" in v}
+  if not rows:
+    sh.missing(f"{L}楼梯机身角速度（descent_probe）")
+  else:
+    pb, rb = SPEC["pitch_down"][cond], SPEC["roll_up"][cond]
+    sh.detail.append(f"{L}下楼俯仰角速度 RMS p50（<= {pb:g}°/s）/ 上楼横滚角速度 RMS p50（<= {rb:g}°/s）{rep_}：" + "，".join(
+      f"{b} {_ud(d)} {v['pitch_rate'] if d == 'down' else v['roll_rate']:.1f}" for (b, d), v in rows.items()))
+    over = [(b, d, v["pitch_rate"] if d == "down" else v["roll_rate"]) for (b, d), v in rows.items() if b != top]
+    od = [(b, x) for b, d, x in over if d == "down" and x > pb]
+    ou = [(b, x) for b, d, x in over if d == "up" and x > rb]
+    if od:
+      sh.fail(f"{L}下楼点头：" + "、".join(f"{b} {x:.1f}°/s" for b, x in od), sum(x / pb - 1.0 for _b, x in od))
+    if ou:
+      sh.fail(f"{L}上楼晃：" + "、".join(f"{b} {x:.1f}°/s" for b, x in ou), sum(x / rb - 1.0 for _b, x in ou))
+  q = {k: v for k, v in fp.items() if "front_touch" in v}
+  if not q:
+    sh.missing(f"{L}小腿大腿磕台阶（descent_probe SUMQ）")
+  else:
+    sb = SPEC["strikes"][cond]
+    sh.detail.append(f"{L}小腿大腿磕台阶，飞段步数占比 前 / 后（<= {sb:g}%）{rep_}：" + "，".join(
+      f"{b} {_ud(d)} {v['front_touch']:.2f}/{v['rear_touch']:.2f}" for (b, d), v in q.items()))
+    so = [(b, d, s, v[f"{s}_touch"]) for (b, d), v in q.items() if b != top for s in ("front", "rear") if v[f"{s}_touch"] > sb]
+    if so:
+      sh.fail(f"{L}小腿大腿磕台阶：" + "、".join(f"{b} {_ud(d)} {'前' if s == 'front' else '后'} {x:.2f}%" for b, d, s, x in so),
+              sum(x / sb - 1.0 for _b, _d, _s, x in so))
+    cvb = SPEC_REPORT["speed_cv"]
+    sh.detail.append(f"{L}楼梯走走停停（只报告，提议 <= {cvb:g}）：速度变异系数 p50 " + "，".join(
+      f"{b} {_ud(d)} {v.get('speed_cv_p50', float('nan')):.2f}" for (b, d), v in q.items()))
+  ts = top_steps(p["wall"])
+  if ts is None:
+    sh.missing(f"{L}顶部平台多余踏步（map3_stairs_probe）")
+  else:
+    per, fr, rr, nc = ts
+    tb = SPEC["top_steps"][cond]
+    if nc == 0:
+      sh.fail(f"{L}顶部平台多余踏步：没有机器人到达顶层平台")
+    else:
+      sh.detail.append(f"{L}顶部平台多余踏步：每次爬楼 {per:.2f}（前 {fr:.2f}，后 {rr:.2f}；<= {tb:g}；{nc} 次）")
+      if per > tb + 1e-9:
+        sh.fail(f"{L}顶部平台多余踏步：每次 {per:.2f}", per / tb - 1.0)
+  bob = bob_rows(p["drift3"])
+  if not bob:
+    sh.missing(f"{L}平地颠晃（drift_all BOB）")
+  else:
+    hb, pb2 = SPEC_REPORT["bob_height_cm"], SPEC_REPORT["bob_pitch_deg"]
+    sh.detail.append(f"{L}平地颠晃（只报告，提议高度 <= {hb:g} cm、俯仰 <= {pb2:g}°；稳态段 std p50）：" + "，".join(
+      f"{c} {v[0]:.2f} cm / {v[2]:.2f}°" for c, v in bob.items()))
+
+
 def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
   """Items 14 and 15: the heading's max p90 and the meander p-p p50 per band and direction (descent_probe
   --straight), and its falls. The full payload: 5-15 cm, 15-18 cm reported."""
@@ -1015,6 +1097,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False)
     spec_stairs(r, p["stairs"], cond, sh)
     spec_flight(r, p["descent"], cond, sh)
     spec_wall(r, p["wall"], cond, sh)
+    spec_motion(r, p, cond, sh)
     if expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge")):
       E = COND_LABEL[cond] + EDGE_LABEL
       spec_stairs(r, p["stairsedge"], cond, sh, label=E)

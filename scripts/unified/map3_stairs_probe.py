@@ -60,6 +60,8 @@ LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top land
 HELD_M = 0.05
 FORCE_N = 5.0
 WALL_LIFT_M = 0.10   # acceptance item 21's lift (accept_judge.SPEC['wall_lift'])
+TOP_AIR_S, TOP_LIFT_M = 0.06, 0.02   # item 28's step: airborne longer, apex higher than the take-off (stair_wheels.py)
+TOP_LEVEL_TOL = 0.03   # a foot within this of the top landing's level stands on it (a tread below is >= 5 cm lower)
 
 
 def main() -> int:
@@ -169,14 +171,21 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   wheel_ids, _ = robot.find_bodies([r"^FL_wheel_link$", r"^FR_wheel_link$"]) if any(
     "wheel_link" in b for b in robot.body_names) else ([], [])
   calf_ids, _ = robot.find_bodies([r"^FL_calf$", r"^FR_calf$"])
+  # (in feet4's order, FL FR RL RR: preserve_order)
+  wheel4, _ = robot.find_bodies([rf"^{l}_wheel_link$" for l in ("FL", "FR", "RL", "RR")], preserve_order=True) \
+    if wheel_ids else ([], [])
+  calf4, _ = robot.find_bodies([rf"^{l}_calf$" for l in ("FL", "FR", "RL", "RR")], preserve_order=True)
 
-  def front_feet_z():
-    if wheel_ids:
-      return robot.data.body_link_pos_w[:, wheel_ids, 2]
-    q = robot.data.body_link_quat_w[:, calf_ids]          # w x y z
+  def feet_z(wheels, calves):
+    if wheels:
+      return robot.data.body_link_pos_w[:, wheels, 2]
+    q = robot.data.body_link_quat_w[:, calves]            # w x y z
     w, x, y = q[..., 0], q[..., 1], q[..., 2]
     zz = 1 - 2 * (x * x + y * y)                          # the calf frame's z axis, its world z component
-    return robot.data.body_link_pos_w[:, calf_ids, 2] - 0.213 * zz
+    return robot.data.body_link_pos_w[:, calves, 2] - 0.213 * zz
+
+  def front_feet_z():
+    return feet_z(wheel_ids, calf_ids)
   env.reset()
   obs = venv.get_observations()
   yaw = math.radians(sc.yaw_deg)
@@ -226,6 +235,18 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   # each wheel / foot 1 s into the stop: 0 in the air, 1 on a tread (|n_z| >= 0.9), 2 on a step's edge (0.5-0.9),
   # 3 against a riser (< 0.5)
   stop_feet = torch.full((n, 4), -1, dtype=torch.long, device=dev)
+  # item 28 (2026-11-16, top-landing extra steps / wheel lifts; tinynav's slide gate's measure, stair_wheels.py): a
+  # wheel / foot that stood on the top landing's level leaves the ground for > TOP_AIR_S with its apex > TOP_LIFT_M
+  # above the take-off, in the climb's end, the drive-up and the first stand (phases 2-4); per climb = per robot that
+  # took the top. The landing's level: the four feet's lowest point in the first 0.5 s (the bottom floor) + the rise
+  z_floor = torch.full((n,), float("inf"), device=dev)
+  t_air = torch.zeros(n, 4, device=dev)
+  air_on = torch.zeros(n, 4, dtype=torch.bool, device=dev)
+  z_take = torch.zeros(n, 4, device=dev)
+  z_apex = torch.zeros(n, 4, device=dev)
+  prev4 = torch.ones(n, 4, dtype=torch.bool, device=dev)
+  top_steps = torch.zeros(n, 4, device=dev)
+  t_run = 0.0
   state["stop_feet"] = stop_feet
   land_dur = [d for d, _ in LANDING]
   max_steps = int(round(sum(d for d, *_ in sc.segments) / dt))
@@ -297,6 +318,23 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     v_acc += torch.where(win, torch.norm(robot.data.root_link_lin_vel_w[:, :2], dim=1), zero)
     v_n += win.float()
     on_land = (phase >= 4) & (phase <= 6) & alive
+    z4 = feet_z(wheel4, calf4)
+    if t_run < 0.5:
+      z_floor = torch.minimum(z_floor, z4.min(dim=1).values)
+    t_run += dt
+    c4 = torch.stack([(torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N)
+                      for f in feet4], dim=1)
+    lvl_ok = z4 >= (z_floor + rise - TOP_LEVEL_TOL)[:, None]
+    win = (((phase >= 2) & (phase <= 4)) & alive)[:, None]
+    start = prev4 & ~c4 & lvl_ok & win                     # left the ground from the landing's level
+    air_on = air_on | start
+    z_take = torch.where(start, z4, z_take)
+    z_apex = torch.where(start, z4, torch.where(air_on, torch.maximum(z_apex, z4), z_apex))
+    t_air = torch.where(start, torch.zeros_like(t_air), torch.where(air_on, t_air + dt, t_air))
+    land_now = air_on & c4
+    top_steps += (land_now & (t_air > TOP_AIR_S) & (z_apex - z_take > TOP_LIFT_M)).float()
+    air_on = air_on & ~c4 & win
+    prev4 = c4
     c = torch.stack([(torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N)
                      for f in feet], dim=1)
     wall_c = torch.stack([f.data.normal.reshape(n, -1)[:, 2].abs() < 0.5 for f in feet], dim=1) & c
@@ -328,7 +366,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
           "lift_app": np_(torch.where(torch.isfinite(g0) & torch.isfinite(app_hi), app_hi - g0, torch.full_like(g0, float("nan")))),
           "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move), "top_gap": np_(top_gap),
-          "top_by_wall": np_(top_by_wall)}
+          "top_by_wall": np_(top_by_wall), "top_steps": np_(top_steps)}
 
 
 PHASES = ("climb to mid", "mid stop", "climb on", "onto landing", "stand", "turn", "stand 2", "done")
@@ -497,6 +535,14 @@ def report(rows) -> None:
     nfell += int(fl.sum())
   k = max(app_bad, ts_bad)
   sh = lambda x: f"{100 * x / nreach:.1f}" if nreach else "nan"
+  ts_n, ts_f, ts_r = 0.0, 0.0, 0.0
+  for r in rows:
+    rch = r["reached"].astype(bool)
+    ts_f += float(r["top_steps"][rch][:, :2].sum())
+    ts_r += float(r["top_steps"][rch][:, 2:].sum())
+  print(f"ALL top-landing steps (item 28): {int(ts_f + ts_r)} steps / wheel lifts on the top landing over {nreach} climbs = "
+        f"{(ts_f + ts_r) / nreach if nreach else float('nan'):.2f} per climb (front {ts_f / nreach if nreach else float('nan'):.2f}, "
+        f"rear {ts_r / nreach if nreach else float('nan'):.2f}; airborne > {TOP_AIR_S:g} s, apex > {100 * TOP_LIFT_M:.0f} cm)")
   print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand, the larger of the drive-up "
         f"to {APPROACH_STOP_M:.2f} m + the first stand and the turn + the last stand (a fall on the landing counts): "
         f"{k} of {nreach} robots on the landing = {sh(k)} % (drive-up + stand {sh(app_bad)} %, turn + stand {sh(ts_bad)} %, "
