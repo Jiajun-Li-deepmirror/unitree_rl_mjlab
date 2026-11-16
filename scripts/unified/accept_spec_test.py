@@ -39,7 +39,8 @@ GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, sp
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
             stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
-            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0, tfalls=0, tstuck=0)
+            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0, tfalls=0, tstuck=0, bobh=0.4,
+            bobp=0.8, bobhs=0.5, bobps=3.9)
 
 
 def band_val(v, b, d):
@@ -67,8 +68,8 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
     f"  (0.0, 0.3, 0.0) | -0.5 0.0 0.5 | {-g['drift'] * t:.3f} 0.00 {g['drift'] * t:.3f} | 1.9 {t:.2f} 2.1 | 0.1 0.2 | 0.1 0.2 | 0/768",
     f"  (0.0, 0.0, 1.0) | -158 -157 -156 | -0.03 0.00 0.03 | -0.03 0.00 0.03 | 0.03 {g['spin']:.3f} | 0.03 0.06 | 0/768",
   ]
-  drift += ["BOB (1.0, 0.0, 0.0) | height std cm p50 0.40 p90 0.60 | pitch std deg p50 0.80 p90 1.10 | robots 768",
-            "BOB (0.0, 0.6, 0.0) | height std cm p50 0.50 p90 0.70 | pitch std deg p50 0.90 p90 1.30 | robots 768"]
+  drift += [f"BOB (1.0, 0.0, 0.0) | height std cm p50 {g['bobh']:.2f} p90 0.60 | pitch std deg p50 {g['bobp']:.2f} p90 1.10 | robots 768",
+            f"BOB (0.0, 0.6, 0.0) | height std cm p50 {g['bobhs']:.2f} p90 0.70 | pitch std deg p50 {g['bobps']:.2f} p90 4.30 | robots 768"]
   w("drift3", "\n".join(drift) + "\n")
   w("spinalt", f"       +-0.5 x 3 |  {g['spinalt']:.3f}  0.26        |  0.15  0.26        |  5.27  5.95             | 0/768\n")
   stand = [f"        rest |   0.02     0.0 |     {g['creep']:.2f}  0.17    0.05 |   {g['lift']:.1f}    0.00 |  0.001   0.000  0.000 | 0/768",
@@ -185,7 +186,8 @@ def main() -> int:
           "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0),
           "wall_lift": (5.0, 5.0, 5.0), "pitch_down": (45.0, 45.0, 45.0), "roll_up": (45.0, 45.0, 45.0),
           "strikes": (2.0, 2.0, 2.0), "top_steps": (1.0, 1.0, 1.0), "push_falls": (0, 0, 0),
-          "push_mps": (1.0, 1.0, 1.0), "slope_reach": (95.0, 95.0, 90.0)}
+          "push_mps": (1.0, 1.0, 1.0), "slope_reach": (95.0, 95.0, 90.0), "bob_straight": ((1.0, 2.0),) * 3,
+          "bob_side": ((1.0, 5.0),) * 3, "speed_cv": (0.3, 0.3, 0.3)}
   for k, v in want.items():
     check(tuple(S[k][c] for c in aj.CONDS) == v, f"SPEC {k} = {v}")
   check(S["drift_head"]["full"] == (3.0, 8.0), "drift heading p50 3 / p10-p90 8 deg")
@@ -252,7 +254,9 @@ def main() -> int:
       ("Go2", "typ", {"rtouch": {("5-8cm", "up"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
       ("Go2W", "full", {"rtouch": {("12-15cm", "down"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
       ("Go2W", "unl", {"tops": 1.01}, "顶部平台多余踏步"), ("Go2", "full", {"tops": 1.2}, "顶部平台多余踏步"),
-      ("Go2W", "unl", {"cv": 0.9}, None),
+      ("Go2W", "unl", {"cv": {("8-12cm", "up"): 0.31, "_": 0.2}}, "楼梯走走停停"), ("Go2", "full", {"cv": {("12-15cm", "down"): 0.31, "_": 0.2}}, "楼梯走走停停"),
+      ("Go2W", "unl", {"bobh": 1.05}, "平地颠晃"), ("Go2W", "typ", {"bobp": 2.1}, "平地颠晃"), ("Go2W", "full", {"bobps": 5.1}, "平地颠晃"),
+      ("Go2W", "unl", {"bobhs": 1.1}, "平地颠晃"), ("Go2W", "unl", {"bobps": 4.9}, None),
       ("Go2W", "unl", {"slope": 94.0}, "斜坡和不平地面"), ("Go2", "typ", {"slope": 94.0}, "斜坡和不平地面"),
       ("Go2W", "full", {"slope": 89.0}, "斜坡和不平地面"), ("Go2W", "unl", {"sfalls": 1}, "斜坡和不平地面"),
       ("Go2W", "unl", {"tfalls": 1}, "不平地面转弯"), ("Go2W", "full", {"tstuck": 2}, "不平地面转弯"),
@@ -278,7 +282,8 @@ def main() -> int:
              ("Go2", "unl", {"hd": 8.0}), ("Go2W", "unl", {"mpp": 5.0}), ("Go2", "full", {"mpp": 10.0}),
              ("Go2W", "full", {"wall": 5}), ("Go2", "typ", {"wall": 5}),
              ("Go2W", "unl", {"pitchr": 45.0, "rollr": 45.0}), ("Go2W", "typ", {"ftouch": 2.0, "rtouch": 2.0}),
-             ("Go2W", "full", {"tops": 1.0}), ("Go2W", "unl", {"slope": 95.0}), ("Go2W", "full", {"slope": 90.0})]
+             ("Go2W", "full", {"tops": 1.0}), ("Go2W", "unl", {"slope": 95.0}), ("Go2W", "full", {"slope": 90.0}),
+             ("Go2W", "unl", {"bobh": 1.0, "bobp": 2.0, "bobhs": 1.0, "bobps": 5.0}), ("Go2W", "typ", {"cv": 0.3})]
     for i, (r, cond, over) in enumerate(edges):
       first = acceptance(r, f"e{i}", **{cond: over})
       check(first == "PASS", f"{r} {cond} {over}: exactly the bar passes ({first[:160]})")

@@ -54,8 +54,8 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 26 | pitch / roll rate on the flights (下楼点头、上楼晃): RMS per robot, p50 per band; the descents' pitch rate, the climbs' roll rate (descent_probe --straight's SUM) | <= 45 °/s | 45 °/s | 45 °/s (5–15 cm) |
 | 27 | shin / thigh strikes on the steps (小腿大腿磕台阶): % of the flight's steps with a front / rear calf or thigh on the steps, per band, direction and side (descent_probe's SUMQ) | <= 2 % | 2 % | 2 % (5–15 cm) |
 | 28 | top-landing extra steps / wheel lifts (顶部平台多余踏步/抬轮): per climb on map3's top landings, a wheel / foot on the landing's level that leaves the ground > 0.06 s with its apex > 2 cm, in the climb's end, the drive-up and the first stand (map3_stairs_probe, with item 21) | <= 1.0 | 1.0 | 1.0 |
-| 29 | flat body bob (平地颠、晃): the base height and pitch std per robot over the steady part (3 s on), 1.0 m/s forward and 0.6 m/s sideways (drift_all's BOB rows) | reported until w27d's reading (proposed 1 cm / 2°) | | |
-| 30 | stair stop-and-go (楼梯上走走停停): the coefficient of variation of the speed along the flight per robot, p50 per band and direction (descent_probe's SUMQ) | reported until w27d's reading (proposed 0.3) | | |
+| 29 | flat body bob (平地颠、晃): the base height and pitch std per robot over the steady part (3 s on), p50 over the robots, every straight command of drift_all (BOB rows; the user 2026-11-16 after w27d's reading) | fwd / back: height <= 1 cm, pitch <= 2°; sideways: height <= 1 cm, pitch <= 5° | as unloaded | as unloaded |
+| 30 | stair stop-and-go (楼梯上走走停停): the coefficient of variation of the speed along the flight per robot, p50 per band and direction (descent_probe's SUMQ; the user 2026-11-16) | <= 0.3 | 0.3 | 0.3 (the Go2 5–15 cm, the Go2W every band) |
 | — | falls in every test | 0 | 0 | 0 (stairs: the Go2 5–15 cm, the Go2W every band) |
 
 Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the Go2's full-load 15–18 cm

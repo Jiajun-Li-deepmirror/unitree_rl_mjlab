@@ -589,8 +589,12 @@ SPEC: dict[str, dict] = {
   "push_mps": {c: 1.0 for c in CONDS},                                     # the judged push (the user 11-16; was 0.5)
   "slope_reach": {"unl": 95.0, "typ": 95.0, "full": 90.0},                # %, the worst of the 6 cells (item 23)
 }
-# items 29 and 30 are reported until go2-home fixes their bars from w27d's readings (the proposals below)
-SPEC_REPORT = {"bob_height_cm": 1.0, "bob_pitch_deg": 2.0, "speed_cv": 0.3}
+# items 29 and 30 (the user via go2-home, 2026-11-16, after w27d's readings: "可以"), every condition
+SPEC.update({
+  "bob_straight": {c: (1.0, 2.0) for c in CONDS},   # drift_all BOB, fwd / back commands: height std cm, pitch std deg (p50)
+  "bob_side": {c: (1.0, 5.0) for c in CONDS},       # sideways commands
+  "speed_cv": {c: 0.3 for c in CONDS},              # descent_probe SUMQ speed_cv_p50, per band and direction
+})
 SPEC_LONG_TERM = {"kicks_up": 0.245, "slips": 0.0245, "mid": 0.80}   # reported beside the readings
 
 
@@ -1105,9 +1109,12 @@ def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
     if so:
       sh.fail(f"{L}小腿大腿磕台阶：" + "、".join(f"{b} {_ud(d)} {'前' if s == 'front' else '后'} {x:.2f}%" for b, d, s, x in so),
               sum(x / sb - 1.0 for _b, _d, _s, x in so))
-    cvb = SPEC_REPORT["speed_cv"]
-    sh.detail.append(f"{L}楼梯走走停停（只报告，提议 <= {cvb:g}）：速度变异系数 p50 " + "，".join(
+    cvb = SPEC["speed_cv"][cond]
+    sh.detail.append(f"{L}楼梯走走停停（<= {cvb:g}）{rep_}：速度变异系数 p50 " + "，".join(
       f"{b} {_ud(d)} {v.get('speed_cv_p50', float('nan')):.2f}" for (b, d), v in q.items()))
+    co = [(b, d, v["speed_cv_p50"]) for (b, d), v in q.items() if b != top and v.get("speed_cv_p50", 0.0) > cvb]
+    if co:
+      sh.fail(f"{L}楼梯走走停停：" + "、".join(f"{b} {_ud(d)} {x:.2f}" for b, d, x in co), sum(x / cvb - 1.0 for _b, _d, x in co))
   ts = top_steps(p["wall"])
   if ts is None:
     sh.missing(f"{L}顶部平台多余踏步（map3_stairs_probe）")
@@ -1124,9 +1131,18 @@ def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
   if not bob:
     sh.missing(f"{L}平地颠晃（drift_all BOB）")
   else:
-    hb, pb2 = SPEC_REPORT["bob_height_cm"], SPEC_REPORT["bob_pitch_deg"]
-    sh.detail.append(f"{L}平地颠晃（只报告，提议高度 <= {hb:g} cm、俯仰 <= {pb2:g}°；稳态段 std p50）：" + "，".join(
+    (hs, ps), (hd, pd) = SPEC["bob_straight"][cond], SPEC["bob_side"][cond]
+    sh.detail.append(f"{L}平地颠晃（稳态段 std p50；前后 <= {hs:g} cm / {ps:g}°，横移 <= {hd:g} cm / {pd:g}°）：" + "，".join(
       f"{c} {v[0]:.2f} cm / {v[2]:.2f}°" for c, v in bob.items()))
+    bad = []
+    for c, v in bob.items():
+      vx, vy = (float(x) for x in c.strip("()").split(",")[:2])
+      hb, pb_ = (hs, ps) if vy == 0.0 else (hd, pd)
+      if v[0] > hb or v[2] > pb_:
+        bad.append((c, v[0], v[2], hb, pb_))
+    if bad:
+      sh.fail(f"{L}平地颠晃：" + "、".join(f"{c} {h:.2f} cm / {q_:.2f}°" for c, h, q_, _hb, _pb in bad),
+              sum(max(h / hb - 1.0, q_ / pb_ - 1.0, 0.0) for _c, h, q_, hb, pb_ in bad))
 
 
 def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
