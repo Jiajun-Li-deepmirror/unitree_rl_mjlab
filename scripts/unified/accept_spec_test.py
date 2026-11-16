@@ -39,7 +39,7 @@ GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, sp
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
             stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
-            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0)
+            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0)
 
 
 def band_val(v, b, d):
@@ -124,7 +124,9 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   w("descent", "\n".join(ds) + "\n")
   # push_test: item 22's line
   w("push", f"ALL push (item 22): falls {g['pfalls']} of 768 robots; recovered within 0.3 m/s: p50 0.08 s, p90 0.16 s, "
-            f"not recovered 0.0 % (falls at or after the push {g['pfalls']})\n")
+            f"not recovered 0.0 % (falls at or after the push {g['pfalls']})\n"
+            f"ALL push 1 (item 22, reported): falls {g['pfalls1']} of 768 robots; recovered within 0.3 m/s: p50 0.20 s, "
+            f"p90 0.50 s, not recovered 1.0 % (falls at or after the push {g['pfalls1']})\n")
   # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
   share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
   w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand, the larger of the drive-up to 0.85 m + "
@@ -244,7 +246,7 @@ def main() -> int:
       ("Go2W", "full", {"rtouch": {("12-15cm", "down"): 2.1, "_": 0.5}}, "小腿大腿磕台阶"),
       ("Go2W", "unl", {"tops": 1.01}, "顶部平台多余踏步"), ("Go2", "full", {"tops": 1.2}, "顶部平台多余踏步"),
       ("Go2W", "unl", {"cv": 0.9}, None),
-      ("Go2W", "unl", {"pfalls": 1}, "抗推"), ("Go2", "typ", {"pfalls": 1}, "抗推"), ("Go2W", "full", {"pfalls": 2}, "抗推"),
+      ("Go2W", "unl", {"pfalls1": 7}, None), ("Go2W", "unl", {"pfalls": 1}, "抗推"), ("Go2", "typ", {"pfalls": 1}, "抗推"), ("Go2W", "full", {"pfalls": 2}, "抗推"),
     ]
     first = acceptance("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
     check(first.startswith("FAIL") and sorted(i.split("：")[0] for i in items(first)) == ["满载 面前是墙不抬腿", "满载 顶部平台多余踏步"],

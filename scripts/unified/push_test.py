@@ -45,7 +45,10 @@ p = argparse.ArgumentParser()
 p.add_argument("--task", required=True)
 p.add_argument("checkpoint")
 p.add_argument("--num-envs", type=int, default=64, help="robots per group (command x push direction)")
-p.add_argument("--push", type=float, default=0.5, help="m/s added to the base's velocity")
+p.add_argument("--push", type=float, default=0.5, help="m/s added to the base's velocity (the judged push)")
+p.add_argument("--also", type=float, nargs="*", default=[1.0],
+               help="more pushes (m/s) in the same simulation, reported, not judged (2026-11-16, go2-home: 1.0 beside "
+                    "the judged 0.5 while the user decides); none: --also")
 p.add_argument("--push-at", type=float, default=3.0)
 p.add_argument("--after", type=float, default=5.0)
 p.add_argument("--lin-accel", type=float, default=2.0, help="m/s^2 slew of the linear command (0: a step)")
@@ -54,7 +57,8 @@ p.add_argument("--seed", type=int, default=None,
                help="the environment's seed (2026-11-16, repeats near a bar); unset: none, as the flat tests")
 args = p.parse_args()
 
-groups = [(c, cv, d, dv) for c, cv in COMMANDS for d, dv in PUSHES]
+mags = [args.push] + [m for m in args.also if m != args.push]
+groups = [(c, cv, d, dv, m) for m in mags for c, cv in COMMANDS for d, dv in PUSHES]
 cfg = load_env_cfg(args.task, play=True)
 if args.seed is not None:
   cfg.seed = args.seed
@@ -81,9 +85,9 @@ dt = env.step_dt
 
 target = torch.zeros(N, 3, device=dev)
 push_b = torch.zeros(N, 2, device=dev)
-for i, (_, cv, _, dv) in enumerate(groups):
+for i, (_, cv, _, dv, m) in enumerate(groups):
   target[i * n:(i + 1) * n] = torch.tensor(cv, device=dev)
-  push_b[i * n:(i + 1) * n] = torch.tensor(dv, device=dev) * args.push
+  push_b[i * n:(i + 1) * n] = torch.tensor(dv, device=dev) * m
 cur = torch.zeros(N, 3, device=dev)
 fell = torch.zeros(N, dtype=torch.bool, device=dev)
 fell_after = torch.zeros(N, dtype=torch.bool, device=dev)   # fell at or after the push
@@ -95,7 +99,8 @@ pushed = False
 
 ramp = f", linear command slewed at {args.lin_accel:g} m/s^2" if args.lin_accel > 0 else ""
 print(f"{args.checkpoint}\n{args.task}: {n} robots per group, {len(groups)} groups ({', '.join(c for c, _ in COMMANDS)} x "
-      f"pushes {', '.join(d for d, _ in PUSHES)} in the base frame){ramp}; {args.push:g} m/s added to the base's velocity at "
+      f"pushes {', '.join(d for d, _ in PUSHES)} in the base frame x {' / '.join(f'{m:g}' for m in mags)} m/s; the judged "
+      f"one {args.push:g}){ramp}; the push added to the base's velocity at "
       f"{args.push_at:g} s, then {args.after:g} s; recovered = the base velocity (base frame) within {TOL:g} m/s of the "
       f"command for {HOLD:g} s")
 print(f"{'group':>11} | falls | recovered after the push p50 p90 | not recovered | error peak after the push p50 | "
@@ -145,7 +150,7 @@ for k in range(steps):
 
 q = torch.tensor((0.5, 0.9), device=dev)
 qs = lambda x: x.quantile(q).tolist() if len(x) else [float("nan")] * 2
-for i, (c, _, d, _) in enumerate(groups):
+for i, (c, _, d, _, m) in enumerate(groups):
   g = torch.zeros(N, dtype=torch.bool, device=dev)
   g[i * n:(i + 1) * n] = True
   up = g & ~fell
@@ -154,12 +159,19 @@ for i, (c, _, d, _) in enumerate(groups):
   nr = 100.0 * float(torch.isnan(r).float().mean()) if len(r) else float("nan")
   pe = qs(pre_err[g])[1]
   pk = qs(peak[up])[0]
-  print(f"{c + ' ' + d:>11} | falls {int((fell & g).sum())}/{n} | recovered p50 {r50:.2f} s p90 {r90:.2f} s | "
+  name = c + " " + d + ("" if m == args.push else f" {m:g}")
+  print(f"{name:>11} | falls {int((fell & g).sum())}/{n} | recovered p50 {r50:.2f} s p90 {r90:.2f} s | "
         f"not recovered {nr:.1f} % | error peak p50 {pk:.2f} m/s | before p90 {pe:.2f} m/s")
-up = ~fell
-r = rec[up]
-r50, r90 = qs(r[torch.isfinite(r)])
-nr = 100.0 * float(torch.isnan(r).float().mean()) if len(r) else float("nan")
-print(f"ALL push (item 22): falls {int(fell.sum())} of {N} robots; recovered within {TOL:g} m/s: p50 {r50:.2f} s, "
-      f"p90 {r90:.2f} s, not recovered {nr:.1f} % (falls at or after the push {int(fell_after.sum())})")
+for m in mags:
+  sel = torch.zeros(N, dtype=torch.bool, device=dev)
+  for i, grp in enumerate(groups):
+    if grp[4] == m:
+      sel[i * n:(i + 1) * n] = True
+  up = sel & ~fell
+  r = rec[up]
+  r50, r90 = qs(r[torch.isfinite(r)])
+  nr = 100.0 * float(torch.isnan(r).float().mean()) if len(r) else float("nan")
+  head = "ALL push (item 22)" if m == args.push else f"ALL push {m:g} (item 22, reported)"
+  print(f"{head}: falls {int((fell & sel).sum())} of {int(sel.sum())} robots; recovered within {TOL:g} m/s: p50 {r50:.2f} s, "
+        f"p90 {r90:.2f} s, not recovered {nr:.1f} % (falls at or after the push {int((fell_after & sel).sum())})")
 env.close()

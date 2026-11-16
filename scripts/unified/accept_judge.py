@@ -1009,6 +1009,10 @@ def spec_push(r: str, path: str, cond: str, sh: Sheet) -> None:
     return
   sh.detail.append(f"{L}抗推：摔倒 {v['falls']}/{v['n']}（= {SPEC['push_falls'][cond]}）；恢复到指令 0.3 m/s 内 p50 "
                    f"{v['r50']:.2f} s、p90 {v['r90']:.2f} s，未恢复 {v['nr']:.1f}%（只报告）")
+  for m in re.finditer(r"^ALL push ([\d.]+) \(item 22, reported\): falls (\d+) of (\d+) robots; recovered within [\d.]+ "
+                       r"m/s: p50 (\S+) s, p90 (\S+) s, not recovered (\S+) %", txt(path), re.M):
+    sh.detail.append(f"{L}抗推 {m.group(1)} m/s（只报告，不判）：摔倒 {m.group(2)}/{m.group(3)}，恢复 p50 {float(m.group(4)):.2f} s、"
+                     f"p90 {float(m.group(5)):.2f} s，未恢复 {float(m.group(6)):.1f}%")
   if v["falls"] > SPEC["push_falls"][cond]:
     sh.fail(f"{L}抗推：摔倒 {v['falls']}")
 
