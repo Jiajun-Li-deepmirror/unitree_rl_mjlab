@@ -575,6 +575,7 @@ SPEC: dict[str, dict] = {
   "roll_up": {c: 45.0 for c in CONDS},                                     # deg/s, climbs' roll rate RMS p50
   "strikes": {c: 2.0 for c in CONDS},                                      # % of a flight's steps, front / rear
   "top_steps": {c: 1.0 for c in CONDS},                                    # per climb, map3's top landings
+  "push_falls": {c: 0 for c in CONDS},                                     # falls, 0.5 m/s base pushes (item 22)
 }
 # items 29 and 30 are reported until go2-home fixes their bars from w27d's readings (the proposals below)
 SPEC_REPORT = {"bob_height_cm": 1.0, "bob_pitch_deg": 2.0, "speed_cv": 0.3}
@@ -612,7 +613,7 @@ def _ud(d: str) -> str:
 def _files(prefix: str, cond: str) -> dict[str, str]:
   sfx = COND_SFX[cond]
   return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent", "wall", "stairsedge",
-                                                              "noopedge", "opedge")}
+                                                              "noopedge", "opedge", "push", "slope")}
 
 
 def am_rows(path: str) -> list[tuple[str, list[int], int]] | None:
@@ -987,6 +988,31 @@ def bob_rows(path: str) -> dict[str, tuple[float, float, float, float]]:
   return out
 
 
+def push_vals(path: str) -> dict[str, float] | None:
+  """push_test.py's item-22 line: falls, robots, recovery p50 / p90 (s), not recovered (%); None without it."""
+  m = re.search(r"^ALL push \(item 22\): falls (\d+) of (\d+) robots; recovered within [\d.]+ m/s: p50 (\S+) s, "
+                r"p90 (\S+) s, not recovered (\S+) %", txt(path), re.M)
+  if not m:
+    return None
+  return {"falls": int(m.group(1)), "n": int(m.group(2)), "r50": float(m.group(3)), "r90": float(m.group(4)),
+          "nr": float(m.group(5))}
+
+
+def spec_push(r: str, path: str, cond: str, sh: Sheet) -> None:
+  """Item 22 (2026-11-16, the user via go2-home): one 0.5 m/s base push in 4 directions, standing, 1.0 m/s forward
+  and 0.5 m/s sideways (push_test.py): no fall in any condition; the recovery (the base back within 0.3 m/s of the
+  command for 0.5 s) reported."""
+  L = COND_LABEL[cond]
+  v = push_vals(path)
+  if v is None:
+    sh.missing(f"{L}抗推（push_test）")
+    return
+  sh.detail.append(f"{L}抗推：摔倒 {v['falls']}/{v['n']}（= {SPEC['push_falls'][cond]}）；恢复到指令 0.3 m/s 内 p50 "
+                   f"{v['r50']:.2f} s、p90 {v['r90']:.2f} s，未恢复 {v['nr']:.1f}%（只报告）")
+  if v["falls"] > SPEC["push_falls"][cond]:
+    sh.fail(f"{L}抗推：摔倒 {v['falls']}")
+
+
 def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
   """Items 26-30 (2026-11-16, the user via go2-home: "都加"). From descent_probe's SUM / SUMQ lines (the descent file,
   already run): 26 the descents' pitch rate and the climbs' roll rate (RMS per robot, p50) per band; 27 the share of
@@ -1098,6 +1124,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False)
     spec_flight(r, p["descent"], cond, sh)
     spec_wall(r, p["wall"], cond, sh)
     spec_motion(r, p, cond, sh)
+    spec_push(r, p["push"], cond, sh)
     if expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge")):
       E = COND_LABEL[cond] + EDGE_LABEL
       spec_stairs(r, p["stairsedge"], cond, sh, label=E)
