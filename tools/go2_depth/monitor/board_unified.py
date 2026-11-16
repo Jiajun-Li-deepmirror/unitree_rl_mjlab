@@ -516,9 +516,11 @@ def main() -> int:
     below = False
     if pick:
       t_log = d["logs"].get(f"unified_{key}.txt", [])
-      hand = any("HAND PICK" in l for l in t_log)
+      # the log keeps earlier versions' lines: only the newest pick line describes the current pick
+      last = ([l for l in t_log if "TEACHER PICK" in l or "HAND PICK" in l] or [""])[-1]
+      hand = "HAND PICK" in last
       # a pick at the cap below the gate (teacher.sh: the best judged checkpoint) is not a pass
-      below = "below the gate" in ([l for l in t_log if "TEACHER PICK" in l] or [""])[-1]
+      below = "below the gate" in last
       t_cell = ("人工选定（没有等到上限） " if hand else "到上限没过门，选定最接近的 " if below
                 else "已通过，选定 ") + "/".join(pick.split("/")[-2:])
     elif any(row["status"] in ("training", "stalled") for _, row in teachers):
