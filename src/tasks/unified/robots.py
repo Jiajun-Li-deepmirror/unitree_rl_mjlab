@@ -203,6 +203,8 @@ def base_env_cfg(robot: URobot, play: bool = False, terrain: str = "map3", keys:
     cfg = _factory(robot)(terrain=terrain, phase="teacher", play=play)
     cfg = apply_depth_teacher(cfg)
   _wall_fan(cfg, keys, final)
+  if play:
+    _play_wall_stop(cfg)
   if (v == "even" or tilt is not None) and robot.kind == "wheeled" and terrain == "map3":
     # (the M and the P build alike: no difference for teacher_env.quality_diff. The check terrains' builds have none
     # of the stand's lock terms -- the blind builder gives its evaluation tasks no standing hold -- and every task is
@@ -227,6 +229,24 @@ def _wall_fan(cfg: ManagerBasedRlEnvCfg, keys: list[str], final: bool) -> None:
   fan = next((s for s in cfg.scene.sensors if s.name == WALL_FAN), None)
   if fan is not None:
     fan.pattern = replace(fan.pattern, angles_deg=(-d, 0.0, d))
+
+
+# U_WALL_STOP_PLAY=1 (an evaluation's diagnostic switch, off unless set): a play build keeps the key endwall's fan and
+# the command's wall stop. Off (2026-11-16, go2-home for the user's acceptance): every play / evaluation build drops
+# them -- every model is judged on the same commands, and the deployed wall guard is outside the policy (a run with
+# endwall had map3's op / noop and its tours cut 0.85 m before every wall ahead, its controls not). Training keeps them.
+WALL_STOP_PLAY_SWITCH = "U_WALL_STOP_PLAY"
+
+
+def _play_wall_stop(cfg: ManagerBasedRlEnvCfg) -> None:
+  v = os.environ.get(WALL_STOP_PLAY_SWITCH) or "0"
+  assert v in ("0", "1"), f"{WALL_STOP_PLAY_SWITCH}={v}: 1 or unset"
+  if v == "1":
+    return
+  twist = cfg.commands.get("twist")
+  if twist is not None and getattr(twist, "wall_sensor_name", None) == WALL_FAN:
+    twist.wall_sensor_name = None
+  cfg.scene.sensors = tuple(s for s in cfg.scene.sensors if s.name != WALL_FAN)
 
 
 def _keys_add(robot: URobot, have: list[str]) -> list[str]:

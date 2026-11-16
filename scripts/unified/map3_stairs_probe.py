@@ -10,7 +10,8 @@ holding the flight heading and its centerline as eval_map3 does) runs one script
   climb      --up-vx up the flight until the base has gained half the flight's rise
   mid stop   zero command 3 s (the operator off)                                        -> reading (c)
   climb      on until the base has gained the whole rise (less 12 cm: a loaded base stands lower) or a rail ahead is
-             within 1.0 m, then on along the landing until the first rail ahead is within 1.0 m (at most 3 s)
+             within 1.0 m, then on along the landing until the first rail ahead is within 0.85 m (the deployed wall
+             guard's stop; at most 4 s)                                                -> reading (c'), item 21's approach
   stand 2 s, turn in place wz +1.0 for 3 s, stand 2 s on the top landing               -> reading (c')
 
 (c)  the mid-flight stop: per robot the braking distance (the displacement along the flight over the first 1 s after
@@ -49,8 +50,10 @@ import torch  # noqa: E402
 MID_SHARE = 0.5
 GOAL_SHARE = 0.85
 STOP_S = 3.0
-ONTO_MAX_S = 3.0
-ONTO_WALL_M = 1.0
+ONTO_MAX_S = 4.0
+ONTO_WALL_M = 1.0    # the top taken when a rail ahead is this near (a loaded base that never gains the rise)
+APPROACH_STOP_M = 0.85   # the drive-up on the landing ends here: the deployed wall guard's stop (2026-11-16, go2-home:
+                         # item 21 judges the approach too; it was 1.0 m, the stand / turn now 0.15 m nearer the wall)
 TOP_SAG = 0.12
 LAST_STEPS = 0.75   # the falls between this share of the rise and eval_map3's 85 % are the flight's last steps
 LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top landing
@@ -215,6 +218,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   land = {q: torch.zeros(n, device=dev) for q in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off",
                                                   "turn_lift", "wall_sum", "wall_touch")}
   g0 = torch.full((n,), float("inf"), device=dev)          # the front feet's lowest height in the first stand
+  app_hi = torch.full((n,), -float("inf"), device=dev)     # their highest point in the drive-up and the first stand
   lift_turn, lift_stand = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
   p_turn = torch.full((n, 2), float("nan"), device=dev)   # the base where the turn began
   turn_move = torch.zeros(n, device=dev)                  # its largest horizontal distance from there in the turn
@@ -247,7 +251,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     phase = torch.where(top, torch.full_like(phase, 3), phase)
     t_ph = torch.where(top | end_stop, torch.zeros_like(t_ph), t_ph)
     for k, dur in ((3, ONTO_MAX_S), (4, land_dur[0]), (5, land_dur[1]), (6, land_dur[2])):
-      nxt = (phase == k) & ((t_ph >= dur) | ((dw <= ONTO_WALL_M) if k == 3 else False))
+      nxt = (phase == k) & ((t_ph >= dur) | ((dw <= APPROACH_STOP_M) if k == 3 else False))
       phase = torch.where(nxt, torch.full_like(phase, k + 1), phase)
       t_ph = torch.where(nxt, torch.zeros_like(t_ph), t_ph)
     if bool(((phase == 7) | fell).all()):
@@ -299,6 +303,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     land["wall_touch"] += (on_land & wall_c.any(dim=1)).float()
     fz = front_feet_z().min(dim=1).values, front_feet_z().max(dim=1).values
     g0 = torch.where(on_land & (phase == 4), torch.minimum(g0, fz[0]), g0)
+    app_hi = torch.where(alive & ((phase == 3) | (phase == 4)), torch.maximum(app_hi, fz[1]), app_hi)
     up = torch.where(torch.isfinite(g0), fz[1] - g0, zero)
     lift_turn = torch.where(on_land & (phase == 5), torch.maximum(lift_turn, up), lift_turn)
     lift_stand = torch.where(on_land & (phase == 6), torch.maximum(lift_stand, up), lift_stand)
@@ -321,6 +326,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
           "fell_land": np_(fell_land), "fell": np_(fell), **{k: np_(v) for k, v in land.items()}, "dt": dt,
           "lift_turn": np_(lift_turn), "lift_stand": np_(lift_stand), "phase": np_(phase), "fell_phase": np_(fell_phase),
+          "lift_app": np_(torch.where(torch.isfinite(g0) & torch.isfinite(app_hi), app_hi - g0, torch.full_like(g0, float("nan")))),
           "falls_rec": falls_rec, "stop_feet": np_(stop_feet), "turn_move": np_(turn_move), "top_gap": np_(top_gap),
           "top_by_wall": np_(top_by_wall)}
 
@@ -420,7 +426,7 @@ def report(rows) -> None:
         f"{np.percentile(np.abs(d), 90) if d.size else float('nan'):.3f} m, speed p90 "
         f"{np.percentile(np.concatenate(allv['v']), 90) if d.size else float('nan'):.3f} m/s")
 
-  print("\n== (c') the top landing, facing the end wall (walked on until the first rail ahead is within 1.0 m): stand 2 s, "
+  print("\n== (c') the top landing, facing the end wall (walked on until the first rail ahead is within 0.85 m): stand 2 s, "
         "turn in place wz +1.0 3 s, stand 2 s; front foot / wheel off the ground (no contact > 5 N) ==")
   agg = {k: 0.0 for k in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off", "turn_lift")}
   nrob, fl_tot, reach_tot, rob_tot, walls, lifts_all, touch_all, moves_all = 0, 0, 0, 0, [], [], [], []
@@ -474,18 +480,27 @@ def report(rows) -> None:
           f"(R3's top landing is 0.91 m wide with the stairwell's well unrailed on its west side: a turn that wanders "
           f"there falls in)")
   # acceptance item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿", bar <= 5 % in every condition;
-  # accept_judge.spec_wall): per robot on the landing its front foot's highest point above the first stand, in the
-  # turn and in the last stand (the wall ahead, then beside); the share of robots over 10 cm at 1 decimal
-  if lt.size:
-    both = np.maximum(lt, np.concatenate(stands_all))
-    k = int((both > WALL_LIFT_M).sum())
-    print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand in the turn or the last "
-          f"stand: {k} of {both.size} robots on the landing = {100 * k / both.size:.1f} % (the turn alone "
-          f"{100 * (lt > WALL_LIFT_M).mean():.1f} %, the last stand alone {100 * (np.concatenate(stands_all) > WALL_LIFT_M).mean():.1f} %)")
-  else:
-    print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand in the turn or the last "
-          f"stand: 0 of 0 robots on the landing = nan %")
-
+  # accept_judge.spec_wall): of the robots that took the top, those whose front foot / wheel rose more than 10 cm
+  # above the first stand's lowest -- (A) in the drive-up along the landing (to 0.85 m from the wall) or the first
+  # stand, (B) in the turn or the last stand -- or that fell between the top and the end; judged: the larger share
+  app_bad, ts_bad, nreach, nfell = 0, 0, 0, 0
+  for r in rows:
+    rch = r["reached"].astype(bool)
+    fl = (r["fell_phase"] >= 3) & (r["fell_phase"] <= 6) & rch
+    la, lt_, ls_ = r["lift_app"], r["lift_turn"], r["lift_stand"]
+    has = (r["stand_n"] + r["turn_n"]) > 0
+    a_bad = fl | (rch & (np.nan_to_num(la, nan=0.0) > WALL_LIFT_M))
+    t_bad = fl | (rch & has & (np.maximum(lt_, ls_) > WALL_LIFT_M))
+    app_bad += int(a_bad.sum())
+    ts_bad += int(t_bad.sum())
+    nreach += int(rch.sum())
+    nfell += int(fl.sum())
+  k = max(app_bad, ts_bad)
+  sh = lambda x: f"{100 * x / nreach:.1f}" if nreach else "nan"
+  print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand, the larger of the drive-up "
+        f"to {APPROACH_STOP_M:.2f} m + the first stand and the turn + the last stand (a fall on the landing counts): "
+        f"{k} of {nreach} robots on the landing = {sh(k)} % (drive-up + stand {sh(app_bad)} %, turn + stand {sh(ts_bad)} %, "
+        f"fell on the landing {nfell})")
 
 if __name__ == "__main__":
   sys.exit(main())

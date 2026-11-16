@@ -11,8 +11,9 @@ Against the minimal recipe alone (U_RECIPE_MIN=1), the training build:
       the observations, terminations, events and curricula the same;
   (3) the motor model on (effort 21.8 / 32.7);
   (4) without U_ROBOTS=Go2W the build refuses (the Go2 has no longexit), as the switch's check says;
-  (5) the play builds of the checks' terrains (stairs, flat) are the minimal recipe's (no fan); map3's play build has
-      the fan and the command's wall stop as training does -- so a map3 evaluation of such a run includes the stop.
+  (5) the play builds have no fan and no command wall stop (robots._play_wall_stop, go2-home 11-16: every model judged
+      on the same commands): the checks' terrains (stairs, flat) are the minimal recipe's; map3's keeps the terrain's
+      end walls alone; U_WALL_STOP_PLAY=1 (a diagnostic) keeps the fan and the stop; training is unchanged by it.
 
 Local: PYTHONPATH=$PWD python scripts/unified/min_endwall_test.py"""
 
@@ -100,8 +101,19 @@ for task in ("Unitree-Go2W-U-Teacher-Stairs", "Unitree-Go2W-U-Teacher-Flat"):
   p0, p1 = probe(task, True, **MIN), probe(task, True, **WALL)
   check("error" not in p1 and p1 == p0, f"{task} play (the checks' terrains): as the minimal recipe's play build, no fan")
 p1 = probe(T, True, **WALL)
-check("error" not in p1 and p1["fan"] == w["fan"] and p1["twist"]["wall"] == "wall_fan" and abs(p1["twist"]["stop"] - 0.85) < 1e-9,
-      f"{T} play (map3's tiles, the training terrain): the fan and the command's wall stop as in training -- every "
-      f"map3 evaluation of such a run (eval_map3, map3_stairs_probe) has the command cut 0.85 m before a wall ahead")
+check("error" not in p1 and p1["fan"] is None and p1["twist"]["wall"] is None and p1["walled_up"]["end_wall_height"] == 2.0,
+      f"{T} play: no fan and no wall stop (robots._play_wall_stop; the terrain's end walls stay) -- map3's evaluations "
+      f"judge it on the same commands as any run")
+p0 = probe(T, True, **MIN)
+check({k: v for k, v in p1.items() if k not in ("walled_up", "twist")} == {k: v for k, v in p0.items() if k not in ("walled_up", "twist")}
+      and {k: v for k, v in p1["twist"].items() if k not in ("stop", "slow")} == {k: v for k, v in p0["twist"].items() if k not in ("stop", "slow")},
+      f"{T} play: as the minimal recipe's play build but the terrain's walls")
+p2 = probe(T, True, **WALL, U_WALL_STOP_PLAY="1")
+check("error" not in p2 and p2["fan"] == w["fan"] and p2["twist"]["wall"] == "wall_fan" and abs(p2["twist"]["stop"] - 0.85) < 1e-9,
+      f"{T} play with U_WALL_STOP_PLAY=1 (a diagnostic): the fan and the wall stop as in training")
+p3 = probe(T, False, **WALL, U_WALL_STOP_PLAY="0")
+check(p3 == w, f"{T} training: U_WALL_STOP_PLAY changes nothing (the fan and the stop kept)")
+x = probe(T, True, **WALL, U_WALL_STOP_PLAY="2")
+check("error" in x and "U_WALL_STOP_PLAY" in x["error"], "U_WALL_STOP_PLAY=2 stops the build")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

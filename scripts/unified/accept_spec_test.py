@@ -116,9 +116,10 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   w("descent", "\n".join(ds) + "\n")
   # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
   share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
-  w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand in the turn or the last stand: "
-            f"{g['wall']} of {g['wall_n']} robots on the landing = {share:.1f} % (the turn alone {share:.1f} %, the last "
-            f"stand alone 0.0 %)\n")
+  w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand, the larger of the drive-up to 0.85 m + "
+            f"the first stand and the turn + the last stand (a fall on the landing counts): {g['wall']} of {g['wall_n']} "
+            f"robots on the landing = {share:.1f} % (drive-up + stand {share:.1f} %, turn + stand 0.0 %, fell on the "
+            f"landing 0)\n")
 
 
 def run_judge(r: str, prefix: str) -> str:
