@@ -113,6 +113,17 @@ W="$PY jobs/unified/u_eval.py" S=scripts/blind/eval
 TF=Unitree-$R-U-Student-$K-Flat TE=Unitree-$R-U-Student-$K-Stairs
 LIN="--lin-accel 2.0" YAW="--yaw-accel 3.0"
 CLOCK=""; [[ $R == *W ]] && CLOCK="--clock-task Unitree-$R-U-Teacher"
+# A robot under the 2026-11-16 specification (doc/acceptance_go2_go2w.md; accept_judge.SPEC_ROBOTS): every test in all
+# three conditions -- also accept_matrix, the gait clock (the full payload at --min-match 0.7), the wheels down and the
+# map3 flights under the typical and the full payload (about half again the evaluation time)
+SPEC=$($PY - $R <<'PYEOF' 2> /dev/null
+import sys
+sys.path.insert(0, "scripts/unified")
+import accept_judge as aj
+print(1 if aj.spec_robot(sys.argv[1]) else 0)
+PYEOF
+)
+[ "$SPEC" = 0 ] || [ "$SPEC" = 1 ] || { log "setup error: whether $R is a spec robot could not be read (scripts/unified/accept_judge.py)"; exit 2; }
 RUN=${RUN%/}
 name=$(basename $RUN)
 iters() { ls $RUN/model_*.pt 2> /dev/null | grep -oE 'model_[0-9]+\.pt$' | grep -oE '[0-9]+' | sort -n; }
@@ -217,8 +228,9 @@ fg_failed() {   # FIRST_LINE LABELS -> the judge's items of these labels that di
   [[ "$1" == *": "* ]] || { echo ""; return; }   # (PASS: nothing listed)
   while IFS= read -r it; do
     for l in $labels; do
-      # (also the typical payload's items, accept_judge.py typical(): "常用负载 <label>：..." -- judged on the unloaded bars)
-      if [[ "$it" == "$l："* || "$it" == "常用负载 $l："* ]] && [[ "$it" != *未测* ]] && [[ "$it" != *评测中* ]]; then
+      # (also the typical payload's items, accept_judge.py typical(): "常用负载 <label>：..." -- judged on the unloaded bars;
+      # the spec robots' full-payload items, accept_judge.spec_judge: "满载 <label>：...")
+      if [[ "$it" == "$l："* || "$it" == "常用负载 $l："* || "$it" == "满载 $l："* ]] && [[ "$it" != *未测* ]] && [[ "$it" != *评测中* ]]; then
         out="$out${out:+；}$it"
       fi
     done
@@ -332,15 +344,19 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     if [ $part != rest ]; then
     pool $pay ${P}_spinalt$X.txt $W $S/spin_alt.py --task $TF $CK --num-envs $(tn 768) $YAW
     pool $pay ${P}_march$X.txt $W $S/march_eval.py --task $TF $CK --envs $(tn 96)
-    [ $cond = unloaded ] && pool $pay ${P}_clock.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd $(tn 48)
+    # the gait clock: unloaded; a spec robot every condition, the full payload at its own match (70 %)
+    if [ $cond = unloaded ] || [ $SPEC = 1 ]; then
+      local mm=""; [ $SPEC = 1 ] && [ $cond = loaded ] && mm="--min-match 0.7"
+      pool $pay ${P}_clock$X.txt $W $S/gait_clock.py --task $TF $CLOCK $CK --envs-per-cmd $(tn 48) $mm
+    fi
     fi
     if [ $part != first ]; then
     pool_sized $pay ${P}_stand$X.txt stand $(tn 768) $W $S/eval_standing.py --task $TF $CK --envs-per-group @N@ $LIN $YAW
-    if [ $cond = unloaded ]; then
-      pool_sized $pay ${P}_am.txt am $(tn 96) $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
+    if [ $cond = unloaded ] || [ $SPEC = 1 ]; then
+      pool_sized $pay ${P}_am$X.txt am $(tn 96) $W $S/accept_matrix.py --task $TF --envs-per-cmd @N@ $CK $LIN $YAW
     fi
-    # wheels down: unloaded and typical (doc/redesign.md 2.2)
-    if [[ $R == *W ]] && [ $cond != loaded ]; then
+    # wheels down: unloaded and typical (doc/redesign.md 2.2); a spec robot also under the full payload
+    if [[ $R == *W ]] && { [ $cond != loaded ] || [ $SPEC = 1 ]; }; then
       pool $pay ${P}_gait$X.txt $W $S/gait_fb.py --task $TF $CK --envs-per-cmd $(tn 96)
     fi
     fi
@@ -366,12 +382,16 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   else
     t2_tests all
   fi
-  # the map3 flights (unloaded): three shards each already, so one at a time after the pool
-  ( export U_PAYLOAD=0,0,0,0
-    run ${P}_noop.log $W $S/map3_par.py --out ${P}_noop.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
-      --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
-    run ${P}_op.log $W $S/map3_par.py --out ${P}_op.txt --shards 3 -- --task $TE $CK --set flights --num-envs $(tn 192) \
-      --time-scale 1.6 --seed 0 )
+  # the map3 flights (unloaded; a spec robot every condition): three shards each already, so one at a time after the pool
+  local m3c="unloaded"; [ $SPEC = 1 ] && m3c=$conds
+  for cond in $m3c; do
+    case $cond in unloaded) pay=0,0,0,0 X="" ;; loaded) pay=$PAY X=_pay ;; typical) pay=$typ X=_typ ;; esac
+    ( export U_PAYLOAD=$pay
+      run ${P}_noop$X.log $W $S/map3_par.py --out ${P}_noop$X.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
+        --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
+      run ${P}_op$X.log $W $S/map3_par.py --out ${P}_op$X.txt --shards 3 -- --task $TE $CK --set flights --num-envs $(tn 192) \
+        --time-scale 1.6 --seed 0 )
+  done
   $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_verdict.txt 2>&1
   # the sizes run_sized used, when any test ran small (a detail line: the first line stays the verdict)
   local sz=$(for f in ${P}_*.size; do [ -f $f ] && echo "$(basename $f .size | sed "s/^$(basename $P)_//") $(cut -d' ' -f2 $f)"; done | tr '\n' ',' | sed 's/,$//')
