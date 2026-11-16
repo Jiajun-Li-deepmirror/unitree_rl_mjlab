@@ -33,6 +33,20 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
 | 72592f5 | U_CMD_WIDE=1.25 | arm C1: the final command ranges x 1.25 | not run (same reason) |
 | 72592f5 | U_DR_WIDE=1.25 | arm C2: the randomization's spread x 1.25 | not run; the Go2W's training DR already equals the test's except the push |
 
+## Open items
+
+- Stair turns (go2-home 11-16, piece 5 of the shape survey): training has stair_turn_prob 0.0, while the map3 tour and
+  the F1 landing test turn in place on the landings. Skipped for now: g27b passed F1 without it.
+- U_MOTOR=gom8010 (the user: take the motor and joint values from Unitree's own sources):
+  - the GO-M8010-6 torque-speed curve (unitree_rl_lab Go2HV: Y1 20.2 / Y2 23.4 N m, flat to X1 13.5 rad/s, 0 at
+    X2 30; the calf scaled by its linkage ratio, Go2 1.917 / Go2W 1.5);
+  - unitree_mujoco's frictionloss 0.2, damping 0.1 and armature 0.01.
+  The steps, in order: (1) measure today's policies against the corner; (2) U_MOTOR=pd, the legs as explicit PD
+  without the curve, which must match today's gates; (3) the curve and the joint values; (4) tests.
+- Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
+  ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
+  gives ~15.9 N m at 1.5 m/s (~17 rad/s at the wheel).
+
 ## Notes
 
 - 2026-11-16: no friction mismatch on either robot. The Go2 trains and tests on foot friction 0.3-1.6, the Go2W on
