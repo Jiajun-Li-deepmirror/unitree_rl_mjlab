@@ -71,8 +71,8 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
   - slopes: slope_range 0-0.36 rise / run (19.8 deg; was 0.25, 14 deg; item 23 tests 15 deg);
   - random_rough unchanged (0.02-0.06 m; the test's +-3 cm is inside);
   - training builds only (the teacher's and the students' trainings); every play / evaluation terrain stays.
-  **Rule: U_TERRAIN=base for the checkpoints trained before it** (every Go2W run up to and including go2w_min_s0 and
-  the runs launched on 36d0fe8 or before 1e…): their training terrain as it was; evaluation terrains do not depend on
+  **Rule: U_TERRAIN=base for the checkpoints trained before it** (every Go2W run launched on a commit before 06e2647:
+  go2w_min_s0 and everything before it, and the runs launched on 36d0fe8): their training terrain as it was; evaluation terrains do not depend on
   it, so it matters only for a training or a resume. Tests: scripts/unified/terrain_wide_test.py.
 - Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
   ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
