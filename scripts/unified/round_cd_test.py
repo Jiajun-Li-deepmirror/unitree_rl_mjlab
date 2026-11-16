@@ -7,7 +7,9 @@ On the built configurations (no GPU), per robot:
   (1) all off: the training build equals the plain one (the command, its curriculum, every event's parameters);
   (2) U_HARD_FIXED=1: march 0.5 with the recipe's march ramp removed, the emergency stop 0.75 with fast strafes 0.3,
       the payload limit fixed at the full one from iteration 0 (u_payload's fixed) -- nothing else changed;
-  (3) each piece alone changes only its own fields; with the bundle, an empty piece turns that piece off;
+  (3) each piece alone changes only its own fields (U_STAIR_STOP_HOLD / U_MARCH_FROM_SPLAY through
+      hard_command.HardShapeCommand, U_FLAT_STAND_HOLD the shared command's field); with the bundle, an empty piece
+      turns that piece off;
   (4) U_CMD_WIDE=1.25: the final command ranges x 1.25 (the Go2W: vx -1.25..1.875, vy +-0.75, wz +-1.875), the initial
       ones unchanged;
   (5) U_DR_WIDE=1.25: foot friction (0.32, 1.25), base CoM 0.0625, kp / kd 0.8125-1.1875, lag 0-5, encoder bias
@@ -27,7 +29,8 @@ import os
 import sys
 from types import SimpleNamespace
 
-SWITCHES = ("U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_CMD_WIDE", "U_DR_WIDE", "U_FAST_SIDE")
+SWITCHES = ("U_HARD_FIXED", "U_MARCH_FIXED", "U_FAST_STOP", "U_PAYLOAD_FULL0", "U_CMD_WIDE", "U_DR_WIDE", "U_FAST_SIDE",
+            "U_STAIR_STOP_HOLD", "U_MARCH_FROM_SPLAY", "U_FLAT_STAND_HOLD", "U_RECIPE_MIN")
 
 
 def main() -> int:
@@ -103,7 +106,12 @@ def main() -> int:
     check(td.march_prob == 0.5 and not march_ramps(cd), "U_HARD_FIXED=1: march 0.5, its ramp removed")
     check(td.stop_after_fast_prob == 0.75 and td.fast_side_prob == 0.3, "U_HARD_FIXED=1: fast stop 0.75, fast side 0.3")
     check(cd.curriculum["u_payload"].params.get("fixed") is True, "U_HARD_FIXED=1: the payload limit fixed from it 0")
-    check(dt <= {"march_prob", "stop_after_fast_prob", "fast_side_prob"} and not de
+    from src.tasks.unified import hard_command
+    check(isinstance(cd.commands["twist"], hard_command.HardShapeCommandCfg)
+          and td.stair_stand_time_range == (2.0, 6.0) and td.march_from_splay_prob == 0.5
+          and td.stand_resampling_time_range == (4.0, 10.0),
+          "U_HARD_FIXED=1: stair stands hold 2-6 s, march from a splayed reset 0.5, flat stands hold 4-10 s (HardShapeCommand)")
+    check(dt <= {"march_prob", "stop_after_fast_prob", "fast_side_prob", "stand_resampling_time_range"} and not de
           and dc <= {"ramps", "u_payload"}, f"U_HARD_FIXED=1: nothing else changed (twist {sorted(dt)}, curriculum {sorted(dc)})")
     check(td.flat_mode_probs == t0.flat_mode_probs and td.stair_standing_prob == t0.stair_standing_prob,
           f"the zero command {t0.flat_mode_probs[0]} and the flight stop {t0.stair_standing_prob} unchanged (fixed already)")
@@ -116,6 +124,17 @@ def main() -> int:
           "U_FAST_STOP=0.75,0.3 alone: only the two shares")
     cp = build(robot, {"U_PAYLOAD_FULL0": "1"})
     check(not diff(c0, cp)[0] and diff(c0, cp)[2] == {"u_payload"}, "U_PAYLOAD_FULL0=1 alone: only the payload term")
+    cs = build(robot, {"U_STAIR_STOP_HOLD": "2,6"})
+    check(isinstance(cs.commands["twist"], hard_command.HardShapeCommandCfg) and cs.commands["twist"].stair_stand_time_range == (2.0, 6.0)
+          and cs.commands["twist"].march_from_splay_prob == 0.0 and not diff(c0, cs)[0] and not diff(c0, cs)[2],
+          "U_STAIR_STOP_HOLD=2,6 alone: only the stair stands' hold (the command class carries it)")
+    cz = build(robot, {"U_MARCH_FROM_SPLAY": "0.5"})
+    check(cz.commands["twist"].march_from_splay_prob == 0.5 and cz.commands["twist"].stair_stand_time_range is None
+          and not diff(c0, cz)[0], "U_MARCH_FROM_SPLAY=0.5 alone: only the march after a splayed reset")
+    ch = build(robot, {"U_FLAT_STAND_HOLD": "4,10"})
+    check(diff(c0, ch)[0] == {"stand_resampling_time_range"} and ch.commands["twist"].stand_resampling_time_range == (4.0, 10.0)
+          and not isinstance(ch.commands["twist"], hard_command.HardShapeCommandCfg),
+          "U_FLAT_STAND_HOLD=4,10 alone: only the flat stands' hold, the shared command class kept")
     cb = build(robot, {"U_HARD_FIXED": "1", "U_FAST_STOP": ""})
     check(cb.commands["twist"].stop_after_fast_prob == t0.stop_after_fast_prob and cb.commands["twist"].march_prob == 0.5,
           "the bundle with U_FAST_STOP= (empty): no fast stop, the rest on")
@@ -155,7 +174,8 @@ def main() -> int:
     bad = [{"U_HARD_FIXED": "2"}, {"U_MARCH_FIXED": "0"}, {"U_MARCH_FIXED": "0.9"}, {"U_FAST_STOP": "0.75"},
            {"U_FAST_STOP": "1.5,0.3"}, {"U_FAST_STOP": "0.75,0.6"}, {"U_PAYLOAD_FULL0": "2"},
            {"U_FAST_STOP": "0.75,0.3", "U_FAST_SIDE": "0.1"}, {"U_CMD_WIDE": "1"}, {"U_CMD_WIDE": "3"},
-           {"U_DR_WIDE": "0.9"}, {"U_DR_WIDE": "2.5"}]
+           {"U_DR_WIDE": "0.9"}, {"U_DR_WIDE": "2.5"}, {"U_STAIR_STOP_HOLD": "6,2"}, {"U_STAIR_STOP_HOLD": "2"},
+           {"U_MARCH_FROM_SPLAY": "0"}, {"U_MARCH_FROM_SPLAY": "1.5"}, {"U_FLAT_STAND_HOLD": "0.1,40"}]
     check(all(fails(robot, e) for e in bad), f"{len(bad)} bad settings stop the build")
     # (7)
     allon = {"U_HARD_FIXED": "1", "U_CMD_WIDE": "1.25", "U_DR_WIDE": "1.25"}

@@ -114,7 +114,8 @@ def main() -> int:
           and set(co.rewards) == set(cm.rewards), "U_PAYLOAD_TRAIN_MAX= and U_HARD_FIXED= turn the conditions off")
     # (4)
     t0, tm = twist(c0), twist(cm)
-    check({k for k in t0 if t0[k] != tm[k]} <= {"march_prob", "stop_after_fast_prob", "fast_side_prob"},
+    check({k for k in t0 if t0[k] != tm[k]} <= {"march_prob", "stop_after_fast_prob", "fast_side_prob",
+                                                "stand_resampling_time_range"},
           "the command unchanged but the D fields")
     e0, em = events(c0), events(cm)
     check({k for k in e0 if e0[k] != em[k]} == {"base_payload"}

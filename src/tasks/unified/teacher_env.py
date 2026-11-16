@@ -1300,7 +1300,17 @@ def _min_recipe(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
 # go2-home's single-factor arms after A (payload 12 kg) and B (4096 robots), 2026-11-16 (the user's experiment round):
 # D = the hard actions at their full share from iteration 0, as the deployed g27b / w27d lineage trained them; C1 / C2
 # = the training wider than the acceptance (commands / randomization at 1.25x). Every piece off unless set.
-HARD_FIXED = {"U_MARCH_FIXED": "0.5", "U_FAST_STOP": "0.75,0.3", "U_PAYLOAD_FULL0": "1"}
+HARD_FIXED = {"U_MARCH_FIXED": "0.5", "U_FAST_STOP": "0.75,0.3", "U_PAYLOAD_FULL0": "1",
+              # the shapes of the tests (go2-home 2026-11-16, after the shape survey; hard_command.py)
+              "U_STAIR_STOP_HOLD": "2,6", "U_MARCH_FROM_SPLAY": "0.5", "U_FLAT_STAND_HOLD": "4,10"}
+
+
+def _range_pair(name: str, v: str, lo: float, hi: float) -> tuple[float, float]:
+  parts = v.split(",")
+  assert len(parts) == 2, f"{name}={v}: <min>,<max>"
+  a, b = float(parts[0]), float(parts[1])
+  assert lo <= a < b <= hi, f"{name}={v}: {lo} <= min < max <= {hi}"
+  return a, b
 
 
 def _round_switches(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
@@ -1315,6 +1325,12 @@ def _round_switches(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
                           0.75 / 0.3; not with U_FAST_SIDE;
     U_PAYLOAD_FULL0=1     the full payload limit from iteration 0 (curriculum.progress_payload's fixed), the heavy
                           share as the payload event has it (0.5);
+    U_STAIR_STOP_HOLD=<a>,<b>  a stand on a stairs tile holds a-b s (2,6; the walks keep 1.5-4): eval_stairs holds
+                          the mid-flight stop 4 s and judges 2-4 s (hard_command.HardShapeCommand);
+    U_MARCH_FROM_SPLAY=<p>  after a reset that splayed the hips, the first command on flat is a march with p (0.5):
+                          march_eval's reset test marches from hips splayed 8 deg (hard_command.HardShapeCommand);
+    U_FLAT_STAND_HOLD=<a>,<b>  a stand on flat (not a march) holds a-b s (4,10; was 2-5): the brake / creep test
+                          watches 6 s at zero (the shared command's stand_resampling_time_range);
     U_CMD_WIDE=<k>        arm C1: the final command ranges (curriculum u_commands' final) x k, the initial ones
                           unchanged (1.25: vx -1.25..1.875, vy +-0.75, wz +-1.875);
     U_DR_WIDE=<k>         arm C2: the randomization's spread x k -- the foot friction's ends (lo / k, hi x k), the
@@ -1350,6 +1366,21 @@ def _round_switches(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   if v:
     assert v == "1", f"U_PAYLOAD_FULL0={v}: 1 or unset"
     cfg.curriculum["u_payload"].params["fixed"] = True
+  v = val("U_FLAT_STAND_HOLD")
+  if v:
+    tw.stand_resampling_time_range = _range_pair("U_FLAT_STAND_HOLD", v, 0.5, 30.0)
+  shape = {}
+  v = val("U_STAIR_STOP_HOLD")
+  if v:
+    shape["stair_stand_time_range"] = _range_pair("U_STAIR_STOP_HOLD", v, 0.5, 20.0)
+  v = val("U_MARCH_FROM_SPLAY")
+  if v:
+    p = float(v)
+    assert 0.0 < p <= 1.0, f"U_MARCH_FROM_SPLAY={v}: a probability in (0, 1]"
+    shape["march_from_splay_prob"] = p
+  if shape:
+    from src.tasks.unified import hard_command
+    cfg.commands["twist"] = hard_command.from_cfg(cfg.commands["twist"], **shape)
   v = env.get("U_CMD_WIDE", "")
   if v:
     k = float(v)
