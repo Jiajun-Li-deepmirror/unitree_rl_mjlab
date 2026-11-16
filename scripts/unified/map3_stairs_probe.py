@@ -10,8 +10,9 @@ holding the flight heading and its centerline as eval_map3 does) runs one script
   climb      --up-vx up the flight until the base has gained half the flight's rise
   mid stop   zero command 3 s (the operator off)                                        -> reading (c)
   climb      on until the base has gained the whole rise (less 12 cm: a loaded base stands lower) or a rail ahead is
-             within 1.0 m, then on along the landing until the first rail ahead is within 0.85 m (the deployed wall
-             guard's stop; at most 4 s)                                                -> reading (c'), item 21's approach
+             within 1.0 m, then on along the landing under the deployed wall guard's profile (tinynav-sim: the
+             speed min(--up-vx, 1.5 x (camera-to-wall - 0.45)); the Go2W stops ~0.76 m base-to-wall; at most 6 s)
+                                                                                      -> reading (c'), item 21's approach
   stand 2 s, turn in place wz +1.0 for 3 s, stand 2 s on the top landing               -> reading (c')
 
 (c)  the mid-flight stop: per robot the braking distance (the displacement along the flight over the first 1 s after
@@ -50,10 +51,19 @@ import torch  # noqa: E402
 MID_SHARE = 0.5
 GOAL_SHARE = 0.85
 STOP_S = 3.0
-ONTO_MAX_S = 4.0
+ONTO_MAX_S = 6.0
 ONTO_WALL_M = 1.0    # the top taken when a rail ahead is this near (a loaded base that never gains the rise)
-APPROACH_STOP_M = 0.85   # the drive-up on the landing ends here: the deployed wall guard's stop (2026-11-16, go2-home:
-                         # item 21 judges the approach too; it was 1.0 m, the stand / turn now 0.15 m nearer the wall)
+# the drive-up on the landing follows the deployed wall guard (tinynav-sim sim/guard.py; 2026-11-16, go2-home: item 21
+# judges the approach): the forward command min(up_vx, GUARD_GAIN x (camera-to-wall - GUARD_STOP_M)), the camera
+# NAVCORE_CAMERA_POS ahead of the base (the Go2W 0.307 m: the stop ~0.76 m base-to-wall); the drive-up ends when the
+# allowed speed falls under GUARD_END_V (or after ONTO_MAX_S). Was a stop at 1.0 m, then at 0.85 m.
+GUARD_STOP_M, GUARD_GAIN, GUARD_END_V = 0.45, 1.5, 0.03
+CAM_X = 0.307   # the camera ahead of the base (m): main sets it from the task's robot (NAVCORE_CAMERA_POS)
+
+
+def guard_v(dw):
+  """The guard's allowed forward speed at a base-to-wall distance dw (inf: no wall ahead)."""
+  return (GUARD_GAIN * (dw - CAM_X - GUARD_STOP_M)).clamp(min=0.0)
 TOP_SAG = 0.12
 LAST_STEPS = 0.75   # the falls between this share of the rise and eval_map3's 85 % are the flight's last steps
 LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top landing
@@ -89,6 +99,11 @@ def main() -> int:
   import eval_map3 as em
 
   teacher_scan = ("-U-Teacher-" in a.task) if a.teacher_scan is None else a.teacher_scan
+  global CAM_X
+  from src.tasks.velocity.depth_env_cfg import NAVCORE_CAMERA_POS
+  key = next((k for k in sorted(NAVCORE_CAMERA_POS, key=len, reverse=True) if f"-{k}-" in a.task.lower()), None)
+  assert key is not None, f"no camera mount for {a.task} (NAVCORE_CAMERA_POS: {sorted(NAVCORE_CAMERA_POS)})"
+  CAM_X = float(NAVCORE_CAMERA_POS[key][0])
   boxes = em.load_map3_boxes()
   ups = [s for s in em.flight_scenarios(boxes, a.up_vx, 0.4) if s.name.endswith("_up")]
   if a.flights:
@@ -275,7 +290,7 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     phase = torch.where(top, torch.full_like(phase, 3), phase)
     t_ph = torch.where(top | end_stop, torch.zeros_like(t_ph), t_ph)
     for k, dur in ((3, ONTO_MAX_S), (4, land_dur[0]), (5, land_dur[1]), (6, land_dur[2])):
-      nxt = (phase == k) & ((t_ph >= dur) | ((dw <= APPROACH_STOP_M) if k == 3 else False))
+      nxt = (phase == k) & ((t_ph >= dur) | ((guard_v(dw) <= GUARD_END_V) if k == 3 else False))
       phase = torch.where(nxt, torch.full_like(phase, k + 1), phase)
       t_ph = torch.where(nxt, torch.zeros_like(t_ph), t_ph)
     if bool(((phase == 7) | fell).all()):
@@ -286,7 +301,8 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     rel = pos[:, :2] - env.scene.env_origins[:, :2]
     lateral = -axis[1] * rel[:, 0] + axis[0] * rel[:, 1]
     zero = torch.zeros(n, device=dev)
-    term.vel_command_b[:, 0] = torch.where(walk, torch.full_like(zero, up_vx), zero)
+    vx_cmd = torch.where(phase == 3, torch.minimum(torch.full_like(zero, up_vx), guard_v(dw)), torch.full_like(zero, up_vx))
+    term.vel_command_b[:, 0] = torch.where(walk, vx_cmd, zero)
     term.vel_command_b[:, 1] = torch.where(walk, (-lateral).clamp(-0.2, 0.2), zero)
     term.vel_command_b[:, 2] = torch.where(walk, heading_err.clamp(-0.5, 0.5),
                                            torch.where(phase == 5, torch.full_like(zero, LANDING[1][1]), zero))
@@ -561,7 +577,8 @@ def report(rows) -> None:
         f"{(ts_f + ts_r) / nreach if nreach else float('nan'):.2f} per climb (front {ts_f / nreach if nreach else float('nan'):.2f}, "
         f"rear {ts_r / nreach if nreach else float('nan'):.2f}; airborne > {TOP_AIR_S:g} s, apex > {100 * TOP_LIFT_M:.0f} cm)")
   print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand, the larger of the drive-up "
-        f"to {APPROACH_STOP_M:.2f} m + the first stand and the turn + the last stand (a fall on the landing counts): "
+        f"under the wall guard (stop {GUARD_STOP_M:g} m from the camera, {CAM_X:.3f} m ahead of the base) + the first stand "
+        f"and the turn + the last stand (a fall on the landing counts): "
         f"{k} of {nreach} robots on the landing = {sh(k)} % (drive-up + stand {sh(app_bad)} %, turn + stand {sh(ts_bad)} %, "
         f"fell on the landing {nfell})")
 

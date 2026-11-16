@@ -110,6 +110,17 @@ class RoughStartCfg(HfRandomUniformTerrainCfg):
 
 
 TERRAINS = ("slope15 up", "slope15 down", "rough3")
+# the turns on the rough tile (2026-11-16, the user via go2-home: the Go2W videos showed very low leg lifts in big turns,
+# and the minimal recipe dropped foot_swing_clearance): a spin in place both ways and a big arc, TURN_S each after the
+# settle; judged 0 falls and no wheel stuck (in contact, |wheel speed| < STUCK_W rad/s for more than STUCK_S); reported
+# the stepping feet's swing: each lift-off airborne > AIR_S, its apex above its take-off, p50 / p90 per leg
+TURNS = (("spin +1.0", (0.0, 0.0, 1.0)), ("spin -1.0", (0.0, 0.0, -1.0)), ("arc 1.0+1.0", (1.0, 0.0, 1.0)))
+TURN_S = 8.0
+YAW_ACCEL = 3.0      # rad/s^2, the turn's rise (the acceptance's controllers)
+STUCK_W, STUCK_S = 0.5, 1.0
+AIR_S = 0.06
+FORCE_N = 5.0
+LEGS = ("FL", "FR", "RL", "RR")
 
 
 def depth_report(env, t_idx) -> None:
@@ -141,6 +152,7 @@ def main() -> int:
   p.add_argument("checkpoint")
   p.add_argument("--num-envs", type=int, default=64, help="robots per (terrain, speed) cell")
   p.add_argument("--seed", type=int, default=None, help="the environment's seed; unset: none, as the flat tests")
+  p.add_argument("--no-turns", action="store_true", help="the walks only (no turning cells)")
   p.add_argument("--depth-check", action="store_true",
                  help="a depth student: print what its camera sees of each tile after the settle (the lower half of the "
                       "image: mean depth and the share of pixels with no hit) -- the rough tile is a heightfield")
@@ -262,7 +274,129 @@ def main() -> int:
           f"{dz:+.2f} m{extra}")
   print(f"ALL slopes (item 23): reach min {worst:.1f} % over {len(cells)} cells, falls {int(F.sum())} of {N} robots")
   env.close()
+  if not a.no_turns:
+    turns(a)
   return 0
+
+
+def turns(a) -> None:
+  """The turning cells on the rough tile (TURNS' comment): falls, stuck wheels, the swing of the stepping feet."""
+  from mjlab.sensor import ContactMatch, ContactSensorCfg
+
+  cfg = load_env_cfg(a.task, play=True)
+  if a.seed is not None:
+    cfg.seed = a.seed
+  gen = cfg.scene.terrain.terrain_generator
+  gen.size = (TILE, TILE)
+  gen.curriculum = True
+  gen.sub_terrains = {"rough3": HfRandomUniformTerrainCfg(proportion=1.0, noise_range=ROUGH, noise_step=ROUGH_STEP,
+                                                           border_width=0.25)}
+  gen.num_rows, gen.num_cols = 2, 3
+  cfg.events.pop("randomize_terrain", None)
+  cfg.events.pop("push_robot", None)
+  rb = cfg.events["reset_base"]
+  rb.params["pose_range"] = {"x": (-1.0, 1.0), "y": (-1.0, 1.0), "z": (0.0, 0.0), "yaw": (-math.pi, math.pi)}
+  rb.params["velocity_range"] = {}
+  cfg.scene.sensors = tuple(cfg.scene.sensors or ()) + tuple(
+    ContactSensorCfg(name=f"turn_{leg}_foot", primary=ContactMatch(mode="geom", entity="robot", pattern=(rf"^{leg}_foot_collision$",)),
+                     secondary=ContactMatch(mode="body", pattern="terrain"), fields=("found", "force"), reduce="none",
+                     num_slots=1, history_length=4) for leg in LEGS)
+  n = a.num_envs
+  N = n * len(TURNS)
+  cfg.scene.num_envs = N
+  # every robot on the rough heightfield and turning: more contacts than the walks' mix (t1 11-16: "nconmax overflow
+  # (nconmax must be >= 43)"), as blind_env_cfg raises it for its contact-heavy keys
+  if (cfg.sim.nconmax or 0) < 128:
+    cfg.sim.nconmax = 128
+  agent = load_rl_cfg(a.task)
+  env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
+  venv = RslRlVecEnvWrapper(env, clip_actions=agent.clip_actions)
+  runner = load_runner_cls(a.task)(venv, asdict(agent), device="cuda:0")
+  runner.load(a.checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
+  policy = runner.get_inference_policy(device="cuda:0")
+  dev, dt = env.device, env.step_dt
+  robot = env.scene["robot"]
+  term = env.command_manager.get_term("twist")
+  feet = [env.scene[f"turn_{leg}_foot"] for leg in LEGS]
+  wheel_ids = [robot.joint_names.index(f"{leg}_wheel_joint") for leg in LEGS if f"{leg}_wheel_joint" in robot.joint_names]
+  # the feet's height: the wheel's centre, else the calf's end (the foot sphere at its tip; map3_stairs_probe's way)
+  foot_ids, _ = robot.find_bodies([rf"^{leg}_wheel_link$" if wheel_ids else rf"^{leg}_calf$" for leg in LEGS], preserve_order=True)
+
+  def feet_z():
+    if wheel_ids:
+      return robot.data.body_link_pos_w[:, foot_ids, 2]
+    qq = robot.data.body_link_quat_w[:, foot_ids]
+    zz = 1 - 2 * (qq[..., 1] ** 2 + qq[..., 2] ** 2)
+    return robot.data.body_link_pos_w[:, foot_ids, 2] - 0.213 * zz
+  cell = torch.arange(N, device=dev) // n
+  target = torch.tensor([c for _, c in TURNS], device=dev, dtype=torch.float32)[cell]
+  import eval_map3 as em
+
+  em.set_command(env, 0.0, 0.0, 0.0)
+  env.reset()
+  obs = venv.get_observations()
+  cur = torch.zeros(N, 3, device=dev)
+  fell = torch.zeros(N, dtype=torch.bool, device=dev)
+  stuck_t = torch.zeros(N, max(len(wheel_ids), 1), device=dev)
+  stuck = torch.zeros(N, dtype=torch.bool, device=dev)
+  prev = torch.ones(N, 4, dtype=torch.bool, device=dev)
+  air = torch.zeros(N, 4, dtype=torch.bool, device=dev)
+  t_air = torch.zeros(N, 4, device=dev)
+  z_take = torch.zeros(N, 4, device=dev)
+  z_apex = torch.zeros(N, 4, device=dev)
+  swings = {leg: [] for leg in LEGS}
+  steps = torch.zeros(N, 4, device=dev)
+  for k in range(int(math.ceil((SETTLE_S + TURN_S) / dt))):
+    t = k * dt
+    on = t >= SETTLE_S
+    want = target if on else torch.zeros_like(target)
+    cur[:, 0] = torch.minimum(cur[:, 0] + LIN_ACCEL * dt, want[:, 0])
+    cur[:, 2] = cur[:, 2] + (want[:, 2] - cur[:, 2]).clamp(-YAW_ACCEL * dt, YAW_ACCEL * dt)
+    term.vel_command_b[:] = cur
+    term.time_left[:] = 1e9
+    with torch.no_grad():
+      obs, _, dones, extras = venv.step(policy(obs))
+    terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
+    fell |= terminated & on
+    live = ~fell
+    c = torch.stack([torch.norm(f.data.force_history.reshape(N, -1, 3), dim=-1).max(dim=1).values > FORCE_N for f in feet], dim=1)
+    z = feet_z()
+    judged = on & (t >= SETTLE_S + 1.0)   # (the first second of the turn: the rise)
+    if wheel_ids:
+      w = robot.data.joint_vel[:, wheel_ids].abs()
+      still = c[:, :len(wheel_ids)] & (w < STUCK_W) & live[:, None]
+      stuck_t = torch.where(still, stuck_t + dt, torch.zeros_like(stuck_t))
+      if judged:
+        stuck |= (stuck_t > STUCK_S).any(dim=1) & live
+    start = prev & ~c & live[:, None] & on
+    air = air | start
+    z_take = torch.where(start, z, z_take)
+    z_apex = torch.where(start, z, torch.where(air, torch.maximum(z_apex, z), z_apex))
+    t_air = torch.where(start, torch.zeros_like(t_air), torch.where(air, t_air + dt, t_air))
+    land = air & c
+    done = land & (t_air > AIR_S)
+    if bool(done.any()):
+      r_, l_ = done.nonzero(as_tuple=True)
+      lift = (z_apex - z_take)[r_, l_]
+      for li, leg in enumerate(LEGS):
+        swings[leg].append(lift[l_ == li].cpu())
+      steps += done.float()
+    air = air & ~c
+    prev = c
+  F, S = fell.cpu().numpy(), stuck.cpu().numpy()
+  q = lambda x: (100 * float(np.percentile(x, 50)), 100 * float(np.percentile(x, 90))) if len(x) else (float("nan"),) * 2
+  print(f"{a.checkpoint}\n{a.task}: item 23's turns on the rough tile (+-3 cm), {n} robots per cell, {TURN_S:g} s after "
+        f"a {SETTLE_S:g} s settle (wz slewed at {YAW_ACCEL:g} rad/s^2); stuck = a wheel in contact below {STUCK_W:g} rad/s "
+        f"for more than {STUCK_S:g} s; swing = a lift-off airborne > {AIR_S:g} s, its apex above its take-off")
+  st = steps.cpu().numpy()
+  for ci, (name, _c) in enumerate(TURNS):
+    g = slice(ci * n, (ci + 1) * n)
+    print(f" {name:12s} | falls {int(F[g].sum())}/{n} | stuck {int(S[g].sum())}/{n} | steps per robot "
+          + " ".join(f"{leg} {st[g, li].mean():.1f}" for li, leg in enumerate(LEGS)))
+  sw = {leg: (torch.cat(v).numpy() if v else np.array([])) for leg, v in swings.items()}
+  print("ALL turns (item 23): falls %d of %d robots, stuck %d (a wheel still > %g s); swing apex p50 / p90 cm %s" % (
+    int(F.sum()), N, int(S.sum()), STUCK_S, ", ".join(f"{leg} {q(sw[leg])[0]:.1f} / {q(sw[leg])[1]:.1f}" for leg in LEGS)))
+  env.close()
 
 
 if __name__ == "__main__":

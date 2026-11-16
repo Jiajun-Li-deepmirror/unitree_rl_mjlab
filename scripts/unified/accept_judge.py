@@ -1055,6 +1055,18 @@ def spec_slope(r: str, path: str, cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}斜坡和不平地面：到达 {worst:.1f}%", (bar - worst) / bar)
   if falls:
     sh.fail(f"{L}斜坡和不平地面：摔倒 {falls}")
+  # the turns on the rough tile (2026-11-16, the user): 0 falls, no wheel stuck > 1 s; the swing reported
+  m = re.search(r"^ALL turns \(item 23\): falls (\d+) of (\d+) robots, stuck (\d+) \(a wheel still > [\d.]+ s\); swing apex "
+                r"p50 / p90 cm (.*)$", txt(path), re.M)
+  if m is None:
+    sh.missing(f"{L}不平地面转弯（slope_rough_test）")
+    return
+  tf, tn_, ts, swing = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4).strip()
+  sh.detail.append(f"{L}不平地面转弯（原地 ±1.0、弧线 1.0+1.0）：摔倒 {tf}/{tn_}，轮子卡住 {ts}；抬腿最高点 p50 / p90（只报告）{swing}")
+  if tf:
+    sh.fail(f"{L}不平地面转弯：摔倒 {tf}")
+  if ts:
+    sh.fail(f"{L}不平地面转弯：轮子卡住 {ts}")
 
 
 def spec_motion(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:

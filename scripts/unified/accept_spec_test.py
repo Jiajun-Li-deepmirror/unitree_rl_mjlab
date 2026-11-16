@@ -39,7 +39,7 @@ GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, sp
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
             stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
-            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0)
+            rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0, tfalls=0, tstuck=0)
 
 
 def band_val(v, b, d):
@@ -130,7 +130,9 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   # slope_rough_test: item 23's rows and line
   w("slope", " slope15 up   0.5 | reached 100.0 % | falls 0/64 | speed 0.91 | base rise +1.60 m\n"
              f" slope15 down 1.0 | reached {g['slope']:5.1f} % | falls {g['sfalls']}/64 | speed 1.04 | base rise -1.65 m\n"
-             f"ALL slopes (item 23): reach min {g['slope']:.1f} % over 6 cells, falls {g['sfalls']} of 384 robots\n")
+             f"ALL slopes (item 23): reach min {g['slope']:.1f} % over 6 cells, falls {g['sfalls']} of 384 robots\n"
+             f"ALL turns (item 23): falls {g['tfalls']} of 192 robots, stuck {g['tstuck']} (a wheel still > 1 s); swing apex p50 / p90 "
+             f"cm FL 3.1 / 5.2, FR 3.0 / 5.0, RL 2.2 / 4.1, RR 2.3 / 4.0\n")
   # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
   share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
   w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand, the larger of the drive-up to 0.85 m + "
@@ -253,6 +255,7 @@ def main() -> int:
       ("Go2W", "unl", {"cv": 0.9}, None),
       ("Go2W", "unl", {"slope": 94.0}, "斜坡和不平地面"), ("Go2", "typ", {"slope": 94.0}, "斜坡和不平地面"),
       ("Go2W", "full", {"slope": 89.0}, "斜坡和不平地面"), ("Go2W", "unl", {"sfalls": 1}, "斜坡和不平地面"),
+      ("Go2W", "unl", {"tfalls": 1}, "不平地面转弯"), ("Go2W", "full", {"tstuck": 2}, "不平地面转弯"),
       ("Go2W", "unl", {"pfalls1": 7}, None), ("Go2W", "unl", {"pfalls": 1}, "抗推"), ("Go2", "typ", {"pfalls": 1}, "抗推"), ("Go2W", "full", {"pfalls": 2}, "抗推"),
     ]
     first = acceptance("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})

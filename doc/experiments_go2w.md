@@ -87,6 +87,12 @@ How it was trained, stage by stage: go2-depth's lineage table, built from each r
 - Tomorrow's base (the user, 2026-11-16): the minimal recipe + gom8010 + terrain=wide + payload_box=tinynav +
   U_CMD_WIDE=1.25 + U_DR_WIDE=1.25, from zero; scripts/unified/base_1117_test.py checks that they compose (U_DR_WIDE
   widens the motor model's joint factors around 1: friction / damping x 0.375-1.625, armature x 0.625-1.375).
+- Open: the training's end-wall stop differs from the deployed guard (go2-home 2026-11-16, measured): the key endwall
+  stops the forward command 0.85 m base-to-wall with a 0.2 m ramp (endwallshort), the deployed guard (tinynav-sim
+  sim/guard.py) at 0.45 m camera-to-wall (the Go2W's camera 0.307 m ahead: ~0.76 m base-to-wall) with a linear ramp
+  of 1.5/s per metre. go2w_minwall_s0 keeps the training's values; if endwall enters the recipe, its stop and ramp are
+  aligned to the guard first (0.76 m, the linear ramp). Item 21's drive-up already follows the guard. The Jetson-side
+  guard (robot_ctrl jetson_ctrl): not checked yet (go2-home asks the user).
 - Known conflict, the Go2W wheel torque: unitree_ros gives 23.7 N m / 30.1 rad/s, the same motor; unitree_mujoco gives
   ctrlrange 15. The motor's values are taken. The 15 may be a flat stand-in for the curve at working speed: the curve
   gives ~15.9 N m at 1.5 m/s (~17 rad/s at the wheel).

@@ -47,7 +47,7 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 18 | slips per step (Go2) / slide-back (Go2W) | 0.06 / 0.039 | as unloaded | 0.07 / 0.05 |
 | 19 | mid-tread share (Go2) | >= 0.76 | 0.76 | 0.72 |
 | 20 | stalled on the stairs, per band and direction | <= 5 % | 5 % | 5 % |
-| 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings, the drive-up along the landing to 0.85 m from the end wall (the deployed guard's stop), then stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); of the robots that took the top, the share whose front foot / wheel rises more than 10 cm above the first stand or that fall on the landing -- the larger of (A) drive-up + first stand and (B) turn + last stand | <= 5 % | 5 % | 5 % |
+| 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings, the drive-up along the landing under the deployed wall guard's profile (tinynav-sim: speed min(0.5, 1.5/s x (camera-to-wall − 0.45 m)), the camera 0.307 m ahead of the base: the Go2W stops ~0.76 m base-to-wall; it was a stop at 0.85 m), then stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); of the robots that took the top, the share whose front foot / wheel rises more than 10 cm above the first stand or that fall on the landing -- the larger of (A) drive-up + first stand and (B) turn + last stand | <= 5 % | 5 % | 5 % |
 | 24 | depth noise (深度噪声; the depth student only, added 2026-11-16 by the user via go2-home): items 10-20 again on the -RealEdge task (Unitree-<R>-U-Student-Depth-Stairs-RealEdge: the real camera's latency, frame timing, depth errors and mounting spread, edge smoothing on every capture), next to the clean run; labelled 相机误差 | the clean bars | the clean bars | the clean bars |
 | 22 | push (抗推): one 1.0 m/s velocity push on the base (the user, 2026-11-16: first 0.5, then 1.0; 0.5 still run and reported), base frame +x / -x / +y / -y, 3 s into the run, standing, 1.0 m/s forward and 0.5 m/s sideways (push_test.py, 64 robots per group); the recovery (the base back within 0.3 m/s of the command for 0.5 s) reported | 0 falls | 0 | 0 |
 | 23 | slopes and rough ground (斜坡和不平地面): a 15° ramp up and a 15° ramp down (box geoms: 2 m flat, 6 m run, 2 m flat) and rough ground ±3 cm (the training's random-rough generator), walked across at 0.5 and 1.0 m/s, 64 robots per cell (slope_rough_test.py); reached = 7.5 m along within 7.5 / v x 1.5 + 2 s; the worst of the 6 cells | >= 95 %, 0 falls | 95 %, 0 | 90 %, 0 |
@@ -90,7 +90,8 @@ They take the evaluation time up by about half.
 Item 21's notes (2026-11-16):
 - the shape: uprobe_s162's measure (the turn) plus the last stand, and the drive-up (go2-home: the user's complaint
   came from a robot on the landing with a wall ahead, the drive-up included). The drive-up runs at the climb's speed
-  (0.5 m/s) from the top until the wall is 0.85 m ahead. In the drive-up and the first stand a lift counts from a front
+  (0.5 m/s) from the top, slowed by the deployed wall guard's ramp (the guard in tinynav-sim's sim/guard.py) to its
+  stop, ~0.76 m base-to-wall on the Go2W. In the drive-up and the first stand a lift counts from a front
   foot's take-off at the landing's level (the bottom floor + the flight's rise, 3 cm tolerance, as item 28): the last
   riser's step-up takes off from the tread below and is not a lift (measured 2026-11-16: with the first stand's lowest
   point as the reference instead, 92 % of the pick's robots read as lifting in the drive-up, against 15 % in the turn). The judged share is the larger of the two parts; a fall on the landing counts in both;
