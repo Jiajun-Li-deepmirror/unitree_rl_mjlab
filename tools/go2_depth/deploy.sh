@@ -13,7 +13,7 @@ CHECK=0 FORCE=0 BOXES=t1,t2
 while [ $# -gt 0 ]; do case $1 in --check) CHECK=1 ;; --force) FORCE=1 ;; --boxes) BOXES=$2; shift ;; *) break ;; esac; shift; done
 cd "$(dirname "$0")/../.." || exit 2
 C=$(git rev-parse --short "${1:-HEAD}") || exit 2
-SSH=/home/dm/.cache/go2-depth-work/ssh/r D=/root/gpufree-data/go2-depth/depth_fe
+SSH=/home/dm/.cache/go2-depth-work/ssh/r D=${DEPLOY_TREE:-/root/gpufree-data/go2-depth/depth_fe}   # (DEPLOY_TREE: another tree on the box, e.g. a commit's own -- tools/go2_depth/tree_commit.sh)
 declare -A PORT=([t1]=30714 [t2]=31365)
 rc=0
 for b in ${BOXES//,/ }; do
