@@ -88,6 +88,16 @@ def _register() -> None:
           rl_cfg=us.ppo_runner_cfg(robot, kind, clip_actions=PHASE_CLIP_ACTIONS),
           runner_cls=us.UStudentPpoRunner,
         )
+        if kind == "depth" and tname == "Stairs":
+          # acceptance item 24 (2026-11-16): the stairs and map3 checks with the real camera's errors and edge
+          # smoothing (map3_par / eval_map3 re-terrain this task)
+          register_mjlab_task(
+            task_id=f"Unitree-{robot.name}-U-Student-{name}-{tname}-RealEdge",
+            env_cfg=us.student_env_cfg(robot, kind, terrain=terrain),
+            play_env_cfg=us.student_env_cfg(robot, kind, play=True, terrain=terrain, real_edge=True),
+            rl_cfg=us.ppo_runner_cfg(robot, kind, clip_actions=PHASE_CLIP_ACTIONS),
+            runner_cls=us.UStudentPpoRunner,
+          )
 
 
 

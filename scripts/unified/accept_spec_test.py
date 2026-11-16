@@ -13,7 +13,9 @@ Checked:
   (5) a missing test file: FAULT (未测), a tool fault, not a fail (item 21's file too);
   (6) the teacher gates: stairs_gate.spec_gate at the teacher's tolerance (2 falls per scan mode pass, 3 fail; the
       full payload's N), the counts hard (no HARDPASS); flat_gate.spec_flat_gate on both scan modes, gap 0.01 per item;
-  (7) U_JUDGE_OLD=1 runs the judge before the spec (a comparison).
+  (7) U_JUDGE_OLD=1 runs the judge before the spec (a comparison);
+  (8) item 24 (--edge): the stairs and map3 items on the -RealEdge files at the same bars, labelled 相机误差; missing
+      with --edge: FAULT.
 
 Local: python scripts/unified/accept_spec_test.py"""
 
@@ -122,10 +124,19 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
             f"landing 0)\n")
 
 
-def run_judge(r: str, prefix: str) -> str:
+def write_edge(prefix: str, cond: str, wheeled: bool, **over) -> None:
+  """Item 24's files (the stairs and map3 tests on -RealEdge) of one condition, at GOOD readings unless overridden."""
+  tmp = prefix + "_edgetmp"
+  write_set(tmp, cond, wheeled, **over)
+  sfx = aj.COND_SFX[cond]
+  for k in ("stairs", "noop", "op"):
+    os.replace(f"{tmp}_{k}{sfx}.txt", f"{prefix}_{k}edge{sfx}.txt")
+
+
+def run_judge(r: str, prefix: str, *flags: str) -> str:
   buf = io.StringIO()
   with contextlib.redirect_stdout(buf):
-    aj.main([r, prefix, "--typical"])
+    aj.main([r, prefix, "--typical", *flags])
   return buf.getvalue().splitlines()[0]
 
 
@@ -256,6 +267,30 @@ def main() -> int:
     first = run_judge("Go2W", prefix)
     check(first.startswith("FAULT") and "常用负载 面前是墙不抬腿" in first and "未测" in first,
           f"item 21's file missing: FAULT ({first[:120]})")
+
+    # item 24: the depth student's stairs and map3 on -RealEdge (accept.sh --edge), the same bars
+    def edge_case(name: str, cond_over: dict, missing: str | None = None) -> str:
+      prefix = str(Path(tmp, f"u_edge_{name}"))
+      for cond in aj.CONDS:
+        write_set(prefix, cond, True)
+        write_edge(prefix, cond, True, **cond_over.get(cond, {}))
+      if missing:
+        os.remove(f"{prefix}_{missing}.txt")
+      return run_judge("Go2W", prefix, "--edge")
+    first = edge_case("good", {})
+    check(first == "PASS", f"item 24: good readings on -RealEdge pass ({first[:120]})")
+    first = edge_case("falls", {"unl": {"falls": {("8-12cm", "up"): 1, "_": 0}}})
+    check(first.startswith("FAIL") and items(first) and all(i.startswith("相机误差 楼梯") for i in items(first)),
+          f"item 24: a fall on -RealEdge fails the camera-error stairs item only ({first[:120]})")
+    first = edge_case("op", {"full": {"op": 0.89}})
+    check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith("满载 相机误差 楼梯到达（map3）"),
+          f"item 24: map3 with the operator 89 % at full load fails ({first[:120]})")
+    first = edge_case("feet", {"typ": {"feet": {("12-15cm", "down"): 0.89, "_": 1.0}}})
+    check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith("常用负载 相机误差 停住缺脚"),
+          f"item 24: four feet 0.89 typical fails ({first[:120]})")
+    first = edge_case("missing", {}, missing="stairsedge_pay")
+    check(first.startswith("FAULT") and "满载 相机误差 楼梯" in first and "未测" in first,
+          f"item 24: a missing -RealEdge file with --edge: FAULT ({first[:120]})")
 
     # (6) the teacher gates
     g = str(Path(tmp, "u_gate"))

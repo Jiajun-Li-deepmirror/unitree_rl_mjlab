@@ -298,6 +298,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     no) ;;
     *) echo "FAULT: whether $R has a typical payload could not be read (src/robot_table.py)"; return ;;
   esac
+  # item 24 (2026-11-16): the depth student's stairs and map3 again with the real camera's errors (-RealEdge)
+  local EDGE=0; [ $SPEC = 1 ] && [ $KIND = depth ] && EDGE=1 && jflag="$jflag --edge"
   # JOBS tests at a time (all conditions in one pool), each in its own process with its own U_PAYLOAD
   pool_sized() {   # PAYLOAD OUT TEST FULL_N CMD... (run_sized)
     while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
@@ -327,6 +329,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     # the path on a flight (2026-11-15, the user: the weaving and the heading on the stairs; accept_judge.py's
     # FLIGHT_HEADING_*): the stairs traverse spawned square to the steps, every condition
     pool $pay ${P}_descent$X.txt $W scripts/unified/descent_probe.py $TE $CK --straight --envs-per-tile $(tn 18)
+    [ $EDGE = 1 ] && pool $pay ${P}_stairsedge$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE-RealEdge $CK \
+      --envs-per-tile $(tn 18) --metrics
     fi
     # the depth student: 384 robots per command (P3 11-12: 13 commands x 768 rendering robots asked torch for 9.71 GiB
     # at once and did not fit a 24.5 GB card beside another test; 384 still above the user's 256 per test)
@@ -393,7 +397,13 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
         --time-scale 1.6 --seed 0
       # item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿"; a spec robot, every condition): map3's top
       # landings facing the end wall, stand / turn in place / stand (accept_judge.spec_wall)
-      [ $SPEC = 1 ] && run ${P}_wall$X.txt $W scripts/unified/map3_stairs_probe.py $TE $CK --num-envs $(tn 64) --seed 0 )
+      [ $SPEC = 1 ] && run ${P}_wall$X.txt $W scripts/unified/map3_stairs_probe.py $TE $CK --num-envs $(tn 64) --seed 0
+      if [ $EDGE = 1 ]; then   # item 24's map3 flights on the -RealEdge task
+        run ${P}_noopedge$X.log $W $S/map3_par.py --out ${P}_noopedge$X.txt --shards 3 -- --task $TE-RealEdge $CK --set flights \
+          --no-operator --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
+        run ${P}_opedge$X.log $W $S/map3_par.py --out ${P}_opedge$X.txt --shards 3 -- --task $TE-RealEdge $CK --set flights \
+          --num-envs $(tn 192) --time-scale 1.6 --seed 0
+      fi )
   done
   $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_verdict.txt 2>&1
   # the sizes run_sized used, when any test ran small (a detail line: the first line stays the verdict)

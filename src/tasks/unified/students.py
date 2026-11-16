@@ -89,8 +89,14 @@ S2_LEARNING_RATE = 3e-5
 CHECK_FRICTION = {"wheeled": (0.4, 1.0)}
 
 
-def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3"):
+def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str = "map3", real_edge: bool = False):
+  """real_edge (acceptance item 24, 2026-11-16, the user via go2-home: the depth student's stairs and map3 with the
+  real camera's errors next to the clean run, at the same bars): the play build with the training's real-camera model
+  (REAL_CAMERA_*: latency, frame timing, depth errors, the mounting spread) and the stereo camera's edge smoothing on
+  every capture (REAL_CAMERA_EDGE_BLUR at probability 1), as the old flow's -RealEdge check tasks (jobs/student_eval.py);
+  no occlusions (the training's augmentation)."""
   assert kind in STUDENT_GROUPS, kind
+  assert not real_edge or (kind == "depth" and play), "real_edge: the depth student's play build"
   cfg = unified_teacher_env_cfg(robot, play=play, student=kind, terrain=terrain)
   if terrain == "map3" and not play:
     # the training build: the schedules on the environment's step clock at their end too (2026-11-13,
@@ -98,7 +104,11 @@ def student_env_cfg(robot: URobot, kind: str, play: bool = False, terrain: str =
     student_sched.at_end(cfg)
   if terrain != "map3" and robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
     cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
-  if kind == "depth":
+  if kind == "depth" and real_edge:
+    cfg = apply_depth_student(cfg, play=False, camera_pos=NAVCORE_CAMERA_POS[robot.key], camera_quat=NAVCORE_CAMERA_QUAT,
+                              camera=NAVCORE_DEPTH_CAMERA, real_camera=True, edge_blur=True)
+    cfg.observations["depth"].terms["depth"].params["edge_blur_prob"] = 1.0
+  elif kind == "depth":
     kw = {} if play else {"real_camera": True, "occlusion": True, "edge_blur": True}
     cfg = apply_depth_student(cfg, play=play, camera_pos=NAVCORE_CAMERA_POS[robot.key],
                               camera_quat=NAVCORE_CAMERA_QUAT, camera=NAVCORE_DEPTH_CAMERA, **kw)

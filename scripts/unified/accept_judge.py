@@ -605,7 +605,8 @@ def _ud(d: str) -> str:
 
 def _files(prefix: str, cond: str) -> dict[str, str]:
   sfx = COND_SFX[cond]
-  return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent", "wall")}
+  return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent", "wall", "stairsedge",
+                                                              "noopedge", "opedge")}
 
 
 def am_rows(path: str) -> list[tuple[str, list[int], int]] | None:
@@ -921,9 +922,9 @@ def spec_stairs(r: str, path: str, cond: str, sh: Sheet, label: str | None = Non
     sh.fail(f"{L}楼梯：摔倒 {falls}", 1.0 + 0.1 * (falls - falls_max))
 
 
-def spec_map3(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
+def spec_map3(r: str, p: dict[str, str], cond: str, sh: Sheet, label: str | None = None) -> None:
   """Item 10: map3 reach with / without the operator; map3's speed reported."""
-  L = COND_LABEL[cond]
+  L = COND_LABEL[cond] if label is None else label
   s = at.stairs_vals(p)
   if s is None:
     sh.missing(f"{L}楼梯到达（map3）")
@@ -998,8 +999,13 @@ def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}楼梯走直线：摔倒 {ff}")
 
 
-def spec_judge(r: str, prefix: str, expect_typ: bool) -> list[str]:
-  """The students' acceptance of a robot in SPEC_ROBOTS: the verdict line and the detail lines."""
+EDGE_LABEL = "相机误差 "   # item 24's label after the condition's
+
+
+def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False) -> list[str]:
+  """The students' acceptance of a robot in SPEC_ROBOTS: the verdict line and the detail lines. expect_edge (the
+  depth student, accept.sh --edge): item 24, the stairs and map3 items again on the -RealEdge task (the real camera's
+  errors and edge smoothing), at the same bars; its files are then required (missing: 未测), else read when present."""
   sh = Sheet()
   conds = ["unl"] + (["typ"] if expect_typ or os.path.exists(f"{prefix}_stairs_typ.txt") else []) + ["full"]
   for cond in conds:
@@ -1009,14 +1015,19 @@ def spec_judge(r: str, prefix: str, expect_typ: bool) -> list[str]:
     spec_stairs(r, p["stairs"], cond, sh)
     spec_flight(r, p["descent"], cond, sh)
     spec_wall(r, p["wall"], cond, sh)
+    if expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge")):
+      E = COND_LABEL[cond] + EDGE_LABEL
+      spec_stairs(r, p["stairsedge"], cond, sh, label=E)
+      spec_map3(r, {"noop": p["noopedge"], "op": p["opedge"]}, cond, sh, label=E)
   if "typ" not in conds:
     sh.detail.append("常用负载：本机型没有这一档，不测")
   return [verdict_line(sh.bad)] + sh.detail
 
 
 def main(argv: list[str]) -> int:
-  """accept_judge.py R PREFIX [--typical]: --typical (accept.sh, when the robot has a typical payload and the
-  condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for."""
+  """accept_judge.py R PREFIX [--typical] [--edge]: --typical (accept.sh, when the robot has a typical payload and
+  the condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for; --edge (accept.sh,
+  the depth student) the same for item 24's files."""
   try:
     return judge(argv)
   except Exception as e:   # a malformed line or file: what the judge cannot read is a tool fault, not a fail
@@ -1028,12 +1039,13 @@ def main(argv: list[str]) -> int:
 
 def judge(argv: list[str]) -> int:
   expect_typ = "--typical" in argv
-  argv = [a for a in argv if a != "--typical"]
+  expect_edge = "--edge" in argv
+  argv = [a for a in argv if a not in ("--typical", "--edge")]
   r, prefix = argv[0], argv[1]
   wheeled = r in at.WHEELED
   at.STOP_FEET_DEPLOYED = {}   # the fixed bar (doc/redesign.md 2.2)
   if spec_robot(r) and os.environ.get("U_JUDGE_OLD") != "1":   # (U_JUDGE_OLD=1: the judge before the spec, a comparison)
-    lines = spec_judge(r, prefix, expect_typ)
+    lines = spec_judge(r, prefix, expect_typ, expect_edge)
     print(lines[0])
     for line in lines[1:]:
       print("  " + line)

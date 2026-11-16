@@ -43,6 +43,7 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 19 | mid-tread share (Go2) | >= 0.76 | 0.76 | 0.72 |
 | 20 | stalled on the stairs, per band and direction | <= 5 % | 5 % | 5 % |
 | 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings, the drive-up along the landing to 0.85 m from the end wall (the deployed guard's stop), then stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); of the robots that took the top, the share whose front foot / wheel rises more than 10 cm above the first stand or that fall on the landing -- the larger of (A) drive-up + first stand and (B) turn + last stand | <= 5 % | 5 % | 5 % |
+| 24 | depth noise (深度噪声; the depth student only, added 2026-11-16 by the user via go2-home): items 10-20 again on the -RealEdge task (Unitree-<R>-U-Student-Depth-Stairs-RealEdge: the real camera's latency, frame timing, depth errors and mounting spread, edge smoothing on every capture), next to the clean run; labelled 相机误差 | the clean bars | the clean bars | the clean bars |
 | — | falls in every test | 0 | 0 | 0 (stairs: 5–15 cm) |
 
 Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the full load's 15–18 cm
@@ -63,6 +64,8 @@ Every test runs in all three conditions:
 - gait (the Go2W only);
 - the map3 flights with and without the operator (noop, op).
 - the top landings facing the wall (wall; item 21), after the map3 flights.
+- the depth student only (item 24): stairs and the map3 flights again on the -RealEdge task (stairsedge, noopedge,
+  opedge); accept_judge --edge makes them required.
 
 The full payload's gait clock runs with `--min-match 0.7`; the others keep 0.8. These runs are new:
 - am, clock and the map3 flights under the typical and the full payload;
