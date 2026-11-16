@@ -587,6 +587,7 @@ SPEC: dict[str, dict] = {
   "top_steps": {c: 1.0 for c in CONDS},                                    # per climb, map3's top landings
   "push_falls": {c: 0 for c in CONDS},                                     # falls, 1.0 m/s base pushes (item 22)
   "push_mps": {c: 1.0 for c in CONDS},                                     # the judged push (the user 11-16; was 0.5)
+  "push_recover_s": {c: 0.5 for c in CONDS},                               # s, recovery p90 (a target; the falls: gate 3)
   "slope_reach": {"unl": 95.0, "typ": 95.0, "full": 90.0},                # %, the worst of the 6 cells (item 23)
 }
 # items 29 and 30 (the user via go2-home, 2026-11-16, after w27d's readings: "可以"), every condition
@@ -610,10 +611,12 @@ class Sheet:
     self.bad: list[str] = []
     self.detail: list[str] = []
     self.gap = 0.0
+    self.gaps: dict[str, float] = {}   # each failed item's own relative distance to its bar
 
   def fail(self, item: str, gap: float = 1.0) -> None:
     self.bad.append(item)
     self.gap += max(gap, 0.01)
+    self.gaps[item] = max(gap, 0.01)
 
   def missing(self, item: str) -> None:
     self.bad.append(item if "未测" in item else item + "：未测")
@@ -1024,8 +1027,12 @@ def spec_push(r: str, path: str, cond: str, sh: Sheet) -> None:
   if v is None:
     sh.missing(f"{L}抗推（push_test）")
     return
-  sh.detail.append(f"{L}抗推 {SPEC['push_mps'][cond]:g} m/s：摔倒 {v['falls']}/{v['n']}（= {SPEC['push_falls'][cond]}）；恢复到指令 0.3 m/s 内 p50 "
-                   f"{v['r50']:.2f} s、p90 {v['r90']:.2f} s，未恢复 {v['nr']:.1f}%（只报告）")
+  rb = SPEC["push_recover_s"][cond]
+  sh.detail.append(f"{L}抗推 {SPEC['push_mps'][cond]:g} m/s：恢复到指令 0.3 m/s 内 p90 {v['r90']:.2f} s（<= {rb:g} s），p50 "
+                   f"{v['r50']:.2f} s，未恢复 {v['nr']:.1f}%；摔倒 {v['falls']}/{v['n']}（计入摔倒率）")
+  if v["r90"] != v["r90"] or v["r90"] > rb + 1e-9 or v["nr"] > 0:
+    sh.fail(f"{L}抗推：恢复 p90 {v['r90']:.2f} s" + (f"，未恢复 {v['nr']:.1f}%" if v["nr"] > 0 else ""),
+            (v["r90"] / rb - 1.0) if v["r90"] == v["r90"] else 1.0)
   for m in re.finditer(r"^ALL push ([\d.]+) \(item 22, reported\): falls (\d+) of (\d+) robots; recovered within [\d.]+ "
                        r"m/s: p50 (\S+) s, p90 (\S+) s, not recovered (\S+) %", txt(path), re.M):
     sh.detail.append(f"{L}抗推 {m.group(1)} m/s（只报告，不判）：摔倒 {m.group(2)}/{m.group(3)}，恢复 p50 {float(m.group(4)):.2f} s、"
@@ -1181,13 +1188,160 @@ def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
 
 EDGE_LABEL = "相机误差 "   # item 24's label after the condition's
 
+# ---- the gates and the targets (2026-11-16, the user via go2-home: "可以") ----
+# Three hard gates decide PASS / FAIL; every other item is a target (judged met / not met, printed with its distance,
+# w27d's reading and the loop's priority) and does not decide. The gates, per condition (unloaded / typical / full):
+#   1 flat following: items 1 (flat speed) and 2's drift share (its heading part is a target);
+#   2 stairs success: item 10, map3's reach with and without the operator;
+#   3 no falls, as a RATE: every test's falls over its robots pooled per condition (the stairs over all bands; the
+#     depth student's -RealEdge runs too) <= FALL_RATE; it replaces "0 falls" in every item (an item failing on its
+#     falls alone is not a target then). A missing test file leaves the rate unknown: FAULT.
+GATE_PREFIXES = ("平地速度：偏慢", "平地速度：超速", "跑偏：超过", "楼梯到达（map3）")   # (the item strings' starts)
+GATE_MISSING = ("平地速度", "跑偏", "楼梯到达（map3）")
+FALL_RATE = {"unl": 0.2, "typ": 0.2, "full": 0.5}          # % of the robots, every test of the condition pooled
+TEACHER_FALL_RATE = 1.0                                     # % per condition, the teacher gates' tolerance
+TEST_FALL_CAP = 1.0                                         # % in any single test of any condition (the user 11-16)
+# the loop's order for the targets not met: the stairs' stop held and the slide-back first (the user's safety note),
+# then the rest by their distance to the target, the largest first
+TARGET_FIRST = ("楼梯停住", "楼梯计数：滑回")
+# w27d's readings beside the targets (doc/experiments_go2w.md's reference rows; go2-home's measurements 2026-11-16,
+# unloaded / typical / full; items 3-20 passed there but for the full load's flat falls)
+REF_W27D = {
+  "面前是墙不抬腿": "15.1 / 7.3 / 5.8 %（旧 0.85 m 接近）", "抗推": "1.0 m/s 摔 0 / 5 / 63（768）",
+  "斜坡和不平地面": "96.9 / 92.2 / 87.5 %", "下楼点头": "15-18 cm 51.1 / 48.7 / 38.5 °/s", "上楼晃": "<= 25 °/s",
+  "小腿大腿磕台阶": "<= 1.2 %", "顶部平台多余踏步": "3.21 / 2.82 / 2.95 次", "平地颠晃": "直行 0.04 cm / 0.04°，横移 0.5-0.9 cm / 3.5-4.1°",
+  "楼梯走走停停": "<= 0.25", "相机误差": "通过（满载楼梯摔 1）",
+}
+REF_W27D_PASS = "通过"   # items 3-20
 
-def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False) -> list[str]:
-  """The students' acceptance of a robot in SPEC_ROBOTS: the verdict line and the detail lines. expect_edge (the
-  depth student, accept.sh --edge): item 24, the stairs and map3 items again on the -RealEdge task (the real camera's
-  errors and edge smoothing), at the same bars; its files are then required (missing: 未测), else read when present."""
+
+def _n(x) -> int:
+  return int(round(float(x)))
+
+
+def test_falls(kind: str, path: str) -> tuple[int, int] | None:
+  """A test file's falls and robots: (falls, robots); None when the file or its counts cannot be read."""
+  t = txt(path)
+  if not t:
+    return None
+  if kind in ("stairs", "stairsedge"):
+    m = re.search(r"^falls: traverse (\d+) of (\d+), stop (\d+) of (\d+)", t, re.M)
+    return (int(m.group(1)) + int(m.group(3)), int(m.group(2)) + int(m.group(4))) if m else None
+  if kind == "descent":
+    f = sum(int(x) for x in re.findall(r"^SUM \S+ \S+ .*?\bfalls (\d+)", t, re.M))
+    n = sum(int(x) for x in re.findall(r"^SUMLAT \S+ \S+ .*?\bn (\d+)", t, re.M))
+    return (f, n) if n else None
+  if kind in ("push", "slope"):
+    rows = re.findall(r"^ALL (?:push|slopes|turns)[^:]*\): (?:reach min \S+ % over \d+ cells, )?falls (\d+) of (\d+) robots", t, re.M)
+    return (sum(int(a) for a, _ in rows), sum(int(b) for _, b in rows)) if rows else None
+  if kind == "wall":
+    m = re.search(r"^ALL falls \(the wall probe\): (\d+) of (\d+) robots", t, re.M)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+  if kind in ("noop", "op", "noopedge", "opedge"):
+    m = re.search(r"(\d+) robots per scenario", t)
+    sc = re.findall(r"scenario=\S+\s+reached=\S+\s+reset_before_goal=([\d.]+)", t)
+    if not m or not sc:
+      return None
+    per = int(m.group(1))
+    return (sum(_n(float(x) * per) for x in sc), per * len(sc))
+  # the flat tests: "| k/n" table cells, "fell k/n", "falls k/n"
+  rows = re.findall(r"(?:\|\s*|\bfell\s+|\bfalls\s+)(\d+)/(\d+)\b", t)
+  return (sum(int(a) for a, _ in rows), sum(int(b) for _, b in rows)) if rows else None
+
+
+FALL_KINDS = ("am", "drift3", "spinalt", "march", "clock", "stand", "loadstand", "stopmove", "gait", "stairs", "descent",
+              "push", "slope", "wall", "noop", "op")
+
+
+def fall_rate(r: str, p: dict[str, str], cond: str, edge: bool, only_present: bool = False) -> tuple[float | None, list[str], list[str]]:
+  """Gate 3's reading of one condition: (rate %, per-test lines, missing tests); rate None when a test is missing
+  (only_present: a screening run -- the measured tests alone)."""
+  kinds = [k for k in FALL_KINDS if k != "gait" or r in at.WHEELED] + (["stairsedge", "noopedge", "opedge"] if edge else [])
+  per, miss, F, N = [], [], 0, 0
+  for k in kinds:
+    v = test_falls(k, p[k])
+    if v is None:
+      if not (only_present and not os.path.exists(p[k])):
+        miss.append(k)
+      continue
+    F, N = F + v[0], N + v[1]
+    per.append(f"{k} {v[0]}/{v[1]}")
+  rate = 100.0 * F / N if N and not miss else None
+  return rate, per, miss
+
+
+def _core(item: str) -> str:
+  """An item string without its condition's label (and with the camera-error label kept: those are targets)."""
+  for lab in sorted((v for v in COND_LABEL.values() if v), key=len, reverse=True):
+    if item.startswith(lab):
+      return item[len(lab):]
+  return item
+
+
+def _cond_of(item: str) -> str:
+  for c in ("typ", "full"):
+    if item.startswith(COND_LABEL[c]):
+      return c
+  return "unl"
+
+
+def _w27d(core: str) -> str:
+  return next((v for k, v in REF_W27D.items() if core.startswith(k) or k in core), REF_W27D_PASS)
+
+
+def teacher_verdict(sh: Sheet, falls: dict[str, list[tuple[str, int, int]]], labels: tuple[str, ...], what: str,
+                    extra_gate: list[tuple[str, float]] | None = None) -> tuple[str, int]:
+  """A teacher gate's verdict (stairs_gate / flat_gate, 2026-11-16): the gates -- the items starting with
+  GATE_PREFIXES after one of the labels, extra_gate's (item, gap), each condition's fall rate <= TEACHER_FALL_RATE
+  and each run's <= TEST_FALL_CAP -- decide PASS / FAIL (gap: the gates' gaps + 0.001 per target not met, so a
+  candidate with fewer targets missed ranks first at teacher.sh's cap) / FAULT (a gate not measured); the other items
+  are listed as targets. falls: condition label -> [(run, falls, robots)]."""
+  strip = lambda b: next((b[len(l):] for l in sorted(labels, key=len, reverse=True) if b.startswith(l)), b)
+  gate_bad, gate_miss, targets = [], [], []
+  for b in sh.bad:
+    c = strip(b)
+    if any(w in b for w in MISSING):
+      (gate_miss if c.startswith(GATE_MISSING) else targets).append(b)
+    elif c.startswith(GATE_PREFIXES):
+      gate_bad.append((b, sh.gaps.get(b, 0.01)))
+    elif "摔倒" not in c:
+      targets.append(b)
+  gate_bad += list(extra_gate or [])
+  lines = []
+  for cond, runs in falls.items():
+    if any(n is None for _r, _f, n in runs):
+      gate_miss.append(f"{cond}摔倒率：未测（{'、'.join(r for r, _f, n in runs if n is None)}）")
+      continue
+    F, N = sum(f for _r, f, _n in runs), sum(n for _r, _f, n in runs)
+    rate = 100.0 * F / N if N else 0.0
+    lines.append(f"{cond}摔倒率 {rate:.2f}%（<= {TEACHER_FALL_RATE:g}%；单项 <= {TEST_FALL_CAP:g}%）：" + "，".join(f"{r} {f}/{n}" for r, f, n in runs))
+    if rate > TEACHER_FALL_RATE + 1e-9:
+      gate_bad.append((f"{cond}摔倒率：{rate:.2f}%", rate / TEACHER_FALL_RATE - 1.0))
+    over = [(r, 100.0 * f / n) for r, f, n in runs if n and 100.0 * f / n > TEST_FALL_CAP + 1e-9]
+    if over:
+      gate_bad.append((f"{cond}单项摔倒率超过 {TEST_FALL_CAP:g}%：" + "、".join(f"{r} {x:.2f}%" for r, x in over),
+                       max(x for _r, x in over) / TEST_FALL_CAP - 1.0))
+  lines.append(f"目标未达（{len(targets)} 项，不判）：" + ("；".join(targets) if targets else "无"))
+  body = [f"  {x}" for x in lines + sh.detail]
+  if gate_miss:
+    return "\n".join(["FAULT: " + "；".join(gate_miss + [b for b, _g in gate_bad])] + body), 4
+  if gate_bad:
+    gap = sum(max(g, 0.01) for _b, g in gate_bad) + 0.001 * len(targets)
+    return "\n".join([f"FAIL (gap {gap:.2f}): " + "；".join(b for b, _g in gate_bad)] + body), 1
+  return "\n".join([f"PASS (the gates: {what}; {len(targets)} targets not met)"] + body), 0
+
+
+def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False, screen: bool = False,
+               fall_rate_bar: dict[str, float] | None = None) -> list[str]:
+  """The students' acceptance of a robot in SPEC_ROBOTS (2026-11-16, the three gates and the targets; GATE_PREFIXES'
+  comment): the verdict line from the gates alone, the gates' lines, the targets not met in the loop's order (their
+  distance, w27d's reading), then the items' detail lines; the target table <prefix>_targets.md beside. expect_edge
+  (the depth student, accept.sh --edge): item 24 on the -RealEdge files (targets; their falls in gate 3). screen
+  (accept.sh ACCEPT_TESTS): the tests not run are left out (the fall rate over the measured ones)."""
   sh = Sheet()
   conds = ["unl"] + (["typ"] if expect_typ or os.path.exists(f"{prefix}_stairs_typ.txt") else []) + ["full"]
+  bars = fall_rate_bar or FALL_RATE
+  rates = {}
   for cond in conds:
     p = _files(prefix, cond)
     spec_flat(r, p, cond, sh)
@@ -1198,19 +1352,101 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False)
     spec_motion(r, p, cond, sh)
     spec_push(r, p["push"], cond, sh)
     spec_slope(r, p["slope"], cond, sh)
-    if expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge")):
+    edge = expect_edge or any(os.path.exists(p[k]) for k in ("stairsedge", "noopedge", "opedge"))
+    if edge:
       E = COND_LABEL[cond] + EDGE_LABEL
       spec_stairs(r, p["stairsedge"], cond, sh, label=E)
       spec_map3(r, {"noop": p["noopedge"], "op": p["opedge"]}, cond, sh, label=E)
+    rates[cond] = fall_rate(r, p, cond, edge, only_present=screen)
+  # the gates
+  gate_bad, gate_miss, targets, t_miss = [], [], [], []
+  for b in sh.bad:
+    c = _core(b)
+    missing = any(w in b for w in MISSING)
+    is_gate = not c.startswith(EDGE_LABEL) and (c.startswith(GATE_MISSING) if missing else c.startswith(GATE_PREFIXES))
+    if is_gate:
+      (gate_miss if missing else gate_bad).append(b)
+    elif missing:
+      if not screen:
+        t_miss.append(b)
+    elif "摔倒" not in c:   # (an item failing on its falls: gate 3 has them)
+      targets.append(b)
+  if screen:
+    gate_miss = [g for g in gate_miss if os.path.exists(_files(prefix, _cond_of(g)).get(
+      "am" if _core(g).startswith("平地速度") else "drift3" if _core(g).startswith("跑偏") else "op", ""))]
+  gl = []
+  for cond in conds:
+    L = COND_LABEL[cond]
+    g1 = [b for b in gate_bad + gate_miss if _cond_of(b) == cond and _core(b).startswith(("平地速度", "跑偏"))]
+    g2 = [b for b in gate_bad + gate_miss if _cond_of(b) == cond and _core(b).startswith("楼梯到达（map3）")]
+    gl.append(f"{L}门槛 1 平地跟随（平地速度、跑偏比例）：" + ("通过" if not g1 else "；".join(g1)))
+    gl.append(f"{L}门槛 2 楼梯到达（map3 带操作 / 无操作）：" + ("通过" if not g2 else "；".join(g2)))
+    rate, per, miss = rates[cond]
+    worst = None
+    for s in per:
+      k, kn = s.split(" ")
+      f, n = (int(x) for x in kn.split("/"))
+      if n and (worst is None or f / n > worst[1]):
+        worst = (k, f / n, f, n)
+    if miss:
+      gate_miss.append(f"{L}摔倒率：未测（{'、'.join(miss)}）")
+    elif rate is not None:
+      gl.append(f"{L}门槛 3 摔倒率：{rate:.2f}%（<= {bars[cond]:g}%；单项 <= {TEST_FALL_CAP:g}%，最差 "
+                f"{worst[0] if worst else '-'} {100 * worst[1] if worst else 0:.2f}%）：" + "，".join(per))
+      if rate > bars[cond] + 1e-9:
+        gate_bad.append(f"{L}摔倒率：{rate:.2f}%")
+      over = [s for s in per if (lambda f, n: n and 100 * f / n > TEST_FALL_CAP + 1e-9)(*(int(x) for x in s.split(" ")[1].split("/")))]
+      if over:
+        gate_bad.append(f"{L}单项摔倒率超过 {TEST_FALL_CAP:g}%：" + "、".join(
+          f"{s.split(' ')[0]} {100 * int(s.split(' ')[1].split('/')[0]) / int(s.split(' ')[1].split('/')[1]):.2f}%" for s in over))
+  first = ("FAULT: " + "；".join(gate_miss)) if gate_miss else ("FAIL: " + "；".join(gate_bad)) if gate_bad else "PASS"
+  if first.startswith("FAULT") and gate_bad:
+    first += "；" + "；".join(gate_bad)
+  # the targets not met, in the loop's order: the stairs' stop held and the slide-back first, then by distance
+  prio = lambda b: (0 if _core(b).startswith(TARGET_FIRST) or any(x in _core(b) for x in ("滑回",)) else 1, -sh.gaps.get(b, 0.0))
+  targets.sort(key=prio)
+  tl = [f"目标未达（{len(targets)} 项，按优先级：先楼梯停住与滑回，再按差距）："] + [
+    f"  {i + 1}. {b}（差距 {sh.gaps.get(b, 0.0):.2f}；w27d：{_w27d(_core(b))}）" for i, b in enumerate(targets)]
+  if t_miss:
+    tl.append("目标未测：" + "；".join(t_miss))
+  if screen:
+    tl.append("筛选模式：只判测过的项")
   if "typ" not in conds:
     sh.detail.append("常用负载：本机型没有这一档，不测")
-  return [verdict_line(sh.bad)] + sh.detail
+  _targets_md(prefix, conds, sh, targets)
+  return [first] + gl + tl + sh.detail
+
+
+def _targets_md(prefix: str, conds: list[str], sh: Sheet, targets: list[str]) -> None:
+  """<prefix>_targets.md (2026-11-16, the user: a deployed model is replaced only after a look at this table): one row
+  per item and condition -- the item, the condition, its target, the new reading, w27d's reading, met / not met --
+  from the detail lines (an item's reading with its bar in brackets) and the targets not met."""
+  rows = ["| item | condition | target | new reading | w27d | met |", "|---|---|---|---|---|---|"]
+  bad_cores = {(_cond_of(b), _core(b).split("：")[0]) for b in targets}
+  name = {"unl": "空载", "typ": "常用负载", "full": "满载"}
+  for d in sh.detail:
+    c = _cond_of(d)
+    core = _core(d)
+    if "：" not in core:
+      continue
+    item, rest = core.split("：", 1)
+    m = re.search(r"（([^（）]*(?:<=|>=|上限|%|cm|°)[^（）]*)）", item + "：" + rest)
+    tgt = m.group(1) if m else ""
+    reading = rest.replace(f"（{tgt}）", "") if tgt else rest
+    met = "not met" if (c, item) in bad_cores or any(k[0] == c and item.startswith(k[1]) for k in bad_cores) else "met"
+    rows.append(f"| {item} | {name[c]} | {tgt} | {reading.strip()[:160]} | {_w27d(item)} | {met} |")
+  try:
+    with open(f"{prefix}_targets.md", "w") as f:
+      f.write("\n".join(rows) + "\n")
+  except OSError:
+    pass
 
 
 def main(argv: list[str]) -> int:
-  """accept_judge.py R PREFIX [--typical] [--edge]: --typical (accept.sh, when the robot has a typical payload and
-  the condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for; --edge (accept.sh,
-  the depth student) the same for item 24's files."""
+  """accept_judge.py R PREFIX [--typical] [--edge] [--screen]: --typical (accept.sh, when the robot has a typical payload
+  and the condition ran) makes its files required (missing: 未测, a tool fault), instead of looked for; --edge
+  (accept.sh, the depth student) the same for item 24's files; --screen (accept.sh ACCEPT_TESTS, a screening run): the
+  items not measured are left out of the verdict."""
   try:
     return judge(argv)
   except Exception as e:   # a malformed line or file: what the judge cannot read is a tool fault, not a fail
@@ -1223,12 +1459,13 @@ def main(argv: list[str]) -> int:
 def judge(argv: list[str]) -> int:
   expect_typ = "--typical" in argv
   expect_edge = "--edge" in argv
-  argv = [a for a in argv if a not in ("--typical", "--edge")]
+  screen = "--screen" in argv
+  argv = [a for a in argv if a not in ("--typical", "--edge", "--screen")]
   r, prefix = argv[0], argv[1]
   wheeled = r in at.WHEELED
   at.STOP_FEET_DEPLOYED = {}   # the fixed bar (doc/redesign.md 2.2)
   if spec_robot(r) and os.environ.get("U_JUDGE_OLD") != "1":   # (U_JUDGE_OLD=1: the judge before the spec, a comparison)
-    lines = spec_judge(r, prefix, expect_typ, expect_edge)
+    lines = spec_judge(r, prefix, expect_typ, expect_edge, screen=screen)
     print(lines[0])
     for line in lines[1:]:
       print("  " + line)

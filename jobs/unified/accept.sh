@@ -173,9 +173,21 @@ PYEOF
 )
 TYPICAL=${TYPICAL:-error}
 
+# ACCEPT_TESTS "key ..." (2026-11-16, go2-home: a screening run): only the tests whose file key is listed (the
+# files' <test> part: am drift3 spinalt march clock stand loadstand stopmove gait stairs descent push slope noop op wall
+# stairsedge noopedge opedge); the judge then reads the measured items alone (accept_judge --screen; their falls
+# included). Unset: every test.
+skip_test() {   # OUT -> 0 when ACCEPT_TESTS leaves this test out
+  [ -n "${ACCEPT_TESTS:-}" ] || return 1
+  local b=$(basename $1) key
+  b=${b#$(basename $P)_}; key=${b%%.*}; key=${key%_pay}; key=${key%_typ}
+  [[ " $ACCEPT_TESTS " == *" $key "* ]] && return 1
+  return 0
+}
 run() {   # OUT CMD...: one test. Out of GPU memory (a training beside it): wait 5 min and retry, up to 6 times; any
   # other failure: retried once. A tool fault is not a result: logged, and the judge reports the test as not measured.
   local out=$1 i; shift
+  skip_test $out && return 0
   for i in 1 2 3 4 5 6 7; do
     memwait $out || return 1
     peakrun $out "$@" && return 0
@@ -263,6 +275,7 @@ drift_join() {   # OUT: the two halves (ACCEPT_DRIFT_SPLIT) as one file, only wh
 # verdict's detail lines; the bars and the reading are the same. Unset: full size always, as before.
 run_sized() {   # OUT TEST FULL_N CMD... (the command's size argument written @N@)
   local out=$1 key=$2 n=$3 spec; shift 3
+  skip_test $out && return 0
   spec=$(echo " ${ACCEPT_SMALL:-} " | grep -oE " $key:[0-9]+:[0-9]+ " | tr -d ' ')
   if [ -n "$spec" ]; then
     local f=$(gpu_free) full=$(memneed $out)
@@ -308,6 +321,7 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
   esac
   # item 24 (2026-11-16): the depth student's stairs and map3 again with the real camera's errors (-RealEdge)
   local EDGE=0; [ $SPEC = 1 ] && [ $KIND = depth ] && EDGE=1 && jflag="$jflag --edge"
+  [ -n "${ACCEPT_TESTS:-}" ] && jflag="$jflag --screen"   # (a screening run: the measured items alone)
   # JOBS tests at a time (all conditions in one pool), each in its own process with its own U_PAYLOAD
   pool_sized() {   # PAYLOAD OUT TEST FULL_N CMD... (run_sized)
     while [ $(jobs -rp | wc -l) -ge $JOBS ]; do wait -n; done
@@ -342,7 +356,8 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     [ $SPEC = 1 ] && pool $pay ${P}_push$X.txt $W scripts/unified/push_test.py --task $TF $CK --num-envs $(tn 64) \
       --push 1.0 --also 0.5
     # item 23 (2026-11-16): a 15 deg ramp up and down, rough ground +-3 cm, at 0.5 and 1.0 m/s
-    [ $SPEC = 1 ] && pool $pay ${P}_slope$X.txt $W scripts/unified/slope_rough_test.py --task $TE $CK --num-envs $(tn 64)
+    # (256 robots per cell: the fall rate's sample, the user 2026-11-16 -- w27d's cells read 1 vs 6 falls on two runs at 64)
+    [ $SPEC = 1 ] && pool $pay ${P}_slope$X.txt $W scripts/unified/slope_rough_test.py --task $TE $CK --num-envs $(tn 256)
     [ $EDGE = 1 ] && pool $pay ${P}_stairsedge$X.txt $W scripts/go2_blind/eval_stairs.py --task $TE-RealEdge $CK \
       --envs-per-tile $(tn 18) --metrics
     fi
@@ -411,7 +426,9 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
         --time-scale 1.6 --seed 0 $TSCAN
       # item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿"; a spec robot, every condition): map3's top
       # landings facing the end wall, stand / turn in place / stand (accept_judge.spec_wall)
-      [ $SPEC = 1 ] && run ${P}_wall$X.txt $W scripts/unified/map3_stairs_probe.py $TE $CK --num-envs $(tn 64) --seed 0
+      # (the flights in 3 parallel shards, merged: map3_stairs_par.py; 2026-11-16, go2-home: the eval's speed)
+      [ $SPEC = 1 ] && run ${P}_wall$X.log $PY scripts/unified/map3_stairs_par.py --out ${P}_wall$X.txt --shards 3 -- \
+        $TE $CK --num-envs $(tn 64) --seed 0
       if [ $EDGE = 1 ]; then   # item 24's map3 flights on the -RealEdge task
         run ${P}_noopedge$X.log $W $S/map3_par.py --out ${P}_noopedge$X.txt --shards 3 -- --task $TE-RealEdge $CK --set flights \
           --no-operator --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0

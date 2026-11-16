@@ -84,6 +84,10 @@ def main() -> int:
   ap.add_argument("--flights", nargs="*", default=None, help="flight names (default: every up flight)")
   ap.add_argument("--teacher-scan", action=argparse.BooleanOptionalAction, default=None)
   ap.add_argument("--falls", action="store_true", help="print every fall and the stop's wheel placement")
+  ap.add_argument("--list", action="store_true", help="print the up flights' names and stop (map3_stairs_par.py)")
+  ap.add_argument("--dump", default=None, help="also pickle the flights' per-robot rows to this file (a shard)")
+  ap.add_argument("--merge", nargs="+", default=None,
+                  help="no simulation: the report of the shards' dumps together (map3_stairs_par.py)")
   ap.add_argument("--payload", default=None,
                   help="kg,x,y,z: a fixed point mass for an OLD (non-unified) task, scripts/blind/eval/payload_opt.py's "
                        "way (a unified task takes U_PAYLOAD; an old one keeps its training draw otherwise)")
@@ -106,8 +110,26 @@ def main() -> int:
   CAM_X = float(NAVCORE_CAMERA_POS[key][0])
   boxes = em.load_map3_boxes()
   ups = [s for s in em.flight_scenarios(boxes, a.up_vx, 0.4) if s.name.endswith("_up")]
+  if a.list:
+    print("\n".join(s.name[:-3] for s in ups))
+    return 0
   if a.flights:
     ups = [s for s in ups if s.name[:-3] in a.flights]
+  if a.merge:
+    import pickle
+    rows = []
+    for f in a.merge:
+      with open(f, "rb") as fh:
+        rows += pickle.load(fh)
+    order = [s.name[:-3] for s in ups]
+    rows.sort(key=lambda r: order.index(r["name"]) if r["name"] in order else len(order))
+    print(f"checkpoint {a.checkpoint}\ntask {a.task}, scan {os.environ.get('U_SCAN', '(task default)')}, payload "
+          f"{os.environ.get('U_PAYLOAD', '(task default)')}, up {a.up_vx} m/s, {a.num_envs} robots per flight, teacher scan "
+          f"boxes {teacher_scan}, {len(rows)} up flights (merged from {len(a.merge)} shards)")
+    report(rows)
+    if a.falls:
+      falls_report(rows)
+    return 0
   print(f"checkpoint {a.checkpoint}\ntask {a.task}, scan {os.environ.get('U_SCAN', '(task default)')}, payload "
         f"{a.payload + ' (--payload)' if a.payload else os.environ.get('U_PAYLOAD', '(task default)')}, up {a.up_vx} m/s, {a.num_envs} robots per flight, "
         f"teacher scan boxes {teacher_scan}, {len(ups)} up flights")
@@ -135,6 +157,10 @@ def main() -> int:
     del env, venv, policy
     gc.collect()
     torch.cuda.empty_cache()
+  if a.dump:
+    import pickle
+    with open(a.dump, "wb") as fh:
+      pickle.dump(rows, fh)
   report(rows)
   if a.falls:
     falls_report(rows)
@@ -488,7 +514,7 @@ def report(rows) -> None:
         f"{np.percentile(np.abs(d), 90) if d.size else float('nan'):.3f} m, speed p90 "
         f"{np.percentile(np.concatenate(allv['v']), 90) if d.size else float('nan'):.3f} m/s")
 
-  print("\n== (c') the top landing, facing the end wall (walked on until the first rail ahead is within 0.85 m): stand 2 s, "
+  print("\n== (c') the top landing, facing the end wall (driven on under the wall guard's profile): stand 2 s, "
         "turn in place wz +1.0 3 s, stand 2 s; front foot / wheel off the ground (no contact > 5 N) ==")
   agg = {k: 0.0 for k in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off", "turn_lift")}
   nrob, fl_tot, reach_tot, rob_tot, walls, lifts_all, touch_all, moves_all = 0, 0, 0, 0, [], [], [], []
@@ -559,6 +585,9 @@ def report(rows) -> None:
     nreach += int(rch.sum())
     nfell += int(fl.sum())
   k = max(app_bad, ts_bad)
+  f_all = sum(int(r["fell"].astype(bool).sum()) for r in rows)
+  n_all = sum(len(r["fell"]) for r in rows)
+  print(f"ALL falls (the wall probe): {f_all} of {n_all} robots (the climbs, the stops, the landings; acceptance gate 3)")
   # diagnostic: where the drive-up's counted lifts took off, against the first stand's lowest front foot (the landing)
   rel = np.concatenate([r["app_take_rel"][r["reached"].astype(bool) & (np.nan_to_num(r["lift_app"]) > WALL_LIFT_M)]
                         for r in rows]) if rows else np.array([])

@@ -177,8 +177,23 @@ def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[st
   kicks on the climbs, slips, mid / slide-back) are hard items now: no HARDPASS. The heading and the meander: the
   students' acceptance only (no descent_probe here)."""
   sh = aj.Sheet()
+  falls, extra = {}, []
+
+  def runs_of(label: str, cond: str, files: list[tuple[str, str]]) -> None:
+    rs = []
+    for name, path in files:
+      v = aj.test_falls("stairs", path)
+      rs.append((name, v[0] if v else 0, v[1] if v else None))
+      # gate 2's stand-in (the teacher gates run no map3): eval_stairs' traverse success at map3's operator bar
+      m = re.search(r"^overall: traverse ok (\d+)%", aj.txt(path), re.M)
+      bar = aj.SPEC["map3_op"][cond]
+      if m and int(m.group(1)) < bar - 1e-9:
+        extra.append((f"{label}楼梯通过（门槛 2 的替代）：{name} {m.group(1)}%（>= {bar:g}%）", (bar - int(m.group(1))) / bar))
+    falls[label] = rs
+
   for mode in ("on", "off"):
     aj.spec_stairs(r, f"{prefix}_{mode}.txt", "unl", sh, label=f"scan {mode} ", falls_max=FALLS_MAX)
+  runs_of("", "unl", [(f"scan {m}", f"{prefix}_{m}.txt") for m in ("on", "off")])
   if typ:
     for mode in ("on", "off"):
       path = f"{prefix}_typ_{mode}.txt"
@@ -186,6 +201,7 @@ def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[st
       cl = causes_lines(path)
       if cl:
         sh.detail.append(f"常用负载 scan {mode} fall causes (reported): " + " / ".join(cl))
+    runs_of("常用负载 ", "typ", [(f"scan {m}", f"{prefix}_typ_{m}.txt") for m in ("on", "off")])
   if pay_falls is not None:
     path = f"{prefix}_pay.txt"
     aj.spec_stairs(r, path, "full", sh, label="满载 ", falls_max=pay_falls)
@@ -195,20 +211,14 @@ def spec_gate(r: str, prefix: str, pay_falls: int | None, typ: bool) -> tuple[st
     cl = causes_lines(path)
     if cl:
       sh.detail.append("满载 fall causes (reported): " + " / ".join(cl))
+    runs_of("满载 ", "full", [("scan on", path)])
   for mode in ("on", "off"):
     ha, hu = aj.stairs_heading(f"{prefix}_{mode}.txt")
     sh.detail.append(f"scan {mode}: heading {ha if ha is not None else '-'} deg (15-18cm up {hu if hu is not None else '-'}) (reported)")
-  if not sh.bad:
-    head, rc = "PASS (the spec's stairs items: both scan modes" + (", typical" if typ else "") + \
-      (", full payload" if pay_falls is not None else "") + ")", 0
-  elif sh.missing_only():
-    head, rc = "FAULT: " + "；".join(sh.bad), 4
-  else:
-    head, rc = f"FAIL (gap {sh.gap:.2f}): " + "；".join(sh.bad), 1
-  return "\n".join([head] + [f"  {d}" for d in sh.detail]
-                   + [f"  bars: doc/acceptance_go2_go2w.md (accept_judge.SPEC); falls <= {FALLS_MAX} per scan mode"
-                      + (f", full payload <= {pay_falls} on " + ("5-15 cm" if aj.full_top(r, "full") else "every band")
-                         if pay_falls is not None else "")]), rc
+  # (2026-11-16, the three gates: the stairs' traverse at map3's bar standing in for map3's reach, falls as a rate per
+  # condition and per run; every stairs item a target -- accept_judge.teacher_verdict)
+  labels = tuple(f"{c}scan {m} " for c in ("", "常用负载 ") for m in ("on", "off")) + ("满载 ",)
+  return aj.teacher_verdict(sh, falls, labels, "the stairs' traverse at map3's bar and falls <= 1 % per condition", extra)
 
 
 def judge(r: str, prefix: str, pay_falls: int | None = None, typ: bool = False) -> tuple[str, int]:

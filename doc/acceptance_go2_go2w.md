@@ -23,7 +23,33 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 - A reading near a bar gets 3 runs, judged on the pooled readings; the better run is never picked. This is a
   measurement rule (go2-home): the judge reads one file per test and condition.
 
+## The verdict: three gates, the rest targets (the user, 2026-11-16, "可以")
+
+PASS / FAIL comes from three hard gates alone (the Go2W; the Go2 at its round), per condition unloaded / typical / full:
+1. flat following: item 1 (flat speed 80–120 % / >= 75 % / >= 65 % of the command) and item 2's drift share
+   (<= 5 / 5 / 8 %; its heading part is a target);
+2. stairs success: item 10, map3's reach with the operator >= 95 / 95 / 90 %, without >= 90 / 90 / 85 %;
+3. no falls, as a rate: every test's falls over its robots, pooled per condition (the stairs over all bands; the depth
+   student's -RealEdge runs too) <= 0.2 / 0.2 / 0.5 %, and no single test above 1 % in any condition. It replaces
+   "0 falls" everywhere: an item failing on its falls alone is no target. A missing test leaves the rate unknown: FAULT.
+
+Every other item (3–30 without 25, item 2's heading, item 24) is a target: judged met / not met at the numbers below,
+printed after the gates as "目标未达" in the loop's order -- the stairs' stop held and the slide-back first (the user's
+safety note), then by the distance to the target -- each with w27d's reading. The judge writes the target table
+<prefix>_targets.md beside the verdict (item, condition, target, the new reading, w27d's, met / not met): a deployed
+model is replaced only after the user's own look at it (not a gate). Item 22's target: the recovery p90 <= 0.5 s; its
+falls count in gate 3.
+
+Sample sizes stay fixed per test so the rate means one thing; the slope cells run 256 robots (were 64).
+
+The teacher gates (stairs_gate / flat_gate) take the same gates where they measure them, with the teacher's fall rate
+<= 1 % per condition and per run: the flat gate's flat speed and drift; the stairs gate's eval_stairs traverse success
+at map3's operator bar (the teacher gates run no map3: a stand-in for gate 2); every other item a target (listed). The
+FAIL gap: the gates' gaps + 0.001 per target not met.
+
 ## Bars
+
+The numbers of every item; the gates' rows decide, the rest are targets.
 
 | # | item (test) | unloaded | typical | full |
 |---|---|---|---|---|
@@ -56,7 +82,7 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 28 | top-landing extra steps / wheel lifts (顶部平台多余踏步/抬轮): per climb on map3's top landings, a wheel / foot on the landing's level that leaves the ground > 0.06 s with its apex > 2 cm, in the climb's end, the drive-up and the first stand (map3_stairs_probe, with item 21) | <= 1.0 | 1.0 | 1.0 |
 | 29 | flat body bob (平地颠、晃): the base height and pitch std per robot over the steady part (3 s on), p50 over the robots, every straight command of drift_all (BOB rows; the user 2026-11-16 after w27d's reading) | fwd / back: height <= 1 cm, pitch <= 2°; sideways: height <= 1 cm, pitch <= 5° | as unloaded | as unloaded |
 | 30 | stair stop-and-go (楼梯上走走停停): the coefficient of variation of the speed along the flight per robot, p50 per band and direction (descent_probe's SUMQ; the user 2026-11-16) | <= 0.3 | 0.3 | 0.3 (the Go2 5–15 cm, the Go2W every band) |
-| — | falls in every test | 0 | 0 | 0 (stairs: the Go2 5–15 cm, the Go2W every band) |
+| gate 3 | falls as a rate, every test pooled per condition (stairs over all bands); no single test above 1 % | <= 0.2 % | 0.2 % | 0.5 % |
 
 Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the Go2's full-load 15–18 cm
 readings. The full-load column's "(5–15 cm)" applies to the Go2; the Go2W is judged on every band.

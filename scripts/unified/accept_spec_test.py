@@ -40,7 +40,7 @@ GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, sp
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
             stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100, pitchr=30.0, rollr=30.0, ftouch=0.5,
             rtouch=0.5, cv=0.2, tops=0.5, pfalls=0, pfalls1=0, slope=100.0, sfalls=0, tfalls=0, tstuck=0, bobh=0.4,
-            bobp=0.8, bobhs=0.5, bobps=3.9)
+            bobp=0.8, bobhs=0.5, bobps=3.9, m3fall=0.0, wfalls=0, r90=0.16)
 
 
 def band_val(v, b, d):
@@ -86,7 +86,9 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
   if wheeled:
     w("gait", "".join(f" ({c}, 0.0, 0.0) |   x99% |   {g['wheels']:.1f}% | 0 0 0 0 | 0 0 | 0/96 |   0%\n" for c in aj.at.NOLIFT))
   for kind, key in (("noop", "noop"), ("op", "op")):
-    w(kind, "".join(f"  scenario=S{i}_{d}  reached={g[key]:.3f}  speed_p50=1.000\n" for i in range(9) for d in DIRS))
+    w(kind, "[map3] ck: 192 robots per scenario, time scale 1.6\n" + "".join(
+      f"  scenario=S{i}_{d}  reached={g[key]:.3f}  reset_before_goal={g['m3fall'] if (i, d) == (0, 'up') else 0.0:.3f}  speed_p50=1.000\n"
+      for i in range(9) for d in DIRS))
   # stairs (eval_stairs)
   n = 72
   st = [f"command vx=0.5 wz=0.0, {n} robots per (band, direction)"]
@@ -124,7 +126,7 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
                 f"vy 0.05 wz 9.4 hd_max_p90 {bv('hd', b, d):.3f} n 72")
   w("descent", "\n".join(ds) + "\n")
   # push_test: item 22's line
-  w("push", f"ALL push (item 22): falls {g['pfalls']} of 768 robots; recovered within 0.3 m/s: p50 0.08 s, p90 0.16 s, "
+  w("push", f"ALL push (item 22): falls {g['pfalls']} of 768 robots; recovered within 0.3 m/s: p50 0.08 s, p90 {g['r90']:.2f} s, "
             f"not recovered 0.0 % (falls at or after the push {g['pfalls']})\n"
             f"ALL push 0.5 (item 22, reported): falls {g['pfalls1']} of 768 robots; recovered within 0.3 m/s: p50 0.20 s, "
             f"p90 0.50 s, not recovered 1.0 % (falls at or after the push {g['pfalls1']})\n")
@@ -140,6 +142,7 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
             f"the first stand and the turn + the last stand (a fall on the landing counts): {g['wall']} of {g['wall_n']} "
             f"robots on the landing = {share:.1f} % (drive-up + stand {share:.1f} %, turn + stand 0.0 %, fell on the "
             f"landing 0)\n"
+            f"ALL falls (the wall probe): {g['wfalls']} of 576 robots (the climbs, the stops, the landings; acceptance gate 3)\n"
             f"ALL top-landing steps (item 28): {round(g['tops'] * g['wall_n'])} steps / wheel lifts on the top landing over "
             f"{g['wall_n']} climbs = {g['tops']:.2f} per climb (front {g['tops']:.2f}, rear 0.00; airborne > 0.06 s, apex > 2 cm)\n")
 
@@ -154,10 +157,24 @@ def write_edge(prefix: str, cond: str, wheeled: bool, **over) -> None:
 
 
 def run_judge(r: str, prefix: str, *flags: str) -> str:
+  return run_lines(r, prefix, *flags)[0]
+
+
+def run_lines(r: str, prefix: str, *flags: str) -> list[str]:
   buf = io.StringIO()
   with contextlib.redirect_stdout(buf):
     aj.main([r, prefix, "--typical", *flags])
-  return buf.getvalue().splitlines()[0]
+  return buf.getvalue().splitlines()
+
+
+def targets_of(lines: list[str]) -> list[str]:
+  """The targets not met (the judge's numbered list), their item strings."""
+  import re as _re
+  return [_re.sub(r"（差距 .*$", "", m.group(1)) for ln in lines if (m := _re.match(r"^\s+\d+\. (.*)$", ln))]
+
+
+GATE_NAMES = ("平地速度", "楼梯到达（map3）")   # (+ 跑偏 on its drift share: the cases' "drift" overrides)
+FALL_KEYS = ("am_falls", "falls", "dfalls", "pfalls", "sfalls", "tfalls", "pfalls1", "m3fall", "wfalls")
 
 
 def items(first: str) -> list[str]:
@@ -198,11 +215,14 @@ def main() -> int:
   check(aj.SPEC_ROBOTS == frozenset({"Go2", "Go2W"}), "the spec robots: Go2, Go2W")
 
   with tempfile.TemporaryDirectory() as tmp:
-    def acceptance(r: str, name: str, **per_cond) -> str:
+    def acceptance_lines(r: str, name: str, **per_cond) -> list[str]:
       prefix = str(Path(tmp, f"u_{name}"))
       for cond in aj.CONDS:
         write_set(prefix, cond, r in aj.at.WHEELED, **per_cond.get(cond, {}))
-      return run_judge(r, prefix)
+      return run_lines(r, prefix)
+
+    def acceptance(r: str, name: str, **per_cond) -> str:
+      return acceptance_lines(r, name, **per_cond)[0]
 
     # (2) good readings
     for r in ("Go2", "Go2W"):
@@ -262,18 +282,33 @@ def main() -> int:
       ("Go2W", "unl", {"tfalls": 1}, "不平地面转弯"), ("Go2W", "full", {"tstuck": 2}, "不平地面转弯"),
       ("Go2W", "unl", {"pfalls1": 7}, None), ("Go2W", "unl", {"pfalls": 1}, "抗推"), ("Go2", "typ", {"pfalls": 1}, "抗推"), ("Go2W", "full", {"pfalls": 2}, "抗推"),
     ]
-    first = acceptance("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
-    check(first.startswith("FAIL") and sorted(i.split("：")[0] for i in items(first)) == ["满载 面前是墙不抬腿", "满载 顶部平台多余踏步"],
-          f"no robot on a top landing: items 21 and 28 fail ({first[:160]})")
+    lines = acceptance_lines("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
+    check(lines[0] == "PASS" and sorted(i.split("：")[0] for i in targets_of(lines)) == ["满载 面前是墙不抬腿", "满载 顶部平台多余踏步"],
+          f"no robot on a top landing: items 21 and 28 not met (targets) ({targets_of(lines)})")
+    # gate 3: one test over the 1 % cap; the pooled rate over its bar with every test under 1 %
+    lines = acceptance_lines("Go2W", "cap", unl={"falls": {("8-12cm", "up"): 12, "_": 0}})
+    check(lines[0].startswith("FAIL") and "单项摔倒率超过 1%：stairs 1.04%" in lines[0], f"gate 3: stairs 12 / 1152 > 1 % fails ({lines[0][:160]})")
+    pooled = {"falls": {("8-12cm", "up"): 11, "_": 0}, "wfalls": 5, "sfalls": 5, "pfalls": 7, "m3fall": 0.045,
+              "dfalls": {("5-8cm", "up"): 5, "_": 0}}
+    lines = acceptance_lines("Go2W", "pooled", typ=pooled)
+    check(lines[0].startswith("FAIL") and "常用负载 摔倒率" in lines[0] and "单项" not in lines[0],
+          f"gate 3: the typical condition's pooled rate over 0.2 %, each test under 1 % ({lines[0][:160]})")
+    lines = acceptance_lines("Go2W", "pooled_full", full=pooled)
+    check(lines[0] == "PASS", f"gate 3: the same falls under the full load's 0.5 % pass ({lines[0][:160]})")
     for i, (r, cond, over, name) in enumerate(cases):
-      first = acceptance(r, f"c{i}", **{cond: over})
-      it = items(first)
-      if name is None:   # the reading is not judged there (pitch rate up / roll rate down; the speed's CV, reported)
-        check(first == "PASS", f"{r} {cond} {over}: not judged, PASS ({first[:160]})")
+      lines = acceptance_lines(r, f"c{i}", **{cond: over})
+      first, tg = lines[0], targets_of(lines)
+      if name is None:   # the reading is not judged there (pitch rate up / roll rate down)
+        check(first == "PASS" and not tg, f"{r} {cond} {over}: not judged, PASS ({first[:160]})")
         continue
       label = aj.COND_LABEL[cond] + name
-      good = first.startswith("FAIL") and len(it) == 1 and it[0].startswith(label)
-      check(good, f"{r} {cond} {over}: FAIL on {label!r} only ({first[:160]})")
+      if any(k in FALL_KEYS for k in over):   # a fall or two: gate 3's rate, under its bars here; no target
+        check(first == "PASS" and not any(x.startswith(label) for x in tg), f"{r} {cond} {over}: falls in the rate, PASS ({first[:160]})")
+      elif name in GATE_NAMES or (name == "跑偏" and "drift" in over):
+        it = items(first)
+        check(first.startswith("FAIL") and len(it) == 1 and it[0].startswith(label), f"{r} {cond} {over}: gate FAIL on {label!r} only ({first[:160]})")
+      else:
+        check(first == "PASS" and len(tg) == 1 and tg[0].startswith(label), f"{r} {cond} {over}: PASS, the target {label!r} listed alone ({first[:60]}; {tg})")
     edges = [("Go2", "unl", {"am": 80}), ("Go2", "full", {"am": 65}), ("Go2", "unl", {"drift": 0.05}),
              ("Go2", "full", {"creep": 2.0}), ("Go2W", "unl", {"creep": 1.5}), ("Go2", "unl", {"brake": 30.0}),
              ("Go2", "full", {"clock": 70}), ("Go2", "unl", {"stand": 0.17}), ("Go2W", "unl", {"wheels": 98.0}),
@@ -285,8 +320,8 @@ def main() -> int:
              ("Go2W", "full", {"tops": 1.0}), ("Go2W", "unl", {"slope": 95.0}), ("Go2W", "full", {"slope": 90.0}),
              ("Go2W", "unl", {"bobh": 1.0, "bobp": 2.0, "bobhs": 1.0, "bobps": 5.0}), ("Go2W", "typ", {"cv": 0.3})]
     for i, (r, cond, over) in enumerate(edges):
-      first = acceptance(r, f"e{i}", **{cond: over})
-      check(first == "PASS", f"{r} {cond} {over}: exactly the bar passes ({first[:160]})")
+      lines = acceptance_lines(r, f"e{i}", **{cond: over})
+      check(lines[0] == "PASS" and not targets_of(lines), f"{r} {cond} {over}: exactly the bar passes, no target ({lines[0][:160]})")
 
     # (4) the full payload's 15-18 cm band reported, not judged
     top = {"feet": {"15-18cm": 0.5, "_": 1.0}, "speed": {"15-18cm": 0.5, "_": 1.0}, "held": {"15-18cm": 50, "_": 100},
@@ -297,24 +332,23 @@ def main() -> int:
            "rtouch": {"15-18cm": 9.0, "_": 0.5}}
     first = acceptance("Go2", "top_full", full=top)
     check(first == "PASS", f"full payload, every stairs / flight item bad on 15-18 cm only: PASS ({first[:200]})")
-    first = acceptance("Go2", "top_unl", unl={"feet": {"15-18cm": 0.5, "_": 1.0}})
-    check(first.startswith("FAIL") and "停住缺脚：15-18cm" in first, f"unloaded: 15-18 cm judged ({first[:120]})")
-    first = acceptance("Go2", "top_full_1215", full={"feet": {"12-15cm": 0.5, "_": 1.0}})
-    check(first.startswith("FAIL") and "满载 停住缺脚：12-15cm" in first, f"full payload: 12-15 cm judged ({first[:120]})")
+    lines = acceptance_lines("Go2", "top_unl", unl={"feet": {"15-18cm": 0.5, "_": 1.0}})
+    check(any("停住缺脚：15-18cm" in x for x in targets_of(lines)), f"unloaded: 15-18 cm judged (a target) ({targets_of(lines)})")
+    lines = acceptance_lines("Go2", "top_full_1215", full={"feet": {"12-15cm": 0.5, "_": 1.0}})
+    check(any("满载 停住缺脚：12-15cm" in x for x in targets_of(lines)), f"full payload: 12-15 cm judged (a target) ({targets_of(lines)})")
     # the Go2W (FULL_ALL_BANDS, the user 2026-11-16): the full payload judged on every band, 15-18 cm too
     check(aj.FULL_ALL_BANDS == frozenset({"Go2W"}) and aj.full_top("Go2", "full") == "15-18cm" and aj.full_top("Go2W", "full") is None,
           "FULL_ALL_BANDS: the Go2W; the Go2 keeps 15-18 cm reported under the full payload")
     gw_top = {k: v for k, v in top.items() if k not in ("kicks", "edge")}   # (legged counts: not the Go2W's)
-    first = acceptance("Go2W", "top_full_w", full=gw_top)
-    want = {"满载 停住缺脚", "满载 楼梯速度", "满载 楼梯停住", "满载 楼梯停滞", "满载 楼梯", "满载 楼梯朝向最大偏离超过 10°",
-            "满载 楼梯蛇行峰峰值超过 7 cm", "满载 楼梯走直线", "满载 下楼点头", "满载 上楼晃", "满载 小腿大腿磕台阶"}
-    got = {i.split("：")[0] for i in items(first)}
-    check(first.startswith("FAIL") and got == want, f"Go2W full payload, every item bad on 15-18 cm only: each fails ({sorted(got)})")
-    for over, name in (({"feet": {"15-18cm": 0.79, "_": 1.0}}, "满载 停住缺脚"), ({"falls": {("15-18cm", "up"): 1, "_": 0}}, "满载 楼梯"),
-                       ({"slide": {"15-18cm": 0.2, "_": 0.01}}, "满载 楼梯计数")):   # (pooled over the bands: 15-18 cm in)
-      first = acceptance("Go2W", f"top_full_w_{name}", full=over)
-      check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith(name),
-            f"Go2W full payload 15-18 cm {over}: {name} alone ({first[:140]})")
+    lines = acceptance_lines("Go2W", "top_full_w", full=gw_top)
+    want = {"满载 停住缺脚", "满载 楼梯速度", "满载 楼梯停住", "满载 楼梯停滞", "满载 楼梯朝向最大偏离超过 10°",
+            "满载 楼梯蛇行峰峰值超过 7 cm", "满载 下楼点头", "满载 上楼晃", "满载 小腿大腿磕台阶"}   # (the falls: gate 3)
+    got = {i.split("：")[0] for i in targets_of(lines)}
+    check(got == want, f"Go2W full payload, every item bad on 15-18 cm only: each a target not met ({sorted(got)})")
+    for over, name in (({"feet": {"15-18cm": 0.79, "_": 1.0}}, "满载 停住缺脚"), ({"slide": {"15-18cm": 0.2, "_": 0.01}}, "满载 楼梯计数")):
+      lines = acceptance_lines("Go2W", f"top_full_w_{name}", full=over)
+      tg = targets_of(lines)
+      check(lines[0] == "PASS" and len(tg) == 1 and tg[0].startswith(name), f"Go2W full payload 15-18 cm {over}: the target {name} alone ({tg})")
 
     # (5) a missing file: FAULT
     prefix = str(Path(tmp, "u_missing"))
@@ -327,33 +361,50 @@ def main() -> int:
     for cond in aj.CONDS:
       write_set(prefix, cond, True)
     os.remove(f"{prefix}_wall_typ.txt")
+    lines = run_lines("Go2W", prefix)
+    check(lines[0].startswith("FAULT") and "常用负载 摔倒率：未测（wall）" in lines[0] and any("常用负载 面前是墙不抬腿" in x and "未测" in x for x in lines),
+          f"item 21's file missing: FAULT (gate 3 unknown), the target 未测 ({lines[0][:120]})")
+
+    # a screening run (accept.sh ACCEPT_TESTS, --screen): the measured items alone
+    prefix = str(Path(tmp, "u_screen"))
+    for cond in aj.CONDS:
+      write_set(prefix, cond, True)
+    keep = ("stairs", "descent")
+    for f in Path(tmp).glob("u_screen_*.txt"):
+      if not any(f.name.startswith(f"u_screen_{k}") for k in keep):
+        f.unlink()
+    first = run_judge("Go2W", prefix, "--screen")
+    check(first == "PASS", f"--screen with stairs and descent alone at good readings: PASS ({first[:120]})")
     first = run_judge("Go2W", prefix)
-    check(first.startswith("FAULT") and "常用负载 面前是墙不抬腿" in first and "未测" in first,
-          f"item 21's file missing: FAULT ({first[:120]})")
+    check(first.startswith("FAULT"), f"the same files without --screen: FAULT (未测) ({first[:80]})")
+    write_set(prefix + "_x", "unl", True, falls={("8-12cm", "up"): 12, "_": 0})
+    os.replace(f"{prefix}_x_stairs.txt", f"{prefix}_stairs.txt")
+    first = run_judge("Go2W", prefix, "--screen")
+    check(first.startswith("FAIL") and "单项摔倒率超过 1%：stairs" in first, f"--screen: the stairs' 12 falls over the 1 % cap fail ({first[:120]})")
 
     # item 24: the depth student's stairs and map3 on -RealEdge (accept.sh --edge), the same bars
-    def edge_case(name: str, cond_over: dict, missing: str | None = None) -> str:
+    def edge_case(name: str, cond_over: dict, missing: str | None = None) -> list[str]:
       prefix = str(Path(tmp, f"u_edge_{name}"))
       for cond in aj.CONDS:
         write_set(prefix, cond, True)
         write_edge(prefix, cond, True, **cond_over.get(cond, {}))
       if missing:
         os.remove(f"{prefix}_{missing}.txt")
-      return run_judge("Go2W", prefix, "--edge")
-    first = edge_case("good", {})
-    check(first == "PASS", f"item 24: good readings on -RealEdge pass ({first[:120]})")
-    first = edge_case("falls", {"unl": {"falls": {("8-12cm", "up"): 1, "_": 0}}})
-    check(first.startswith("FAIL") and items(first) and all(i.startswith("相机误差 楼梯") for i in items(first)),
-          f"item 24: a fall on -RealEdge fails the camera-error stairs item only ({first[:120]})")
-    first = edge_case("op", {"full": {"op": 0.89}})
-    check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith("满载 相机误差 楼梯到达（map3）"),
-          f"item 24: map3 with the operator 89 % at full load fails ({first[:120]})")
-    first = edge_case("feet", {"typ": {"feet": {("12-15cm", "down"): 0.89, "_": 1.0}}})
-    check(first.startswith("FAIL") and len(items(first)) == 1 and items(first)[0].startswith("常用负载 相机误差 停住缺脚"),
-          f"item 24: four feet 0.89 typical fails ({first[:120]})")
-    first = edge_case("missing", {}, missing="stairsedge_pay")
-    check(first.startswith("FAULT") and "满载 相机误差 楼梯" in first and "未测" in first,
-          f"item 24: a missing -RealEdge file with --edge: FAULT ({first[:120]})")
+      return run_lines("Go2W", prefix, "--edge")
+    lines = edge_case("good", {})
+    check(lines[0] == "PASS" and not targets_of(lines), f"item 24: good readings on -RealEdge pass ({lines[0][:120]})")
+    lines = edge_case("falls", {"unl": {"falls": {("8-12cm", "up"): 12, "_": 0}}})
+    check(lines[0].startswith("FAIL") and "stairsedge" in lines[0], f"item 24: the -RealEdge stairs' falls in gate 3 (over the cap) ({lines[0][:120]})")
+    lines = edge_case("op", {"full": {"op": 0.89}})
+    tg = targets_of(lines)
+    check(lines[0] == "PASS" and len(tg) == 1 and tg[0].startswith("满载 相机误差 楼梯到达（map3）"),
+          f"item 24: map3 with the operator 89 % at full load: a target, not a gate ({tg})")
+    lines = edge_case("feet", {"typ": {"feet": {("12-15cm", "down"): 0.89, "_": 1.0}}})
+    tg = targets_of(lines)
+    check(lines[0] == "PASS" and len(tg) == 1 and tg[0].startswith("常用负载 相机误差 停住缺脚"), f"item 24: four feet 0.89 typical: a target ({tg})")
+    lines = edge_case("missing", {}, missing="stairsedge_pay")
+    check(lines[0].startswith("FAULT") and "满载 摔倒率：未测（stairsedge）" in lines[0],
+          f"item 24: a missing -RealEdge file with --edge: FAULT (gate 3 unknown) ({lines[0][:120]})")
 
     # (6) the teacher gates
     g = str(Path(tmp, "u_gate"))
@@ -365,28 +416,24 @@ def main() -> int:
     write_set(f"{g}_payx", "full", False, falls={("12-15cm", "up"): 6, ("15-18cm", "up"): 9, "_": 0})
     os.rename(f"{g}_payx_stairs_pay.txt", f"{g}_pay.txt")
     out, rc = stairs_gate.judge("Go2", g, 6, True)
-    check(rc == 0 and out.startswith("PASS"), f"stairs gate: 2 falls per scan mode and 6 on 5-15 cm under load pass ({out.splitlines()[0][:160]})")
-    out, rc = stairs_gate.judge("Go2", g, 5, True)
-    check(rc == 1 and "满载 楼梯：摔倒 6" in out.splitlines()[0], f"stairs gate: 6 > 5 under load fails ({out.splitlines()[0][:160]})")
-    gw = str(Path(tmp, "u_gate_w"))
-    for mode in ("on", "off"):
-      write_set(f"{gw}_{mode}", "unl", True)
-      write_set(f"{gw}_typ_{mode}", "unl", True)
-      os.rename(f"{gw}_typ_{mode}_stairs.txt", f"{gw}_typ_{mode}.txt")
-      os.rename(f"{gw}_{mode}_stairs.txt", f"{gw}_{mode}.txt")
-    write_set(f"{gw}_payx", "full", True, falls={("12-15cm", "up"): 3, ("15-18cm", "up"): 3, "_": 0})
-    os.rename(f"{gw}_payx_stairs_pay.txt", f"{gw}_pay.txt")
-    out, rc = stairs_gate.judge("Go2W", gw, 6, True)
-    check(rc == 0 and out.startswith("PASS"), f"Go2W stairs gate: 3 + 3 falls on 12-18 cm under load = 6 pass ({out.splitlines()[0][:160]})")
-    out, rc = stairs_gate.judge("Go2W", gw, 5, True)
-    check(rc == 1 and "满载 楼梯：摔倒 6" in out.splitlines()[0],
-          f"Go2W stairs gate: the 15-18 cm falls count under load (6 > 5 fails) ({out.splitlines()[0][:160]})")
+    head = out.splitlines()[0]
+    check(rc == 1 and "满载 摔倒率：1.30%" in head and "满载 单项摔倒率超过 1%" in head,
+          f"stairs gate: 2 falls per scan mode pass the rate; the full load's 6 + 9 of 1152 (all bands) = 1.30 % fails ({head[:200]})")
+    write_set(f"{g}_payy", "full", False, falls={("12-15cm", "up"): 3, ("15-18cm", "up"): 3, "_": 0})
+    os.replace(f"{g}_payy_stairs_pay.txt", f"{g}_pay.txt")
+    out, rc = stairs_gate.judge("Go2", g, 6, True)
+    check(rc == 0 and out.startswith("PASS"), f"stairs gate: 6 of 1152 under load (0.52 %) pass ({out.splitlines()[0][:160]})")
     write_set(f"{g}_on", "unl", False, falls={("5-8cm", "up"): 3, "_": 0}, kicks=0.36)
     os.rename(f"{g}_on_stairs.txt", f"{g}_on.txt")
     out, rc = stairs_gate.judge("Go2", g, 6, True)
+    check(rc == 0 and out.startswith("PASS") and "scan on 楼梯计数：上楼踢立面" in out,
+          f"stairs gate: 3 + 2 falls of 2304 pass the rate, the kicks a target listed ({out.splitlines()[0][:160]})")
+    write_set(f"{g}_on", "unl", False, falls={("5-8cm", "up"): 13, "_": 0})
+    os.rename(f"{g}_on_stairs.txt", f"{g}_on.txt")
+    out, rc = stairs_gate.judge("Go2", g, 6, True)
     head = out.splitlines()[0]
-    check(rc == 1 and "scan on 楼梯：摔倒 3" in head and "scan on 楼梯计数：上楼踢立面" in head and head.startswith("FAIL (gap "),
-          f"stairs gate: 3 falls and the kicks fail, a gap given, no HARDPASS ({head[:200]})")
+    check(rc == 1 and "单项摔倒率超过 1%：scan on 1.13%" in head and head.startswith("FAIL (gap "),
+          f"stairs gate: one scan mode's 13 of 1152 over the cap fails, a gap given ({head[:200]})")
     f = str(Path(tmp, "u_flat"))
     for mode in ("on", "off"):
       write_set(f"{f}_{mode}", "unl", True)
@@ -395,8 +442,11 @@ def main() -> int:
     write_set(f"{f}_off", "unl", True, drift=0.06, clock=70)
     out, rc = flat_gate.judge("Go2W", f)
     head = out.splitlines()[0]
-    check(rc == 1 and head.startswith("FAIL (gap 0.02)") and "scan off 跑偏" in head and "scan off 步态节奏" in head,
-          f"flat gate: two items fail, gap 0.02 ({head[:200]})")
+    check(rc == 1 and head.startswith("FAIL (gap ") and "scan off 跑偏" in head and "步态节奏" not in head and "scan off 步态节奏" in out,
+          f"flat gate: the drift fails the gate, the gait clock a target ({head[:200]})")
+    write_set(f"{f}_off", "unl", True, clock=70)
+    out, rc = flat_gate.judge("Go2W", f)
+    check(rc == 0 and out.startswith("PASS") and "目标未达（1 项" in out, f"flat gate: the clock alone, a target: PASS ({out.splitlines()[0][:120]})")
 
     # (7) the judge before the spec
     prefix = str(Path(tmp, "u_good_Go2"))
