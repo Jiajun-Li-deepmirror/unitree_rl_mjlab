@@ -285,6 +285,15 @@ def main() -> int:
     lines = acceptance_lines("Go2W", "no_landing", full={"wall_n": 0, "wall": 0})
     check(lines[0] == "PASS" and sorted(i.split("：")[0] for i in targets_of(lines)) == ["满载 面前是墙不抬腿", "满载 顶部平台多余踏步"],
           f"no robot on a top landing: items 21 and 28 not met (targets) ({targets_of(lines)})")
+    # the target score (2026-11-16): the full load's slide-back missed -> item 18 = (1 + 1 + 0) / 2.5 = 80 %, the x5 tier
+    # (5 + 4 + 5) / 15 = 93.3 %; the targets table carries it
+    lines = acceptance_lines("Go2W", "score", full={"slide": 0.06})
+    sl = next((x for x in lines if "目标分" in x), "")
+    check("×5 档 93.3%" in sl and any("项 18（×5）楼梯计数：80%" in x for x in lines), f"the target score: x5 tier 93.3 %, item 18 80 % ({sl.strip()[:120]})")
+    md = open(str(Path(tmp, "u_score")) + "_targets.md").read()
+    check("the x5 tier 93.3 %" in md and "| item | condition | target |" in md, "the targets table: the score and the rows")
+    lines = acceptance_lines("Go2W", "score_full")
+    check(any("×5 档 100.0%，总分 100.0%" in x for x in lines), "the target score at good readings: 100 / 100 %")
     # gate 3: one test over the 1 % cap; the pooled rate over its bar with every test under 1 %
     lines = acceptance_lines("Go2W", "cap", unl={"falls": {("8-12cm", "up"): 12, "_": 0}})
     check(lines[0].startswith("FAIL") and "单项摔倒率超过 1%：stairs 1.04%" in lines[0], f"gate 3: stairs 12 / 1152 > 1 % fails ({lines[0][:160]})")

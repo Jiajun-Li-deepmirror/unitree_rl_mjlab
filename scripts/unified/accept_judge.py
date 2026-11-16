@@ -1213,6 +1213,25 @@ REF_W27D = {
 }
 REF_W27D_PASS = "通过"   # items 3-20
 
+# ---- the target score (2026-11-16, the user: "可以，我觉得你排的挺好"; go2-home's final weights) ----
+# Item score = its met cells / its cells, the conditions weighted unloaded 1, typical 1, full 0.5; the total = sum of
+# weight x item score as a % of the maximum over the items that have cells; the x5 tier reported on its own. Ranking of
+# gate-passing models: the x5 tier first, then the total. An item: (number, weight, the judge's item names). A cell is
+# not met when an item string of that condition starts with one of the names (falls alone excepted: gate 3), or was
+# not measured. Item 24 (the camera errors) is the depth student's: its cells are the conditions' 相机误差 items.
+SCORE_ITEMS = [
+  (12, 5, ("楼梯停住",)), (18, 5, ("楼梯计数",)), (5, 5, ("停车",)),
+  (24, 3, (EDGE_LABEL,)), (28, 3, ("顶部平台多余踏步",)), (21, 3, ("面前是墙不抬腿",)), (9, 3, ("四轮着地",)),
+  (13, 3, ("停住缺脚",)), (20, 3, ("楼梯停滞",)), (14, 3, ("楼梯朝向最大偏离",)), (15, 3, ("楼梯蛇行",)),
+  (26, 2, ("下楼点头", "上楼晃")), (27, 2, ("小腿大腿磕台阶",)), (16, 2, ("楼梯计数：边缘",)), (11, 2, ("楼梯速度",)),
+  (23, 2, ("斜坡和不平地面", "不平地面转弯")),
+  (3, 1, ("原地旋转",)), (4, 1, ("交替原地转",)), (6, 1, ("原地踏步",)), (7, 1, ("步态节奏",)), (8, 1, ("零指令站姿",)),
+  (29, 1, ("平地颠晃",)), (30, 1, ("楼梯走走停停",)),
+]
+SCORE_LEGGED_ONLY = {16}   # (17 / 19: the Go2's, x2 at its round)
+SCORE_COND_W = {"unl": 1.0, "typ": 1.0, "full": 0.5}
+REF_W27D_SCORE: dict[str, float] | None = None   # {"tier5": %, "total": %}: w27d's, once judged at this judge
+
 
 def _n(x) -> int:
   return int(round(float(x)))
@@ -1294,7 +1313,8 @@ def teacher_verdict(sh: Sheet, falls: dict[str, list[tuple[str, int, int]]], lab
   GATE_PREFIXES after one of the labels, extra_gate's (item, gap), each condition's fall rate <= TEACHER_FALL_RATE
   and each run's <= TEST_FALL_CAP -- decide PASS / FAIL (gap: the gates' gaps + 0.001 per target not met, so a
   candidate with fewer targets missed ranks first at teacher.sh's cap) / FAULT (a gate not measured); the other items
-  are listed as targets. falls: condition label -> [(run, falls, robots)]."""
+  are listed as targets. falls: condition label -> [(run, falls, robots)]. The FAIL gap: the gates' gaps + 0.002 x
+  (1 - the x5 tier score) + 0.001 x (1 - the total score) -- the target score ranks within equal gates."""
   strip = lambda b: next((b[len(l):] for l in sorted(labels, key=len, reverse=True) if b.startswith(l)), b)
   gate_bad, gate_miss, targets = [], [], []
   for b in sh.bad:
@@ -1321,13 +1341,22 @@ def teacher_verdict(sh: Sheet, falls: dict[str, list[tuple[str, int, int]]], lab
       gate_bad.append((f"{cond}单项摔倒率超过 {TEST_FALL_CAP:g}%：" + "、".join(f"{r} {x:.2f}%" for r, x in over),
                        max(x for _r, x in over) / TEST_FALL_CAP - 1.0))
   lines.append(f"目标未达（{len(targets)} 项，不判）：" + ("；".join(targets) if targets else "无"))
+  # the target score over the items this gate measures (the scan modes' items under their condition's label)
+  canon = []
+  for b in sh.bad:
+    c = "full" if b.startswith("满载 ") else "typ" if b.startswith("常用负载 ") else "unl"
+    canon.append(COND_LABEL[c] + strip(b))
+  conds = ["unl"] + (["typ"] if any(l.startswith("常用负载") for l in labels) else []) + (["full"] if "满载 " in labels else [])
+  t5, tot, _ = target_score("Go2W" if "四轮着地" in " ".join(sh.detail) else "Go2", conds, canon, False, measured=sh.detail)
+  lines.insert(0, f"目标分（本门检测到的项）：×5 档 {t5:.1f}%，总分 {tot:.1f}%")
   body = [f"  {x}" for x in lines + sh.detail]
   if gate_miss:
     return "\n".join(["FAULT: " + "；".join(gate_miss + [b for b, _g in gate_bad])] + body), 4
   if gate_bad:
-    gap = sum(max(g, 0.01) for _b, g in gate_bad) + 0.001 * len(targets)
-    return "\n".join([f"FAIL (gap {gap:.2f}): " + "；".join(b for b, _g in gate_bad)] + body), 1
-  return "\n".join([f"PASS (the gates: {what}; {len(targets)} targets not met)"] + body), 0
+    # (the gates first; then the target score: the x5 tier, then the total -- teacher.sh picks the smallest gap)
+    gap = sum(max(g, 0.01) for _b, g in gate_bad) + 0.002 * (1 - t5 / 100) + 0.001 * (1 - tot / 100)
+    return "\n".join([f"FAIL (gap {gap:.3f}): " + "；".join(b for b, _g in gate_bad)] + body), 1
+  return "\n".join([f"PASS (the gates: {what}; score x5 {t5:.1f} %, total {tot:.1f} %; {len(targets)} targets not met)"] + body), 0
 
 
 def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False, screen: bool = False,
@@ -1412,15 +1441,57 @@ def spec_judge(r: str, prefix: str, expect_typ: bool, expect_edge: bool = False,
     tl.append("筛选模式：只判测过的项")
   if "typ" not in conds:
     sh.detail.append("常用负载：本机型没有这一档，不测")
-  _targets_md(prefix, conds, sh, targets)
-  return [first] + gl + tl + sh.detail
+  edge_any = expect_edge or any(os.path.exists(_files(prefix, c)[k]) for c in conds for k in ("stairsedge", "noopedge", "opedge"))
+  score = target_score(r, conds, sh.bad, edge_any)
+  ref = REF_W27D_SCORE
+  sl = [f"目标分（门槛都过的模型按此排序：先 ×5 档，再总分）：×5 档 {score[0]:.1f}%，总分 {score[1]:.1f}%；w27d："
+        + (f"×5 档 {ref['tier5']:.1f}%，总分 {ref['total']:.1f}%" if ref else "尚未用本判定算过")] + [f"  {x}" for x in score[2]]
+  _targets_md(prefix, conds, sh, targets, score)
+  return [first] + gl + sl + tl + sh.detail
 
 
-def _targets_md(prefix: str, conds: list[str], sh: Sheet, targets: list[str]) -> None:
+def target_score(r: str, conds: list[str], bad: list[str], edge: bool, measured: list[str] | None = None) -> tuple[float, float, list[str]]:
+  """(the x5 tier %, the total %, per-item lines): bad = the judge's failed / missing item strings (the gates' too: a
+  gate item is in no SCORE_ITEMS name). See SCORE_ITEMS."""
+  lines, tot, tot_max, t5, t5_max = [], 0.0, 0.0, 0.0, 0.0
+  for num, w, names in SCORE_ITEMS:
+    if num in SCORE_LEGGED_ONLY and r in at.WHEELED:
+      continue
+    if num == 24 and not edge:
+      continue
+    if measured is not None and not any(n in m for n in names for m in measured):
+      continue   # (a teacher gate: the items it measures)
+    got, cw = 0.0, 0.0
+    cells = []
+    for c in conds:
+      L = COND_LABEL[c]
+      hit = [b for b in bad if b.startswith(L) and (_core(b) if L else b).startswith(names)
+             and (num == 24 or not _core(b).startswith(EDGE_LABEL)) and "摔倒" not in _core(b).split("：", 1)[-1][:4]]
+      if num != 24:
+        hit = [b for b in hit if _cond_of(b) == c]
+      met = not hit
+      got += SCORE_COND_W[c] * met
+      cw += SCORE_COND_W[c]
+      cells.append(f"{c} {'✓' if met else '✗'}")
+    s = got / cw if cw else 0.0
+    tot, tot_max = tot + w * s, tot_max + w
+    if w == 5:
+      t5, t5_max = t5 + w * s, t5_max + w
+    lines.append(f"项 {num}（×{w}）{names[0].strip()}：{100 * s:.0f}%（{'，'.join(cells)}）")
+  return (100.0 * t5 / t5_max if t5_max else 0.0), (100.0 * tot / tot_max if tot_max else 0.0), lines
+
+
+def _targets_md(prefix: str, conds: list[str], sh: Sheet, targets: list[str], score: tuple | None = None) -> None:
   """<prefix>_targets.md (2026-11-16, the user: a deployed model is replaced only after a look at this table): one row
   per item and condition -- the item, the condition, its target, the new reading, w27d's reading, met / not met --
   from the detail lines (an item's reading with its bar in brackets) and the targets not met."""
-  rows = ["| item | condition | target | new reading | w27d | met |", "|---|---|---|---|---|---|"]
+  rows = []
+  if score is not None:
+    ref = REF_W27D_SCORE
+    rows += [f"Target score (ranking of gate-passing models: the x5 tier first, then the total): the x5 tier {score[0]:.1f} %, "
+             f"the total {score[1]:.1f} %; w27d: " + (f"the x5 tier {ref['tier5']:.1f} %, the total {ref['total']:.1f} %" if ref else "not judged at this judge yet"),
+             "", *[f"- {x}" for x in score[2]], ""]
+  rows += ["| item | condition | target | new reading | w27d | met |", "|---|---|---|---|---|---|"]
   bad_cores = {(_cond_of(b), _core(b).split("：")[0]) for b in targets}
   name = {"unl": "空载", "typ": "常用负载", "full": "满载"}
   for d in sh.detail:

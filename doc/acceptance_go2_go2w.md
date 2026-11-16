@@ -41,6 +41,15 @@ model is replaced only after the user's own look at it (not a gate). Item 22 (th
 
 Sample sizes stay fixed per test so the rate means one thing; the slope cells run 256 robots (were 64).
 
+The target score ranks the models that pass the gates (the user, 2026-11-16, "可以，我觉得你排的挺好"): item score = its
+met cells / its cells, the conditions weighted unloaded 1, typical 1, full 0.5; the total = Σ weight × item score as a
+% of the maximum; the ×5 tier on its own. Ranking: the ×5 tier first, then the total. Weights: ×5 items 12 (stop held),
+18 (slide-back), 5 (stop creep / brake); ×3 items 24 (camera errors, the depth student), 28, 21, 9, 13, 20, 14, 15; ×2
+items 26, 27, 16 (the Go2), 11, 23 (with the turns), 31 (energy, once it has bars); ×1 items 3, 4, 6, 7, 8, 29, 30; the
+Go2's 17 and 19 ×2 at its round. The verdict and <prefix>_targets.md print it with w27d's (once judged at this judge).
+The teacher gates score the items they measure and rank by it within equal gates (the FAIL gap: the gates' gaps +
+0.002 × (1 − the ×5 tier) + 0.001 × (1 − the total)).
+
 The teacher gates (stairs_gate / flat_gate) take the same gates where they measure them, with the teacher's fall rate
 <= 1 % per condition and per run: the flat gate's flat speed and drift; the stairs gate's eval_stairs traverse success
 at map3's operator bar (the teacher gates run no map3: a stand-in for gate 2); every other item a target (listed). The
