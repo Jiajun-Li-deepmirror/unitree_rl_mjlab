@@ -56,6 +56,7 @@ LAST_STEPS = 0.75   # the falls between this share of the rise and eval_map3's 8
 LANDING = ((2.0, 0.0), (3.0, 1.0), (2.0, 0.0))   # (seconds, wz) on the top landing
 HELD_M = 0.05
 FORCE_N = 5.0
+WALL_LIFT_M = 0.10   # acceptance item 21's lift (accept_judge.SPEC['wall_lift'])
 
 
 def main() -> int:
@@ -423,6 +424,7 @@ def report(rows) -> None:
         "turn in place wz +1.0 3 s, stand 2 s; front foot / wheel off the ground (no contact > 5 N) ==")
   agg = {k: 0.0 for k in ("stand_n", "stand_off", "stand_lift", "turn_n", "turn_off", "turn_lift")}
   nrob, fl_tot, reach_tot, rob_tot, walls, lifts_all, touch_all, moves_all = 0, 0, 0, 0, [], [], [], []
+  stands_all = []
   for r in rows:
     dt = r["dt"]
     has = (r["stand_n"] + r["turn_n"]) > 0
@@ -442,6 +444,7 @@ def report(rows) -> None:
     lt, ls = r["lift_turn"][has], r["lift_stand"][has]
     q = lambda x, p: float(np.percentile(x, p)) if x.size else float("nan")
     lifts_all.append(lt)
+    stands_all.append(ls)
     touch_all.append(r["wall_touch"][has])
     tg = r["top_gap"][~np.isnan(r["top_gap"])]
     flag = " [TOP BY THE WALL: the base not on the landing yet]" if tg.size and r["top_by_wall"].mean() > 0.2 else ""
@@ -470,6 +473,18 @@ def report(rows) -> None:
           f"p50 / p90 {100 * np.median(np.concatenate(moves_all)):.0f} / {100 * np.percentile(np.concatenate(moves_all), 90):.0f} cm "
           f"(R3's top landing is 0.91 m wide with the stairwell's well unrailed on its west side: a turn that wanders "
           f"there falls in)")
+  # acceptance item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿", bar <= 5 % in every condition;
+  # accept_judge.spec_wall): per robot on the landing its front foot's highest point above the first stand, in the
+  # turn and in the last stand (the wall ahead, then beside); the share of robots over 10 cm at 1 decimal
+  if lt.size:
+    both = np.maximum(lt, np.concatenate(stands_all))
+    k = int((both > WALL_LIFT_M).sum())
+    print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand in the turn or the last "
+          f"stand: {k} of {both.size} robots on the landing = {100 * k / both.size:.1f} % (the turn alone "
+          f"{100 * (lt > WALL_LIFT_M).mean():.1f} %, the last stand alone {100 * (np.concatenate(stands_all) > WALL_LIFT_M).mean():.1f} %)")
+  else:
+    print(f"ALL wall lift (item 21): front foot > {100 * WALL_LIFT_M:.0f} cm above the first stand in the turn or the last "
+          f"stand: 0 of 0 robots on the landing = nan %")
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ which the students' acceptance (`jobs/unified/accept.sh`) and the teacher gates 
 | 18 | slips per step (Go2) / slide-back (Go2W) | 0.06 / 0.039 | as unloaded | 0.07 / 0.05 |
 | 19 | mid-tread share (Go2) | >= 0.76 | 0.76 | 0.72 |
 | 20 | stalled on the stairs, per band and direction | <= 5 % | 5 % | 5 % |
+| 21 | no leg lift with a wall ahead (面前是墙不抬腿, added 2026-11-16 by the user via go2-home): on map3's top landings facing the end wall, stand 2 s / turn in place 3 s / stand 2 s (map3_stairs_probe.py, 64 robots per up flight); share of the robots on the landing whose front foot / wheel rises more than 10 cm above the first stand, in the turn or the last stand | <= 5 % | 5 % | 5 % |
 | — | falls in every test | 0 | 0 | 0 (stairs: 5–15 cm) |
 
 Reported only (long-term targets): kicks 0.245, slips 0.0245, mid 0.80; map3's speed; the full load's 15–18 cm
@@ -61,9 +62,20 @@ Every test runs in all three conditions:
 - stairs and descent;
 - gait (the Go2W only);
 - the map3 flights with and without the operator (noop, op).
+- the top landings facing the wall (wall; item 21), after the map3 flights.
 
 The full payload's gait clock runs with `--min-match 0.7`; the others keep 0.8. These runs are new:
 - am, clock and the map3 flights under the typical and the full payload;
 - gait (wheels down) under the full payload.
 
 They take the evaluation time up by about half.
+
+Item 21's notes (2026-11-16):
+- the shape is uprobe_s162's measure (the turn) plus the last stand, the wall ahead and then beside the robot. The
+  approach to the wall is not judged: the probe walks the robot on only until the wall is 1.0 m ahead, then stops it;
+- front feet / wheels only. For the Go2 (legged) a turn in place steps, so its own step height counts. Before the bar
+  is read as wall-induced on the Go2, its turn on flat ground should be measured as a control;
+- a robot that falls on the landing still counts with its lift; one that never reaches the landing does not (the
+  climbs' items judge it). No robot on any landing: a fail;
+- a run of an end-wall recipe (endwall in its keys) is evaluated on map3 with the command's own wall stop
+  (0.85 m before a wall ahead), as it trained; the robot is stopped at 1.0 m here, so the stop does not act on item 21.

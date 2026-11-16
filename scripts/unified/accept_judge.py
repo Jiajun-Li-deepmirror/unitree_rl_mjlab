@@ -570,6 +570,7 @@ SPEC: dict[str, dict] = {
   "slide_back": {"unl": 0.039, "typ": 0.039, "full": 0.05},               # wheeled
   "mid": {"unl": 0.76, "typ": 0.76, "full": 0.72},                        # legged
   "stalled": {c: 5.0 for c in CONDS},                                      # % per band and direction
+  "wall_lift": {c: 5.0 for c in CONDS},                                    # % of the robots on map3's top landings
 }
 SPEC_LONG_TERM = {"kicks_up": 0.245, "slips": 0.0245, "mid": 0.80}   # reported beside the readings
 
@@ -604,7 +605,7 @@ def _ud(d: str) -> str:
 
 def _files(prefix: str, cond: str) -> dict[str, str]:
   sfx = COND_SFX[cond]
-  return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent")}
+  return {k: f"{prefix}_{k}{sfx}.txt" for k in at.KINDS + ("loadstand", "stopmove", "descent", "wall")}
 
 
 def am_rows(path: str) -> list[tuple[str, list[int], int]] | None:
@@ -936,6 +937,33 @@ def spec_map3(r: str, p: dict[str, str], cond: str, sh: Sheet) -> None:
     sh.fail(f"{L}楼梯到达（map3）：无操作 {s['no']:.1f}%", (bn - s["no"]) / bn)
 
 
+def wall_lift(path: str) -> tuple[int, int] | None:
+  """map3_stairs_probe.py's item-21 line: (robots over the lift, robots on the landing); None without the line."""
+  m = re.search(r"^ALL wall lift \(item 21\).*?: (\d+) of (\d+) robots on the landing", txt(path), re.M)
+  return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def spec_wall(r: str, path: str, cond: str, sh: Sheet) -> None:
+  """Item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿"): on map3's top landings facing the end wall
+  (map3_stairs_probe.py: stand, turn in place, stand), the share of the robots on the landing whose front foot / wheel
+  rose more than 10 cm above the first stand, in the turn or the last stand: <= 5 % in every condition. No robot on a
+  landing: not judgeable here -- a fail (the climbs' items say why)."""
+  L = COND_LABEL[cond]
+  v = wall_lift(path)
+  if v is None:
+    sh.missing(f"{L}面前是墙不抬腿（map3_stairs_probe）")
+    return
+  k, n = v
+  bar = SPEC["wall_lift"][cond]
+  if n == 0:
+    sh.fail(f"{L}面前是墙不抬腿：没有机器人到达顶层平台")
+    return
+  share = 100.0 * k / n
+  sh.detail.append(f"{L}面前是墙不抬腿：前脚抬高超过 10 cm {k}/{n} = {share:.1f}%（<= {bar:g}%）")
+  if share > bar + 1e-9:
+    sh.fail(f"{L}面前是墙不抬腿：{share:.1f}%", share / bar - 1.0)
+
+
 def spec_flight(r: str, path: str, cond: str, sh: Sheet) -> None:
   """Items 14 and 15: the heading's max p90 and the meander p-p p50 per band and direction (descent_probe
   --straight), and its falls. The full payload: 5-15 cm, 15-18 cm reported."""
@@ -980,6 +1008,7 @@ def spec_judge(r: str, prefix: str, expect_typ: bool) -> list[str]:
     spec_map3(r, p, cond, sh)
     spec_stairs(r, p["stairs"], cond, sh)
     spec_flight(r, p["descent"], cond, sh)
+    spec_wall(r, p["wall"], cond, sh)
   if "typ" not in conds:
     sh.detail.append("常用负载：本机型没有这一档，不测")
   return [verdict_line(sh.bad)] + sh.detail

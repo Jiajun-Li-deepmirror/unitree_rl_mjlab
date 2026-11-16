@@ -390,7 +390,10 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
       run ${P}_noop$X.log $W $S/map3_par.py --out ${P}_noop$X.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
         --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
       run ${P}_op$X.log $W $S/map3_par.py --out ${P}_op$X.txt --shards 3 -- --task $TE $CK --set flights --num-envs $(tn 192) \
-        --time-scale 1.6 --seed 0 )
+        --time-scale 1.6 --seed 0
+      # item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿"; a spec robot, every condition): map3's top
+      # landings facing the end wall, stand / turn in place / stand (accept_judge.spec_wall)
+      [ $SPEC = 1 ] && run ${P}_wall$X.txt $W scripts/unified/map3_stairs_probe.py $TE $CK --num-envs $(tn 64) --seed 0 )
   done
   $PY scripts/unified/accept_judge.py $R $P $jflag > ${P}_verdict.txt 2>&1
   # the sizes run_sized used, when any test ran small (a detail line: the first line stays the verdict)

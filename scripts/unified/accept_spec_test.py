@@ -10,7 +10,7 @@ Checked:
       else; exactly at the bar: PASS (spot checks per item and condition);
   (4) the full payload's 15-18 cm band (stairs items, heading, meander, falls): reported, not judged; the same
       reading on 12-15 cm: judged;
-  (5) a missing test file: FAULT (未测), a tool fault, not a fail;
+  (5) a missing test file: FAULT (未测), a tool fault, not a fail (item 21's file too);
   (6) the teacher gates: stairs_gate.spec_gate at the teacher's tolerance (2 falls per scan mode pass, 3 fail; the
       full payload's N), the counts hard (no HARDPASS); flat_gate.spec_flat_gate on both scan modes, gap 0.01 per item;
   (7) U_JUDGE_OLD=1 runs the judge before the spec (a comparison).
@@ -36,7 +36,7 @@ DIRS = ("up", "down")
 GOOD = dict(am=95, am_falls=0, drift=0.02, head50=0.5, head90=2.0, spin=0.05, spinalt=0.10, lift=0.0, creep=0.3,
             brake=15.0, td=1.2, reset=1.0, mdrift=2.0, clock=88, stand=0.10, stop=0.08, wheels=100.0, op=1.0,
             noop=1.0, speed=1.0, held=100, feet=1.00, edge=0.05, kicks=0.20, slips=0.02, mid=0.85, slide=0.01,
-            stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0)
+            stalled=0, falls=0, hd=3.0, mpp=2.0, dfalls=0, wall=1, wall_n=100)
 
 
 def band_val(v, b, d):
@@ -114,6 +114,11 @@ def write_set(prefix: str, cond: str, wheeled: bool, **over) -> None:
       ds.append(f"SUMLAT {b} {d} meander 0.6 meander_pp {bv('mpp', b, d):.3f} sway 0.3 drift 0.7 hd_mean 0.6 hd_max 1.9 "
                 f"vy 0.05 wz 9.4 hd_max_p90 {bv('hd', b, d):.3f} n 72")
   w("descent", "\n".join(ds) + "\n")
+  # map3_stairs_probe: item 21's line (robots over 10 cm of those on the landing)
+  share = 100 * g["wall"] / g["wall_n"] if g["wall_n"] else float("nan")
+  w("wall", f"ALL wall lift (item 21): front foot > 10 cm above the first stand in the turn or the last stand: "
+            f"{g['wall']} of {g['wall_n']} robots on the landing = {share:.1f} % (the turn alone {share:.1f} %, the last "
+            f"stand alone 0.0 %)\n")
 
 
 def run_judge(r: str, prefix: str) -> str:
@@ -146,7 +151,8 @@ def main() -> int:
           "map3_noop": (90.0, 90.0, 85.0), "stairs_speed": ((0.8, 1.2), (0.75, None), (0.65, None)),
           "stop_held": (95.0, 95.0, 90.0), "four_feet": (0.9, 0.9, 0.8), "heading": (8.0, 8.0, 10.0),
           "edge": (0.10, 0.10, 0.12), "kicks_up": (0.35, 0.35, 0.40), "slips": (0.06, 0.06, 0.07),
-          "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0)}
+          "slide_back": (0.039, 0.039, 0.05), "mid": (0.76, 0.76, 0.72), "stalled": (5.0, 5.0, 5.0),
+          "wall_lift": (5.0, 5.0, 5.0)}
   for k, v in want.items():
     check(tuple(S[k][c] for c in aj.CONDS) == v, f"SPEC {k} = {v}")
   check(S["drift_head"]["full"] == (3.0, 8.0), "drift heading p50 3 / p10-p90 8 deg")
@@ -203,6 +209,8 @@ def main() -> int:
       ("Go2W", "unl", {"mpp": {("8-12cm", "up"): 5.5, "_": 2.0}}, "楼梯蛇行峰峰值超过 5 cm"),
       ("Go2W", "full", {"mpp": {("8-12cm", "up"): 7.5, "_": 2.0}}, "楼梯蛇行峰峰值超过 7 cm"),
       ("Go2", "unl", {"dfalls": {("5-8cm", "up"): 1, "_": 0}}, "楼梯走直线"),
+      ("Go2W", "unl", {"wall": 6}, "面前是墙不抬腿"), ("Go2W", "typ", {"wall": 6}, "面前是墙不抬腿"),
+      ("Go2", "full", {"wall": 6}, "面前是墙不抬腿"), ("Go2W", "full", {"wall_n": 0, "wall": 0}, "面前是墙不抬腿"),
     ]
     for i, (r, cond, over, name) in enumerate(cases):
       first = acceptance(r, f"c{i}", **{cond: over})
@@ -215,7 +223,8 @@ def main() -> int:
              ("Go2", "full", {"clock": 70}), ("Go2", "unl", {"stand": 0.17}), ("Go2W", "unl", {"wheels": 98.0}),
              ("Go2", "unl", {"op": 0.95, "noop": 0.90}), ("Go2", "full", {"feet": 0.80}), ("Go2", "unl", {"kicks": 0.35}),
              ("Go2", "unl", {"mid": 0.76}), ("Go2W", "unl", {"slide": 0.039}), ("Go2", "unl", {"stalled": 5}),
-             ("Go2", "unl", {"hd": 8.0}), ("Go2W", "unl", {"mpp": 5.0}), ("Go2", "full", {"mpp": 10.0})]
+             ("Go2", "unl", {"hd": 8.0}), ("Go2W", "unl", {"mpp": 5.0}), ("Go2", "full", {"mpp": 10.0}),
+             ("Go2W", "full", {"wall": 5}), ("Go2", "typ", {"wall": 5})]
     for i, (r, cond, over) in enumerate(edges):
       first = acceptance(r, f"e{i}", **{cond: over})
       check(first == "PASS", f"{r} {cond} {over}: exactly the bar passes ({first[:160]})")
@@ -239,6 +248,13 @@ def main() -> int:
     os.remove(f"{prefix}_am_pay.txt")
     first = run_judge("Go2", prefix)
     check(first.startswith("FAULT") and "满载 平地速度" in first and "未测" in first, f"a missing test: FAULT ({first[:120]})")
+    prefix = str(Path(tmp, "u_missing_wall"))
+    for cond in aj.CONDS:
+      write_set(prefix, cond, True)
+    os.remove(f"{prefix}_wall_typ.txt")
+    first = run_judge("Go2W", prefix)
+    check(first.startswith("FAULT") and "常用负载 面前是墙不抬腿" in first and "未测" in first,
+          f"item 21's file missing: FAULT ({first[:120]})")
 
     # (6) the teacher gates
     g = str(Path(tmp, "u_gate"))
