@@ -111,6 +111,14 @@ fi
 # ---- the candidates ----
 W="$PY jobs/unified/u_eval.py" S=scripts/blind/eval
 TF=Unitree-$R-U-Student-$K-Flat TE=Unitree-$R-U-Student-$K-Stairs
+# KIND=teacher (go2-depth 2026-11-16, go2-home: the teacher arms' end gates under the full spec): the teacher's own check
+# tasks, the map3 flights with the privileged scan's map3 (eval_map3 --teacher-scan; map3_stairs_probe takes it from
+# the task's name); BASELINE=1 only -- a reading, no pick, no delivery
+TSCAN=""
+if [ $KIND = teacher ]; then
+  [ $BASE = 1 ] || { echo "accept.sh: KIND=teacher is BASELINE=1 only (a reading)" >&2; exit 2; }
+  TF=Unitree-$R-U-Teacher-Flat TE=Unitree-$R-U-Teacher-Stairs TSCAN=--teacher-scan
+fi
 LIN="--lin-accel 2.0" YAW="--yaw-accel 3.0"
 CLOCK=""; [[ $R == *W ]] && CLOCK="--clock-task Unitree-$R-U-Teacher"
 # A robot under the 2026-11-16 specification (doc/acceptance_go2_go2w.md; accept_judge.SPEC_ROBOTS): every test in all
@@ -398,9 +406,9 @@ tier2() {   # TAG -> prints PASS / FAIL: ... / FAULT: ...
     case $cond in unloaded) pay=0,0,0,0 X="" ;; loaded) pay=$PAY X=_pay ;; typical) pay=$typ X=_typ ;; esac
     ( export U_PAYLOAD=$pay
       run ${P}_noop$X.log $W $S/map3_par.py --out ${P}_noop$X.txt --shards 3 -- --task $TE $CK --set flights --no-operator \
-        --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0
+        --down-vx 0.5 --num-envs $(tn 192) --time-scale 1.6 --seed 0 $TSCAN
       run ${P}_op$X.log $W $S/map3_par.py --out ${P}_op$X.txt --shards 3 -- --task $TE $CK --set flights --num-envs $(tn 192) \
-        --time-scale 1.6 --seed 0
+        --time-scale 1.6 --seed 0 $TSCAN
       # item 21 (2026-11-16, the user via go2-home: "面前是墙不抬腿"; a spec robot, every condition): map3's top
       # landings facing the end wall, stand / turn in place / stand (accept_judge.spec_wall)
       [ $SPEC = 1 ] && run ${P}_wall$X.txt $W scripts/unified/map3_stairs_probe.py $TE $CK --num-envs $(tn 64) --seed 0
