@@ -81,7 +81,10 @@ robot = env.scene["robot"]
 cmd = env.command_manager.get_term("twist")
 q = torch.tensor((0.1, 0.5, 0.9), device=env.device)
 f3 = lambda x: " ".join(f"{v:6.2f}" for v in x.quantile(q).tolist())
-f2 = lambda x: " ".join(f"{v:5.2f}" for v in x.quantile(q[1:]).tolist())
+# distances in mm steps (2026-11-16, go2-home: at 1 cm the sideways drift read in 0.34-point quanta over 2.9 m --
+# the pick's 5.19 / 5.07 / 4.84 % were the rounding, not the robots); the readers split on spaces and take any float
+m3 = lambda x: " ".join(f"{v:7.3f}" for v in x.quantile(q).tolist())
+m2 = lambda x: " ".join(f"{v:6.3f}" for v in x.quantile(q[1:]).tolist())
 ramp = f", yaw command ramped at {args.yaw_accel:g} rad/s²" if args.yaw_accel > 0 else ""
 ramp += f", linear command ramped at {args.lin_accel:g} m/s²" if args.lin_accel > 0 else ""
 print(f"{args.checkpoint}\n{args.task}: {n} robots per command, {args.seconds:.0f} s per command, all commands at once{ramp}")
@@ -115,13 +118,14 @@ for i, c in enumerate(CMDS):
   ok = g & ~fell
   if not ok.any():   # every robot of this command fell (2026-11-14): a row of nan and its falls -- the judges read the
     # falls; no quantile of nothing (it raised, and the test read as a tool fault instead of a fail)
-    nan3, nan2 = " ".join(f"{float('nan'):6.2f}" for _ in range(3)), " ".join(f"{float('nan'):5.2f}" for _ in range(2))
-    print(f"{str(c):>18} | {nan3}    | {nan3}  | {nan3}   | {nan2}        | {nan2}        | {int((fell & g).sum())}/{n}")
+    nan3, nanm3 = " ".join(f"{float('nan'):6.2f}" for _ in range(3)), " ".join(f"{float('nan'):7.3f}" for _ in range(3))
+    nanm2 = " ".join(f"{float('nan'):6.3f}" for _ in range(2))
+    print(f"{str(c):>18} | {nan3}    | {nanm3}  | {nanm3}   | {nanm2}        | {nanm2}        | {int((fell & g).sum())}/{n}")
     continue
   d = d_all[ok]
   rel = rel_all[ok]
   ax = torch.stack([torch.cos(yaw0[ok]), torch.sin(yaw0[ok])], 1)
   across = -ax[:, 1] * rel[:, 0] + ax[:, 0] * rel[:, 1]
   along = (ax * rel).sum(1)
-  print(f"{str(c):>18} | {f3(d)}    | {f3(along)}  | {f3(across)}   | {f2(rel.norm(dim=1))}        | {f2(far[ok])}        | {int((fell & g).sum())}/{n}")
+  print(f"{str(c):>18} | {f3(d)}    | {m3(along)}  | {m3(across)}   | {m2(rel.norm(dim=1))}        | {m2(far[ok])}        | {int((fell & g).sum())}/{n}")
 env.close()
