@@ -5,7 +5,8 @@
 PID=$1 NAME=$2
 for i in $(seq 180); do [ -d /proc/$PID ] || break; sleep 5; done
 [ -d /proc/$PID ] && { echo "FAIL: pid $PID still runs after 15 min"; exit 1; }
-d=$(ls -d logs/rsl_rl/go2w_u_teacher/*_$NAME 2>/dev/null | tail -n 1)
+DT='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]'   # (the name exactly: launch_run.sh)
+d=$(ls -d logs/rsl_rl/go2w_u_teacher/${DT}_$NAME 2>/dev/null | tail -n 1)
 [ -n "$d" ] || { echo "FAIL: no run directory for $NAME"; exit 1; }
 st=$(python3 -c "import json; s=json.load(open('$d/records/status.json')); print(s.get('ended'), s.get('faults'))" 2>&1)
 tb=$(grep -c Traceback logs/jobs/unified_go2w_$NAME.log)

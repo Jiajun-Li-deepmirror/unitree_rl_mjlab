@@ -14,7 +14,10 @@ for v in $(env | grep -oE '^U_[A-Z0-9_]+'); do unset $v; done
 export UNIFIED_TASKS=1 TRAIN_LOG_LAYOUT=rsl_rl
 FT="" SW=()
 for kv in "$@"; do case $kv in FT=*) FT=${kv#FT=} ;; *) export "$kv"; SW+=("$kv") ;; esac; done
-ls -d logs/rsl_rl/go2w_u_teacher/*_$NAME > /dev/null 2>&1 && { echo "a run $NAME is there already"; exit 2; }
+# (the date-prefixed name exactly: "*_$NAME" also matched this run's own smoke, usmoke_q_$NAME -- 2026-11-16, the
+# base_s1 chain's launch was refused after its smoke usmoke_go2w_base_s1)
+DT='[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+ls -d logs/rsl_rl/go2w_u_teacher/${DT}_$NAME > /dev/null 2>&1 && { echo "a run $NAME is there already"; exit 2; }
 RES=()
 if [ -n "$FT" ]; then
   SRC=${FT%@*} K=${FT#*@}
@@ -27,7 +30,7 @@ setsid nohup $PY scripts/train.py Unitree-Go2W-U-Teacher --env.scene.num-envs=$E
   --agent.max-iterations=$ITERS "${RES[@]}" > logs/jobs/unified_go2w_$NAME.log 2>&1 < /dev/null &
 pid=$!
 if [ -n "$FT" ]; then   # the fine-tune's mark in its run directory, once train.py made it
-  ( for i in $(seq 120); do d=$(ls -d logs/rsl_rl/go2w_u_teacher/*_$NAME 2>/dev/null | tail -n 1); [ -n "$d" ] && break; sleep 5; done
+  ( for i in $(seq 120); do d=$(ls -d logs/rsl_rl/go2w_u_teacher/${DT}_$NAME 2>/dev/null | tail -n 1); [ -n "$d" ] && break; sleep 5; done
     [ -n "$d" ] && echo "fine-tune: resumed from logs/rsl_rl/go2w_u_teacher/$SRC/model_$K.pt; $ITERS more iterations (to $(( K + ITERS ))); commit $(cat REPO_COMMIT); switches ${SW[*]:-none}" > $d/FINETUNE.txt ) &
 fi
 echo "$(date '+%H:%M:%S') launched $NAME (Go2W, $ENVS robots, $ITERS it, seed $SEED${FT:+, fine-tune from $FT}, switches: ${SW[*]:-none}), pid $pid, log logs/jobs/unified_go2w_$NAME.log"
