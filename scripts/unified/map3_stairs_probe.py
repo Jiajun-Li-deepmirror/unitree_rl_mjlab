@@ -181,6 +181,31 @@ def main() -> int:
       h = np.concatenate(attr["riser_h"])
       print(f"wheel_riser_lift's risers while it pays on the landing (top over the wheel's record, m; {len(h)} wheel-steps): "
             f"p10 {np.percentile(h, 10):.3f} p50 {np.percentile(h, 50):.3f} p90 {np.percentile(h, 90):.3f} max {h.max():.3f}")
+    sp = attr.get("split", {})
+    print(f"the landing's extra steps (item 28) by the take-off: all four standing on the landing {sp.get('top_level', 0)}, "
+          f"a wheel / foot still below (the last-riser struggle) {sp.get('top_struggle', 0)}; item-21 lifts: level "
+          f"{sp.get('lift_level', 0)}, struggle {sp.get('lift_struggle', 0)}")
+    bp, bn = np.asarray(attr["bad_ph"]), np.asarray(attr["bad_ph_n"])
+    gp, gn = np.asarray(attr["good_ph"]), np.asarray(attr["good_ph_n"])
+    print("per phase, good / bad means (robot-steps): " + ", ".join(
+      f"{nm} {int(gn[k])} / {int(bn[k])}" for k, nm in enumerate(("drive-up", "stand", "turn", "stand 2"))))
+    for nm in ("pose", "wheel_riser_lift", "foothold_height_gain", "wheel_air_drivable", "standing_wheel_target",
+               "track_angular_velocity", "stance_leg_tilt"):
+      if nm in attr["names"]:
+        i = attr["names"].index(nm)
+        print(f"  {nm:24s} " + " | ".join(
+          f"{ph} {gp[k, i] / max(gn[k], 1):+.3f} / {bp[k, i] / max(bn[k], 1):+.3f}" if bn[k] > 0 and gn[k] > 0 else f"{ph} -"
+          for k, ph in enumerate(("drive-up", "stand", "turn", "stand 2"))))
+    bs_, bsn = np.asarray(attr["bad_sp"]), np.asarray(attr["bad_sp_n"])
+    gs_, gsn = np.asarray(attr["good_sp"]), np.asarray(attr["good_sp_n"])
+    print("the drive-up by the commanded speed, good / bad means (robot-steps): " + ", ".join(
+      f"{nm} {int(gsn[k])} / {int(bsn[k])}" for k, nm in enumerate(("cmd < 0.25", "cmd >= 0.25"))))
+    for nm in ("pose", "wheel_riser_lift", "foothold_height_gain", "wheel_air_drivable"):
+      if nm in attr["names"]:
+        i = attr["names"].index(nm)
+        print(f"  {nm:24s} " + " | ".join(
+          f"{b} {gs_[k, i] / max(gsn[k], 1):+.3f} / {bs_[k, i] / max(bsn[k], 1):+.3f}" if bsn[k] > 0 and gsn[k] > 0 else f"{b} -"
+          for k, b in enumerate(("cmd < 0.25", "cmd >= 0.25"))))
     cm = np.asarray(attr["climb_sum"]) / max(attr["climb_n"], 1.0)
     print("the climb (phases 0 and 2, " + f"{attr['climb_n']:.0f} robot-steps): " + ", ".join(
       f"{nm} {cm[i]:.4f}" for i, nm in enumerate(attr["names"]) if nm in ("wheel_riser_lift", "foothold_height_gain",
@@ -350,6 +375,21 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     wrl = rm._term_cfgs[names.index("wheel_riser_lift")].func if "wheel_riser_lift" in names else None
     riser_h: list = []
     z_stand = torch.full((n, 4), -float("inf"), device=dev)   # each wheel / foot's height at its last contact
+    # go2-home's two questions (2026-11-17): the terms per phase (3 drive-up, 4 stand, 5 turn, 6 stand 2) -- a term that
+    # pays the lifts more only because they happen in another phase (pose's tolerance follows the command's regime)
+    # against one that does within a phase; and the lifts split by whether every wheel / foot stood on the landing at
+    # the take-off (a level-landing lift) or not (the last-riser struggle: a rear one still below)
+    ep_ph, ep_ph_n = torch.zeros(n, 4, T, device=dev), torch.zeros(n, 4, device=dev)
+    bad_ph, bad_ph_n = torch.zeros(4, T, device=dev), torch.zeros(4, device=dev)
+    gd_ph, gd_ph_n = torch.zeros(n, 4, T, device=dev), torch.zeros(n, 4, device=dev)
+    st_lvl4 = torch.zeros(n, 4, dtype=torch.bool, device=dev)   # each foot: all four standing on the landing at its take-off
+    split = {"top_level": 0, "top_struggle": 0, "lift_level": 0, "lift_struggle": 0}
+    # the drive-up by the commanded speed (the guard ramps it down; pose's tolerance follows the command's regime):
+    # bin 0 under SPEED_BIN, bin 1 at or above, both windows
+    SPEED_BIN = 0.25
+    ep_sp, ep_sp_n = torch.zeros(n, 2, T, device=dev), torch.zeros(n, 2, device=dev)
+    bad_sp, bad_sp_n = torch.zeros(2, T, device=dev), torch.zeros(2, device=dev)
+    gd_sp, gd_sp_n = torch.zeros(n, 2, T, device=dev), torch.zeros(n, 2, device=dev)
     ep_lifts = 0
   land_dur = [d for d, _ in LANDING]
   max_steps = int(round(sum(d for d, *_ in sc.segments) / dt))
@@ -456,11 +496,26 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
       # one still climbing the last riser earns wheel_riser_lift / foothold_height_gain legitimately, the terms are
       # summed over the feet, and by its current height a wheel in the air over the last riser passed for one on the
       # landing -- on R1 the paid risers were the last riser's 9.5 cm)
+      level4 = (z_stand >= (z_floor + rise - TOP_LEVEL_TOL)[:, None]).all(dim=1)   # (before this step's contacts: at a
+      # take-off the foot's last contact is the stand it left)
+      st_lvl4 = torch.where(start, level4[:, None].expand(-1, 4), st_lvl4)
+      split["top_level"] += int((top_now & st_lvl4).sum())
+      split["top_struggle"] += int((top_now & ~st_lvl4).sum())
+      l21 = land_now[:, :2] & a_win[:, None] & (z_apex[:, :2] - z_take[:, :2] > WALL_LIFT_M)
+      split["lift_level"] += int((l21 & st_lvl4[:, :2]).sum())
+      split["lift_struggle"] += int((l21 & ~st_lvl4[:, :2]).sum())
       z_stand = torch.where(c4, z4, z_stand)
       level4 = (z_stand >= (z_floor + rise - TOP_LEVEL_TOL)[:, None]).all(dim=1)
       in_ep = air_on.any(dim=1) & alive & level4
       ep_sum += r * in_ep.float()[:, None]
       ep_n += in_ep.float()
+      phx = (phase - 3).clamp(0, 3)
+      oh = torch.nn.functional.one_hot(phx, 4).float() * ((phase >= 3) & (phase <= 6)).float()[:, None]   # [n, 4]
+      ep_ph += oh[:, :, None] * r[:, None, :] * in_ep.float()[:, None, None]
+      ep_ph_n += oh * in_ep.float()[:, None]
+      sb = torch.nn.functional.one_hot((term.vel_command_b[:, 0].abs() >= SPEED_BIN).long(), 2).float() * (phase == 3).float()[:, None]
+      ep_sp += sb[:, :, None] * r[:, None, :] * in_ep.float()[:, None, None]
+      ep_sp_n += sb * in_ep.float()[:, None]
       lift21 = (land_now[:, :2] & a_win[:, None] & (z_apex[:, :2] - z_take[:, :2] > WALL_LIFT_M)).any(dim=1)
       ep_bad |= lift21 | top_now.any(dim=1)
       done_ep = in_ep & ~(air_on & ~c4 & win).any(dim=1)   # no wheel / foot left in the air after this step
@@ -468,11 +523,23 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
       for i in (ended & ep_bad).nonzero(as_tuple=False).flatten().tolist():
         bad_sum += ep_sum[i]
         bad_n += float(ep_n[i])
+        bad_ph += ep_ph[i]
+        bad_ph_n += ep_ph_n[i]
+        bad_sp += ep_sp[i]
+        bad_sp_n += ep_sp_n[i]
         ep_lifts += 1
+      ep_ph = torch.where(ended[:, None, None], torch.zeros_like(ep_ph), ep_ph)
+      ep_ph_n = torch.where(ended[:, None], torch.zeros_like(ep_ph_n), ep_ph_n)
+      ep_sp = torch.where(ended[:, None, None], torch.zeros_like(ep_sp), ep_sp)
+      ep_sp_n = torch.where(ended[:, None], torch.zeros_like(ep_sp_n), ep_sp_n)
       ep_sum = torch.where(ended[:, None], torch.zeros_like(ep_sum), ep_sum)
       ep_n = torch.where(ended, torch.zeros_like(ep_n), ep_n)
       ep_bad = ep_bad & ~ended
       gw = ((phase >= 3) & (phase <= 6) & alive & level4 & c4.all(dim=1)).float()   # every wheel / foot down
+      gd_ph += oh[:, :, None] * r[:, None, :] * gw[:, None, None]
+      gd_ph_n += oh * gw[:, None]
+      gd_sp += sb[:, :, None] * r[:, None, :] * gw[:, None, None]
+      gd_sp_n += sb * gw[:, None]
       if wrl is not None and hasattr(wrl, "riser_top"):
         pay = (wrl.time_left > 0.0) & wrl.airborne & ((phase >= 3) & (phase <= 6) & alive & level4)[:, None]
         if bool(pay.any()):
@@ -516,6 +583,16 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     attr["weights"] = [float(rm.get_term_cfg(nm).weight) for nm in names]
     attr["episodes"] = attr.get("episodes", 0) + ep_lifts
     attr["climb_sum"] = attr.get("climb_sum", 0.0) + np_(cl_sum)
+    attr["bad_sp"] = attr.get("bad_sp", 0.0) + np_(bad_sp)
+    attr["bad_sp_n"] = attr.get("bad_sp_n", 0.0) + np_(bad_sp_n)
+    attr["good_sp"] = attr.get("good_sp", 0.0) + np_(gd_sp[good].sum(dim=0))
+    attr["good_sp_n"] = attr.get("good_sp_n", 0.0) + np_(gd_sp_n[good].sum(dim=0))
+    attr["bad_ph"] = attr.get("bad_ph", 0.0) + np_(bad_ph)
+    attr["bad_ph_n"] = attr.get("bad_ph_n", 0.0) + np_(bad_ph_n)
+    attr["good_ph"] = attr.get("good_ph", 0.0) + np_(gd_ph[good].sum(dim=0))
+    attr["good_ph_n"] = attr.get("good_ph_n", 0.0) + np_(gd_ph_n[good].sum(dim=0))
+    for k_, v_ in split.items():
+      attr.setdefault("split", {})[k_] = attr.get("split", {}).get(k_, 0) + v_
     attr["climb_n"] = attr.get("climb_n", 0.0) + cl_n
     if riser_h:
       attr.setdefault("riser_h", []).append(torch.cat(riser_h).numpy())
