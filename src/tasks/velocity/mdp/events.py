@@ -169,6 +169,7 @@ def base_payload_point(
   corner_terrain_names: tuple[str, ...] = (),
   heavy_share_on: float | None = None,
   heavy_terrain_names: tuple[str, ...] = (),
+  heavy_share_groups: tuple = (),
 ) -> None:
   """A payload as a point mass on the base (2026-11-05, the user: payload training up to the Unitree documented
   limits, a wide payload CoM). Per robot: the payload m from `light_range` (kg, the earlier blind DR) or, for
@@ -179,7 +180,8 @@ def base_payload_point(
   frame taken as aligned with the body frame). Negative m (parts removed) shifts the CoM the same way.
   `distribution` is accepted and ignored (depth_env_cfg's DEPTH_STUDENT_DR_EDGE sets it on payload events; the heavy
   share already reaches the documented limit). `heavy_share_on` (2026-11-17, the unified U_HEAVY_SLOPE): the heavy
-  share of the robots spawned on `heavy_terrain_names` instead of `heavy_share`."""
+  share of the robots spawned on `heavy_terrain_names` instead of `heavy_share`; `heavy_share_groups` ((names, share),
+  ...) the same for several groups of tiles (the unified U_HEAVY_STAIRS)."""
   del distribution
   asset: Entity = env.scene[asset_cfg.name]
   if env_ids is None:
@@ -198,6 +200,9 @@ def base_payload_point(
   if heavy_share_on is not None and heavy_terrain_names:
     on = spawned_on_sub_terrain(env, heavy_terrain_names)[env_ids]
     share = torch.where(on, torch.full_like(share, heavy_share_on), share)
+  for names, s in heavy_share_groups:
+    on = spawned_on_sub_terrain(env, tuple(names))[env_ids]
+    share = torch.where(on, torch.full_like(share, float(s)), share)
   heavy = torch.rand(n, device=dev) < share
   m = torch.where(
     heavy,

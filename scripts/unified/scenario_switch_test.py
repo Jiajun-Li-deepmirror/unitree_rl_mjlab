@@ -53,7 +53,8 @@ out["last_riser"] = {n: getattr(s, "last_riser_scale", None) for n, s in (gen.su
 pp = cfg.rewards["pose"].params if "pose" in cfg.rewards else {}
 out["pose"] = {"radius": pp.get("uneven_radius"), "feet": None if pp.get("uneven_feet_cfg") is None else list(pp["uneven_feet_cfg"].site_names)}
 bp = cfg.events["base_payload"].params
-out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ()))}
+out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ())),
+                  "groups": [[sorted(g), s] for g, s in bp.get("heavy_share_groups", ())]}
 print("JSON" + json.dumps(out))
 '''
 
@@ -186,5 +187,19 @@ check("error" not in lp and all(v is None for v in lp["last_riser"].values()), f
 for bad in ("0.1,1.0", "1.0,0.5"):
   x = probe(U_LAST_RISER=bad)
   check("error" in x and "U_LAST_RISER" in x["error"], f"U_LAST_RISER={bad} stops the build")
+print("(8) U_PAYLOAD_FULL0=1 alone (go2-home's P1):")
+pf0 = probe(U_PAYLOAD_FULL0="1")
+check("error" not in pf0 and '"fixed", True' in pf0["curriculum"]["u_payload"].replace("'", '"') and "fixed" not in b1["curriculum"]["u_payload"]
+      and same_but(b1, pf0, curriculum=("u_payload",)), f"the payload's full limit from the start (u_payload fixed), the rest as B1's ({pf0.get('error', '')[:100]})")
+print("(9) U_HEAVY_STAIRS (go2-home's P2):")
+check(b1["payload"]["groups"] == [], "B1: no tile groups")
+hs = probe(U_HEAVY_STAIRS="0.8")
+want = sorted(("stairs_down_narrow", "stairs_down_wide", "stairs_up_narrow", "stairs_up_wide", "walled_down", "walled_up"))
+check("error" not in hs and hs["payload"]["groups"] == [[want, 0.8]] and same_but(b1, hs, events=("base_payload",)),
+      f"0.8 on the six stairs tiles, the rest as B1's ({hs.get('payload') or hs.get('error')})")
+hb = probe(U_HEAVY_STAIRS="0.8", U_HEAVY_SLOPE="0.8")
+check("error" not in hb and hb["payload"]["on"] == 0.8 and hb["payload"]["groups"] == [[want, 0.8]], "beside U_HEAVY_SLOPE: both")
+x = probe(U_HEAVY_STAIRS="0.4")
+check("error" in x and "U_HEAVY_STAIRS" in x["error"], "U_HEAVY_STAIRS=0.4 stops the build")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

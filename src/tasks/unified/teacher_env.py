@@ -1050,6 +1050,13 @@ def _add_slopes(cfg: ManagerBasedRlEnvCfg, slope_max: float = SLOPE_MAX) -> dict
     ev = cfg.events["base_payload"]
     assert float(ev.params["heavy_share"]) < float(h) <= 1.0, f"U_HEAVY_SLOPE={h}: a share above {ev.params['heavy_share']}, up to 1"
     ev.params = {**ev.params, "heavy_share_on": float(h), "heavy_terrain_names": tuple(ucur.SLOPE_NAMES)}
+  # U_HEAVY_STAIRS=<share> (2026-11-17, go2-home's P2: the full-load wall-probe falls, 39 % at B1 s0's model_3000): the
+  # heavy payload class's share of the robots spawned on the stairs tiles (the walled flights and the open stairs)
+  h = os.environ.get("U_HEAVY_STAIRS")
+  if h:
+    ev = cfg.events["base_payload"]
+    assert float(ev.params["heavy_share"]) < float(h) <= 1.0, f"U_HEAVY_STAIRS={h}: a share above {ev.params['heavy_share']}, up to 1"
+    ev.params = {**ev.params, "heavy_share_groups": tuple(ev.params.get("heavy_share_groups", ())) + ((tuple(MAP3_STAIR_TERRAIN_NAMES), float(h)),)}
   return shares
 
 
