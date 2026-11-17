@@ -270,6 +270,12 @@ def main() -> int:
   else:
     T = int(math.ceil((SETTLE_S + a.seconds) / dt))
   stop_steps = int(round(STOP_S / dt))
+  import src.tasks.velocity.mdp as _mdp
+  from mjlab.managers.scene_entity_config import SceneEntityCfg as _SEC
+  from src.tasks.velocity.blind_env_cfg import FOOT_SITE_NAMES as _FSN
+  feet_cfg = _SEC("robot", site_names=_FSN)
+  feet_cfg.resolve(env.scene)
+  um = [0.0, 0.0, 0.0]   # pose's uneven mask in the scene's window: steps, the 0.45 m circle, the feet (U_POSE_UNEVEN)
   settle_steps = int(round(STOP_SETTLE_S / dt))
   for k in range(T):
     t = k * dt
@@ -317,6 +323,11 @@ def main() -> int:
       sp = robot.data.root_link_pos_w[:, :2] - p_stop
       moved = torch.where(settled & ~at_ref & ~fell & ~first, (sp * head).sum(dim=1).abs().maximum(moved), moved)
     att.step(terminated, first, window & ~first)
+    if a.scene != "flat_reverse":
+      wm = window & ~first
+      um[0] += float(wm.sum())
+      um[1] += float((wm & _mdp.uneven_terrain_mask(env, "terrain_scan", 0.45, 0.05)).sum())
+      um[2] += float((wm & _mdp.uneven_feet_mask(env, "terrain_scan", feet_cfg, 0.05)).sum())
     fell |= terminated
   if a.scene == "stairs_stop":
     stopped = stop_k >= 0
@@ -334,6 +345,9 @@ def main() -> int:
         f"scan {os.environ.get('U_SCAN', '(task default)')}")
   print(f"{info}; falls {att.falls} (their last {FALL_S:g} s are bad windows): causes {att.causes or '-'}")
   print(f"robot-steps: bad {att.bad_n:.0f}, good {att.good_n:.0f}")
+  if um[0]:
+    print(f"pose's uneven mask in the window ({um[0]:.0f} robot-steps): the 0.45 m circle {100 * um[1] / um[0]:.1f} %, "
+          f"the ground under the feet {100 * um[2] / um[0]:.1f} %")
   if att.bad_n == 0 or att.good_n == 0:
     print(f"no {'bad' if att.bad_n == 0 else 'good'} windows in this run: nothing to compare (more robots, or another scene)")
     if a.out:

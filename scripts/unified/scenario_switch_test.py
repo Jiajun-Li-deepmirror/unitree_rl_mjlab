@@ -48,6 +48,8 @@ out["gate"] = {k: {"max_riser": cfg.rewards[k].params.get("max_riser"), "min_gai
                    "cmd": cfg.rewards[k].params.get("min_lin_cmd"), "ahead": cfg.rewards[k].params.get("riser_ahead")}
                for k in ("wheel_riser_lift", "foothold_height_gain") if k in cfg.rewards}
 out["topflat"] = cfg.rewards["wheel_lift_flat_ahead"].weight if "wheel_lift_flat_ahead" in cfg.rewards else None
+pp = cfg.rewards["pose"].params if "pose" in cfg.rewards else {}
+out["pose"] = {"radius": pp.get("uneven_radius"), "feet": None if pp.get("uneven_feet_cfg") is None else list(pp["uneven_feet_cfg"].site_names)}
 bp = cfg.events["base_payload"].params
 out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ()))}
 print("JSON" + json.dumps(out))
@@ -158,5 +160,19 @@ check("wheel_lift_flat_ahead" in k1["curriculum"]["u_quality"] and "wheel_lift_f
       "it comes in with the stairs quality (u_quality: the M keys have not got it, so it rises from ~0 to its P weight along q)")
 k2 = probe(U_KEYS_ADD="topflat,topflat30")
 check("error" not in k2 and k2["topflat"] == -30.0, f"topflat30: at {k2.get('topflat')} (-30) ({k2.get('error', '')[:120]})")
+print("(6) U_POSE_UNEVEN (go2-home's L5):")
+check(b1["pose"]["feet"] is None, f"B1: pose's uneven mask by the circle ({b1['pose']})")
+pf = probe(U_POSE_UNEVEN="feet")
+check("error" not in pf and pf["pose"]["feet"] == ["FR", "FL", "RR", "RL"]
+      and same_but({**b1, "rewards": {k: v for k, v in b1["rewards"].items() if k != "pose"}},
+                   {**pf, "rewards": {k: v for k, v in pf["rewards"].items() if k != "pose"}})
+      and pf["rewards"]["pose"][0] == b1["rewards"]["pose"][0], f"feet: the mask from the four feet, the rest as B1's ({pf.get('pose') or pf.get('error')})")
+pr = probe(U_POSE_UNEVEN="r:0.25")
+check("error" not in pr and pr["pose"]["radius"] == 0.25 and pr["pose"]["feet"] is None, f"r:0.25: the circle at 0.25 m ({pr.get('pose')})")
+pc = probe(play=True, task="Unitree-Go2W-U-Teacher-Stairs", U_POSE_UNEVEN="feet")
+check("error" not in pc and pc["pose"]["feet"] == ["FR", "FL", "RR", "RL"], "the -Stairs check build too")
+for bad in ("r:0.6", "edge"):
+  x = probe(U_POSE_UNEVEN=bad)
+  check("error" in x and "U_POSE_UNEVEN" in x["error"], f"U_POSE_UNEVEN={bad} stops the build")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

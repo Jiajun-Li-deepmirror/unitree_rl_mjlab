@@ -181,6 +181,9 @@ def main() -> int:
       h = np.concatenate(attr["riser_h"])
       print(f"wheel_riser_lift's risers while it pays on the landing (top over the wheel's record, m; {len(h)} wheel-steps): "
             f"p10 {np.percentile(h, 10):.3f} p50 {np.percentile(h, 50):.3f} p90 {np.percentile(h, 90):.3f} max {h.max():.3f}")
+    for q, (s_n, s_c, s_f) in attr.get("uneven", {}).items():
+      print(f"pose's uneven mask on the {q} ({s_n:.0f} robot-steps): the 0.45 m circle {100 * s_c / max(s_n, 1):.1f} %, the "
+            f"ground under the feet {100 * s_f / max(s_n, 1):.1f} %")
     sp = attr.get("split", {})
     print(f"the landing's extra steps (item 28) by the take-off: all four standing on the landing {sp.get('top_level', 0)}, "
           f"a wheel / foot still below (the last-riser struggle) {sp.get('top_struggle', 0)}; item-21 lifts: level "
@@ -384,6 +387,14 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     gd_ph, gd_ph_n = torch.zeros(n, 4, T, device=dev), torch.zeros(n, 4, device=dev)
     st_lvl4 = torch.zeros(n, 4, dtype=torch.bool, device=dev)   # each foot: all four standing on the landing at its take-off
     split = {"top_level": 0, "top_struggle": 0, "lift_level": 0, "lift_struggle": 0}
+    # pose's uneven mask (U_POSE_UNEVEN, go2-home's L5): the share of the robot-steps judged uneven by the 0.45 m circle
+    # and by the ground under the feet, on the climb (phases 0 / 2) and on the landing (phases 3-6, every foot on it)
+    import src.tasks.velocity.mdp as _mdp
+    from mjlab.managers.scene_entity_config import SceneEntityCfg as _SEC
+    from src.tasks.velocity.blind_env_cfg import FOOT_SITE_NAMES as _FSN
+    feet_cfg = _SEC("robot", site_names=_FSN)
+    feet_cfg.resolve(env.scene)
+    um = {q: [0.0, 0.0, 0.0] for q in ("climb", "landing")}   # steps, circle uneven, feet uneven
     # the drive-up by the commanded speed (the guard ramps it down; pose's tolerance follows the command's regime):
     # bin 0 under SPEED_BIN, bin 1 at or above, both windows
     SPEED_BIN = 0.25
@@ -544,6 +555,12 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
         pay = (wrl.time_left > 0.0) & wrl.airborne & ((phase >= 3) & (phase <= 6) & alive & level4)[:, None]
         if bool(pay.any()):
           riser_h.append((wrl.riser_top - wrl.record_z)[pay].detach().cpu())
+      uc = _mdp.uneven_terrain_mask(env, "terrain_scan", 0.45, 0.05)
+      uf = _mdp.uneven_feet_mask(env, "terrain_scan", feet_cfg, 0.05)
+      for q, m in (("climb", ((phase == 0) | (phase == 2)) & alive), ("landing", (phase >= 3) & (phase <= 6) & alive & level4)):
+        um[q][0] += float(m.sum())
+        um[q][1] += float((m & uc).sum())
+        um[q][2] += float((m & uf).sum())
       cw = (((phase == 0) | (phase == 2)) & alive).float()
       cl_sum += (r * cw[:, None]).sum(dim=0)
       cl_n += float(cw.sum())
@@ -593,6 +610,10 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     attr["good_ph_n"] = attr.get("good_ph_n", 0.0) + np_(gd_ph_n[good].sum(dim=0))
     for k_, v_ in split.items():
       attr.setdefault("split", {})[k_] = attr.get("split", {}).get(k_, 0) + v_
+    for q, v_ in um.items():
+      acc = attr.setdefault("uneven", {}).setdefault(q, [0.0, 0.0, 0.0])
+      for j in range(3):
+        acc[j] += v_[j]
     attr["climb_n"] = attr.get("climb_n", 0.0) + cl_n
     if riser_h:
       attr.setdefault("riser_h", []).append(torch.cat(riser_h).numpy())

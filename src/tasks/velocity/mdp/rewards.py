@@ -1491,6 +1491,27 @@ def uneven_terrain_mask(
   return span > threshold
 
 
+def uneven_feet_mask(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  feet_cfg: SceneEntityCfg,
+  threshold: float = 0.05,
+) -> torch.Tensor:
+  """Per-env bool (2026-11-17, the unified U_POSE_UNEVEN=feet): the ground under the feet -- each foot's nearest
+  height-scan hit -- spans more than `threshold`. Feet on different treads of a flight or along a slope are uneven; four
+  feet on one level landing are even, however near its edge the base stands (uneven_terrain_mask's 0.45 m circle takes
+  the edge in)."""
+  sensor: RayCastSensor = env.scene[sensor_name]
+  data = sensor.data
+  asset: Entity = env.scene[feet_cfg.name]
+  feet = asset.data.site_pos_w[:, feet_cfg.site_ids, :2]  # [B, F, 2]
+  d = torch.norm(data.hit_pos_w[:, None, :, :2] - feet[:, :, None, :], dim=-1)  # [B, F, N]
+  d = torch.where((data.distances >= 0.0)[:, None, :], d, torch.inf)
+  idx = d.argmin(dim=-1)  # [B, F]
+  z = data.hit_pos_w[..., 2].gather(1, idx)  # [B, F]
+  return (z.amax(dim=1) - z.amin(dim=1)) > threshold
+
+
 def stair_speed_deficit(
   env: ManagerBasedRlEnv,
   command_name: str,
@@ -2634,7 +2655,10 @@ class variable_posture_terrain_aware(variable_posture):
     drive_max_ang_vel_z: float = 0.1,
     hold_term: str | None = None,
     drive_skip_march: bool = False,
+    uneven_feet_cfg: SceneEntityCfg | None = None,
   ) -> torch.Tensor:
+    """`uneven_feet_cfg` (2026-11-17, the unified U_POSE_UNEVEN=feet): the uneven mask from the ground under these feet
+    (uneven_feet_mask) instead of the `uneven_radius` circle around the base."""
     del std_standing, std_walking, std_running  # Unused.
 
     asset: Entity = env.scene[asset_cfg.name]
@@ -2642,7 +2666,10 @@ class variable_posture_terrain_aware(variable_posture):
     assert command is not None
 
     total_speed = _command_activity(env, command_name)
-    uneven = uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
+    if uneven_feet_cfg is not None:
+      uneven = uneven_feet_mask(env, sensor_name, uneven_feet_cfg, uneven_threshold)
+    else:
+      uneven = uneven_terrain_mask(env, sensor_name, uneven_radius, uneven_threshold)
 
     standing_mask = ((total_speed < walking_threshold) & ~uneven).float()
     walking_mask = (

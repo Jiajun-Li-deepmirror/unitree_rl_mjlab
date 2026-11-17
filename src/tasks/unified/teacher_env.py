@@ -2073,6 +2073,31 @@ def _riser_gate(cfg: ManagerBasedRlEnvCfg) -> None:
                 "min_lin_cmd": RISER_GATE_CMD}
 
 
+def _pose_uneven(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_POSE_UNEVEN (2026-11-17, go2-home's L5 for items 21 / 28: pose -- mdp.variable_posture_terrain_aware -- takes the
+  walking tolerance where the terrain within 0.45 m of the base spans > 5 cm, so a robot standing on a level landing next
+  to the last riser's edge has the loose tolerance and a step costs little pose: reward_attribution's landing scene,
+  pose 0.60 with every foot down vs 0.90 in the lifts at the same phase and commanded speed):
+    feet    the uneven mask from the ground under the four feet (mdp.uneven_feet_mask: each foot's nearest scan hit,
+            their span > 5 cm) -- feet on different treads or along a slope stay uneven, four on one landing are even;
+    r:<m>   the same circle with the radius <m> (0.1-0.45).
+  Every build (training and the checks)."""
+  v = os.environ.get("U_POSE_UNEVEN") or ""
+  if not v or "pose" not in cfg.rewards:
+    return
+  p = cfg.rewards["pose"]
+  if v == "feet":
+    from src.tasks.velocity.blind_env_cfg import FOOT_SITE_NAMES
+
+    p.params = {**p.params, "uneven_feet_cfg": SceneEntityCfg("robot", site_names=FOOT_SITE_NAMES)}
+  elif v.startswith("r:"):
+    r = float(v[2:])
+    assert 0.1 <= r <= 0.45, f"U_POSE_UNEVEN={v}: r:<m> in [0.1, 0.45]"
+    p.params = {**p.params, "uneven_radius": r}
+  else:
+    raise AssertionError(f"U_POSE_UNEVEN={v}: feet or r:<m>")
+
+
 def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None, terrain: str) -> ManagerBasedRlEnvCfg:
   cfg = base_env_cfg(robot, play=play, terrain=terrain)
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
@@ -2144,6 +2169,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     if robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
       cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
   _riser_gate(cfg)
+  _pose_uneven(cfg)
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:
