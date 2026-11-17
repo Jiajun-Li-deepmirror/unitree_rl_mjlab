@@ -2085,6 +2085,66 @@ def _riser_gate(cfg: ManagerBasedRlEnvCfg) -> None:
                 "min_lin_cmd": RISER_GATE_CMD}
 
 
+def _pose_even(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_POSE_EVEN=1 (2026-11-17, go2-home's R2): the pose term pays on even ground only (mdp.variable_posture_terrain_
+  aware even_only; the uneven mask as built, the 0.45 m circle or U_POSE_UNEVEN's). Every build with the term (the
+  reward only)."""
+  v = os.environ.get("U_POSE_EVEN") or ""
+  if not v:
+    return
+  assert v == "1", f"U_POSE_EVEN={v}: 1 or unset"
+  f = cfg.rewards["pose"].func if "pose" in cfg.rewards else None
+  if isinstance(f, type) and issubclass(f, mdp.variable_posture_terrain_aware):   # (rest.pose_lock_uneven's too)
+    cfg.rewards["pose"].params = {**cfg.rewards["pose"].params, "even_only": True}
+
+
+def _drop_terms(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
+  """U_DROP_TERMS=<term>[,...] (2026-11-17, go2-home's group removals R1 / R3 on the 68-term recipe, the user: "have we
+  tested removing B1's own terms?"): the named reward terms leave the training build. A term that a kept logging term
+  or a constraint item's measurement reads stays as a source at LOG_SOURCE_WEIGHT (as the minimal recipe keeps them);
+  the stairs quality (u_quality) no longer moves them, the constraint items no longer scale them (an item left
+  without costs is measured and logged only), and their reward ramps go. A name this build lacks is skipped (another
+  robot's build; the M-keys build that teacher_env.quality_diff reads lacks the P keys' terms, e.g. marchclear's
+  march_swing_clearance) and listed; scenario_switch_test checks the P build."""
+  names = [x.strip() for x in (os.environ.get("U_DROP_TERMS") or "").split(",") if x.strip()]
+  if not names:
+    return
+  found = [k for k in names if k in cfg.rewards]
+  if not found:
+    return
+  missing = [k for k in names if k not in cfg.rewards]
+  if missing:
+    print(f"[unified] U_DROP_TERMS: not in this build (skipped): {missing}")
+  drop = set(found)
+  kept = set(cfg.rewards) - drop
+  logs = {k for k in kept if abs(cfg.rewards[k].weight) <= LOG_WEIGHT}
+  sources = _log_sources(cfg, logs) & drop
+  cons = cfg.curriculum.get("u_constraints")
+  items = cons.params["items"] if cons is not None else []
+  for c in items:
+    sources |= _item_sources(c, set(cfg.rewards)) & drop
+  for k in drop:
+    if k in sources:
+      cfg.rewards[k].weight = LOG_SOURCE_WEIGHT
+    else:
+      del cfg.rewards[k]
+  q = cfg.curriculum.get("u_quality")
+  if q is not None:
+    q.params["weights"] = {k: v for k, v in q.params["weights"].items() if k not in drop}
+    q.params["params"] = {k: v for k, v in q.params["params"].items() if k not in drop}
+  for c in items:
+    if any(t in drop for t in c["terms"]):
+      c["terms"] = [t for t in c["terms"] if t not in drop]
+      if isinstance(c.get("start"), dict):
+        c["start"] = {t: w for t, w in c["start"].items() if t not in drop}
+      if not c["terms"]:
+        c["enforce"] = False
+  if "ramps" in cfg.curriculum:
+    ramps = cfg.curriculum["ramps"].params["ramps"]
+    cfg.curriculum["ramps"].params["ramps"] = [r for r in ramps if not (r.get("kind", "").startswith("reward")
+                                                                        and r.get("name") in drop)]
+
+
 def _wad_near(cfg: ManagerBasedRlEnvCfg) -> None:
   """U_WAD_NEAR=<x> (2026-11-17, go2-home's W3 for the stalls at the flights' ends): wheel_air_drivable's near_scale,
   the factor on a lifted wheel that stands on even ground (its own 0.236 m ahead, mdp.wheel_uneven_mask) while the
@@ -2209,6 +2269,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
         cfg.curriculum["u_progress"].params["q_back"] = float(os.environ["U_Q_HEALTH"])
       _round_switches(cfg, robot)
       _min_recipe(cfg, robot)
+      _drop_terms(cfg, robot)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":
@@ -2221,6 +2282,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
   _riser_gate(cfg)
   _pose_uneven(cfg)
   _wad_near(cfg)
+  _pose_even(cfg)
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:

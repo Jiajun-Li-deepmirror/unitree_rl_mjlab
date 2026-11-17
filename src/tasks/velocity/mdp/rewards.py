@@ -2656,9 +2656,13 @@ class variable_posture_terrain_aware(variable_posture):
     hold_term: str | None = None,
     drive_skip_march: bool = False,
     uneven_feet_cfg: SceneEntityCfg | None = None,
+    even_only: bool = False,
   ) -> torch.Tensor:
     """`uneven_feet_cfg` (2026-11-17, the unified U_POSE_UNEVEN=feet): the uneven mask from the ground under these feet
-    (uneven_feet_mask) instead of the `uneven_radius` circle around the base."""
+    (uneven_feet_mask) instead of the `uneven_radius` circle around the base. `even_only` (2026-11-17, the unified
+    U_POSE_EVEN=1): no pay where the mask says uneven -- on the flights and at their ends the pose earns nothing, so a
+    robot that stops at a riser keeps no posture pay (B1 s0 at 5900 on the 15-18 cm climbs: pose +0.25 / +0.29 per
+    step more while stalled than while climbing, unloaded / 8 kg)."""
     del std_standing, std_walking, std_running  # Unused.
 
     asset: Entity = env.scene[asset_cfg.name]
@@ -2718,7 +2722,10 @@ class variable_posture_terrain_aware(variable_posture):
       desired_joint_pos = torch.where(locked.unsqueeze(1), self.lock_pos, desired_joint_pos)
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
-    return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+    out = torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+    if even_only:
+      out = out * (~uneven).float()
+    return out
 
 
 class hip_torque_sq:

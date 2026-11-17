@@ -56,6 +56,11 @@ wd = cfg.rewards.get("wheel_air_drivable")
 out["wad_near"] = None if wd is None else wd.params.get("near_scale")
 cons = cfg.curriculum.get("u_constraints")
 out["caps"] = {i["name"]: i["max_scale"] for i in cons.params["items"]} if cons is not None else {}
+out["item_terms"] = {i["name"]: list(i["terms"]) for i in cons.params["items"]} if cons is not None else {}
+out["enforce"] = {i["name"]: i.get("enforce", True) for i in cons.params["items"]} if cons is not None else {}
+qt = cfg.curriculum.get("u_quality")
+out["q_weights"] = sorted(qt.params["weights"]) if qt is not None else []
+out["ramp_names"] = sorted(r.get("name", "") for r in cfg.curriculum["ramps"].params["ramps"]) if "ramps" in cfg.curriculum else []
 bp = cfg.events["base_payload"].params
 out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ())),
                   "groups": [[sorted(g), s] for g, s in bp.get("heavy_share_groups", ())]}
@@ -218,5 +223,41 @@ wc = probe(U_ITEM_CAP="wheels_down:1.34")
 check("error" not in wc and wc["caps"]["wheels_down"] == 1.34 and {k: v for k, v in wc["caps"].items() if k != "wheels_down"}
       == {k: v for k, v in b1["caps"].items() if k != "wheels_down"},
       f"wheels_down's cap 1.34, every other item's as B1's ({wc.get('caps', {}).get('wheels_down', wc.get('error', '')[:100])})")
+def dropped_ok(x, names):
+  """The named terms gone or at the source weight 1e-9, out of u_quality, the items and the ramps; every other reward
+  term, its weight and parameters as B1's."""
+  gone = all(n not in x["rewards"] or x["rewards"][n][0] == 1e-9 for n in names)
+  no_q = not set(names) & set(x["q_weights"])
+  no_items = not any(set(names) & set(v) for v in x["item_terms"].values())
+  no_ramps = not set(names) & set(x["ramp_names"])
+  rest = {k: v for k, v in x["rewards"].items() if k not in names} == {k: v for k, v in b1["rewards"].items() if k not in names}
+  return gone and no_q and no_items and no_ramps and rest
+
+
+print("(12) U_DROP_TERMS, R1 (the six u_heavy_* duplicates):")
+R1 = ["u_heavy_creep", "u_heavy_march", "u_heavy_march_hip", "u_heavy_side_drift", "u_heavy_straight_drift", "u_heavy_spin"]
+check(all(n in b1["rewards"] for n in R1), "B1 has the six: " + ", ".join(f"{n} {b1['rewards'][n][0]:g}" for n in R1 if n in b1["rewards"]))
+r1 = probe(U_DROP_TERMS=",".join(R1))
+check("error" not in r1 and dropped_ok(r1, R1),
+      "dropped (" + (", ".join(f"{n} {'gone' if n not in r1['rewards'] else 'source'}" for n in R1) if "error" not in r1 else r1["error"][-150:])
+      + f"), out of u_quality / items / ramps, the rest as B1's; items left without costs: "
+      + (str(sorted(k for k, v in r1["enforce"].items() if not v and b1["enforce"].get(k, True))) if "error" not in r1 else ""))
+print("(13) U_DROP_TERMS, R3 (the march group):")
+R3 = ["march_position_hold", "march_hip_default", "march_swing_clearance"]
+r3 = probe(U_DROP_TERMS=",".join(R3))
+check("error" not in r3 and dropped_ok(r3, R3),
+      "dropped (" + (", ".join(f"{n} {'gone' if n not in r3['rewards'] else 'source'}" for n in R3) if "error" not in r3 else r3["error"][-150:])
+      + "), out of u_quality / items / ramps, the rest as B1's; items left without costs: "
+      + (str(sorted(k for k, v in r3["enforce"].items() if not v and b1["enforce"].get(k, True))) if "error" not in r3 else ""))
+x = probe(U_DROP_TERMS="u_heavy_spin,no_such_term")
+check("error" not in x and "u_heavy_spin" not in x["rewards"], "a name the build lacks is skipped, the others dropped")
+xp = probe(play=True, U_DROP_TERMS=",".join(R1))
+bp_ = probe(play=True)
+check("error" not in xp and xp["rewards"] == bp_["rewards"], "the play / check build unchanged")
+print("(14) U_POSE_EVEN=1 (go2-home's R2):")
+pe = probe(U_POSE_EVEN="1")
+check("error" not in pe and "('even_only', True)" in pe["rewards"]["pose"][1] and "even_only" not in b1["rewards"]["pose"][1]
+      and {k: v for k, v in pe["rewards"].items() if k != "pose"} == {k: v for k, v in b1["rewards"].items() if k != "pose"},
+      f"pose pays on even ground only, every other term as B1's ({pe.get('error', '')[-120:]})")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
