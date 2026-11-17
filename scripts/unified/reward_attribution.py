@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""reward_attribution.py --scene SCENE --task <play task> <checkpoint> (go2-depth 2026-11-17, go2-home's round-1
+diagnostic): which reward terms pay for a failing behaviour. Some of the 68 terms may push the policy towards what an
+acceptance item fails on; this probe runs one test scene, reads every reward term's per-step value per robot (the
+reward manager's _step_reward: raw value x weight, the rate before dt) and the termination terms, and compares the
+terms over the "bad" windows (where the failure happens) with the "good" ones (the same phase in the robots that pass).
+
+Scenes (each robot in one cell; payload from U_PAYLOAD, scan mode from U_SCAN, as the other unified tests):
+  stairs_stop   the stair tiles of eval_stairs / descent_probe (4 bands x up / down x narrow / wide, spawned square to
+                the steps), forward VX from the tile centre; at STOP_D of Chebyshev distance (mid-flight) the command
+                goes to zero for STOP_S. Bad: a robot that moves more than SLIDE_M along its heading after the first
+                STOP_SETTLE_S of the stop (the braking; slide-back on the way up, creep on the way down) or falls in
+                the stop; good: the robots that hold. The window: the stop after STOP_SETTLE_S. -Stairs task.
+  slope         slope_rough_test's 15 deg ramps (up and down), walked at VX. Bad: the FALL_S before a fall; good: the
+                robots that never fall, on the ramp (the 6 m run). -Stairs task.
+  flat_reverse  flat ground, the command (-VX, 0, 0) (default 1.0: w27d's full-load fall case) after a 1 s stand,
+                slewed at 2 m/s^2, for SECONDS. Bad: the FALL_S before a fall; good: the robots that never fall, from
+                2 s on. -Flat task.
+  (The wall probe's landing: not yet -- its guard drive-up lives in map3_stairs_probe.py.)
+Falls in every scene also count as bad windows (the FALL_S before the termination), with their termination terms.
+
+Per term: the mean over the good and over the bad robot-steps, bad - good, each window's share of the sum of the
+terms' absolute means, and the push: bad - good > 0 means the term pays more (or costs less) while the robot fails --
+it rewards the failure; < 0 -- it punishes it. Sorted by bad - good, highest first. --out FILE also writes the table
+as JSON. Judges nothing.
+
+  python jobs/unified/u_eval.py scripts/unified/reward_attribution.py --scene stairs_stop \\
+      --task Unitree-Go2W-U-Teacher-Stairs logs/avg/<run>_avg4/model_3000.pt
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "go2_blind"))
+sys.path.insert(0, str(ROOT / "scripts" / "unified"))
+os.environ.setdefault("UNIFIED_TASKS", "1")
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+
+NUM_ROWS = 4
+STOP_D = 2.2       # m of Chebyshev distance from the tile centre: mid-flight (the flight runs 1.0-3.6 m)
+STOP_S = 3.0
+STOP_SETTLE_S = 1.0   # the braking from VX: the stop window and the movement are measured after it
+SLIDE_M = 0.05
+FALL_S = 1.0
+LIN_ACCEL = 2.0
+SETTLE_S = 1.0
+
+
+class Attribution:
+  """Per-term sums over bad and good robot-steps; a ring buffer of each robot's last FALL_S of step rewards for the
+  fall windows; per-robot window sums for the scenes whose verdict comes at the end."""
+
+  def __init__(self, env, dt: float):
+    self.rm = env.reward_manager
+    self.tm = env.termination_manager
+    self.names = list(self.rm.active_terms)
+    n, T, dev = env.num_envs, len(self.names), env.device
+    self.W = max(1, int(round(FALL_S / dt)))
+    self.ring = torch.zeros(n, self.W, T, device=dev)
+    self.filled = torch.zeros(n, dtype=torch.long, device=dev)
+    self.k = 0
+    self.bad = torch.zeros(T, device=dev)
+    self.bad_n = 0.0
+    self.good = torch.zeros(T, device=dev)
+    self.good_n = 0.0
+    self.win = torch.zeros(n, T, device=dev)     # per-robot window sums (the scene decides good / bad at the end)
+    self.win_n = torch.zeros(n, device=dev)
+    self.causes: dict[str, int] = {}
+    self.falls = 0
+
+  def step(self, terminated: torch.Tensor, first: torch.Tensor, window: torch.Tensor) -> None:
+    """After env.step: the step's rewards into the ring; a robot's first termination (`first`) adds its last FALL_S
+    to the bad sums; `window` robots add this step to their window sums."""
+    r = self.rm._step_reward.detach()
+    self.ring[:, self.k % self.W] = r
+    self.k += 1
+    self.filled = torch.clamp(self.filled + 1, max=self.W)
+    ids = first.nonzero(as_tuple=False).flatten()
+    if len(ids):
+      self.falls += len(ids)
+      for i in ids.tolist():
+        m = int(self.filled[i])
+        self.bad += self.ring[i].sum(dim=0)   # (rows not yet written are 0)
+        self.bad_n += m
+      for nm in self.tm.active_terms:
+        if self.tm.get_term_cfg(nm).time_out:
+          continue
+        c = int(self.tm.get_term(nm)[ids].sum())
+        if c:
+          self.causes[nm] = self.causes.get(nm, 0) + c
+    w = window.float()
+    self.win += r * w[:, None]
+    self.win_n += w
+
+  def add_windows(self, bad: torch.Tensor, good: torch.Tensor) -> None:
+    """The per-robot window sums into the bad / good sums (bad, good: robot masks)."""
+    self.bad += self.win[bad].sum(dim=0)
+    self.bad_n += float(self.win_n[bad].sum())
+    self.good += self.win[good].sum(dim=0)
+    self.good_n += float(self.win_n[good].sum())
+
+  def table(self) -> list[dict]:
+    g = (self.good / max(self.good_n, 1.0)).cpu().numpy()
+    b = (self.bad / max(self.bad_n, 1.0)).cpu().numpy()
+    gs, bs = np.abs(g).sum() or 1.0, np.abs(b).sum() or 1.0
+    rows = []
+    for i, nm in enumerate(self.names):
+      w = float(self.rm.get_term_cfg(nm).weight)
+      if w == 0.0 or (g[i] == 0.0 and b[i] == 0.0):   # (a term that never acted in either window)
+        continue
+      d = float(b[i] - g[i])
+      rows.append({"term": nm, "weight": w, "good": float(g[i]), "bad": float(b[i]), "bad_minus_good": d,
+                   "share_good": float(abs(g[i]) / gs), "share_bad": float(abs(b[i]) / bs),
+                   "push": "rewards the failure" if d > 0 else "punishes it" if d < 0 else "-"})
+    rows.sort(key=lambda x: -x["bad_minus_good"])
+    return rows
+
+
+def build(a):
+  from mjlab.envs import ManagerBasedRlEnv
+  from mjlab.rl import RslRlVecEnvWrapper
+  from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+
+  import mjlab.tasks  # noqa: F401
+  import src.tasks  # noqa: F401
+
+  cfg = load_env_cfg(a.task, play=True)
+  cfg.seed = a.seed
+  cfg.events.pop("push_robot", None)
+  extra = {}
+  if a.scene == "stairs_stop":
+    from src.tasks.velocity.blind_env_cfg import STAIR_TERRAIN_NAMES
+
+    gen = cfg.scene.terrain.terrain_generator
+    gen.sub_terrains = {k: v for k, v in gen.sub_terrains.items() if k in STAIR_TERRAIN_NAMES}
+    for v in gen.sub_terrains.values():
+      v.proportion = 1.0
+    gen.num_rows = NUM_ROWS
+    gen.num_cols = len(gen.sub_terrains) * 2
+    cfg.events.pop("randomize_terrain", None)
+    cfg.events["reset_base"].params["stair_yaw_noise"] = 1e-6
+    cfg.events["reset_base"].params["narrow_yaw_noise"] = 1e-6
+    n = gen.num_rows * gen.num_cols * a.envs_per_cell
+  elif a.scene == "slope":
+    import slope_rough_test as srt
+
+    gen = cfg.scene.terrain.terrain_generator
+    gen.size = (srt.TILE, srt.TILE)
+    gen.curriculum = True
+    gen.sub_terrains = {"slope15_up": srt.RampTerrainCfg(proportion=1.0, down=False),
+                        "slope15_down": srt.RampTerrainCfg(proportion=1.0, down=True)}
+    gen.num_rows, gen.num_cols = 2, 2
+    cfg.events.pop("randomize_terrain", None)
+    rb = cfg.events["reset_base"]
+    rb.params["pose_range"] = {"x": (-0.1, 0.1), "y": (-1.0, 1.0), "z": (0.0, 0.0), "yaw": (0.0, 0.0)}
+    rb.params["velocity_range"] = {}
+    n = 2 * a.envs_per_cell
+    extra["srt"] = srt
+  else:   # flat_reverse
+    gen = cfg.scene.terrain.terrain_generator
+    if gen is not None:
+      gen.size = (120.0, 120.0)
+      gen.num_rows = gen.num_cols = 1
+    n = a.envs_per_cell
+  cfg.scene.num_envs = n
+  cfg.episode_length_s = 1e6
+  agent = load_rl_cfg(a.task)
+  env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
+  venv = RslRlVecEnvWrapper(env, clip_actions=agent.clip_actions)
+  runner = load_runner_cls(a.task)(venv, asdict(agent), device="cuda:0")
+  runner.load(a.checkpoint, load_cfg={"actor": True}, strict=True, map_location="cuda:0")
+  return cfg, env, venv, runner.get_inference_policy(device="cuda:0"), extra
+
+
+def main() -> int:
+  ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+  ap.add_argument("--scene", required=True, choices=("stairs_stop", "slope", "flat_reverse"))
+  ap.add_argument("--task", required=True)
+  ap.add_argument("checkpoint")
+  ap.add_argument("--envs-per-cell", type=int, default=None,
+                  help="robots per tile (stairs_stop: 16 per band x direction x tread; slope: 128 per ramp; flat: 256)")
+  ap.add_argument("--vx", type=float, default=None, help="m/s (stairs_stop 0.5, slope 1.0, flat_reverse 1.0)")
+  ap.add_argument("--seconds", type=float, default=10.0, help="flat_reverse: the reverse's length")
+  ap.add_argument("--seed", type=int, default=0)
+  ap.add_argument("--top", type=int, default=20, help="table rows printed (every term in --out)")
+  ap.add_argument("--out", default=None, help="the table as JSON")
+  a = ap.parse_args()
+  a.envs_per_cell = a.envs_per_cell or {"stairs_stop": 16, "slope": 128, "flat_reverse": 256}[a.scene]
+  a.vx = a.vx or {"stairs_stop": 0.5, "slope": 1.0, "flat_reverse": 1.0}[a.scene]
+  cfg, env, venv, policy, extra = build(a)
+  dev, dt, n = env.device, env.step_dt, env.num_envs
+  robot = env.scene["robot"]
+  terrain = env.scene.terrain
+  cmd = env.command_manager.get_term("twist")
+  import eval_map3 as em
+
+  em.set_command(env, 0.0, 0.0, 0.0)
+  att = Attribution(env, dt)
+  info = ""
+  if a.scene == "stairs_stop":
+    gen = cfg.scene.terrain.terrain_generator
+    names = list(gen.sub_terrains.keys())
+    cum = np.cumsum(np.full(len(names), 1.0 / len(names)))
+    col = [names[np.min(np.where(c / gen.num_cols + 0.001 < cum)[0])] for c in range(gen.num_cols)]
+    tile = torch.arange(n, device=dev) // a.envs_per_cell
+    levels, types = tile % gen.num_rows, tile // gen.num_rows
+    up = torch.tensor(["down" not in col[t] for t in types.cpu().numpy()], device=dev)
+    terrain.terrain_levels[:] = levels
+    terrain.terrain_types[:] = types
+    terrain.env_origins[:] = terrain.terrain_origins[levels, types]
+  elif a.scene == "slope":
+    gen = cfg.scene.terrain.terrain_generator
+    names = list(gen.sub_terrains.keys())
+    cum = np.cumsum(np.full(len(names), 1.0 / len(names)))
+    col_of = {names[int(np.min(np.where(c / gen.num_cols + 0.001 < cum)[0]))]: c for c in range(gen.num_cols)}
+    down = torch.arange(n, device=dev) >= a.envs_per_cell
+    types = torch.where(down, torch.full((n,), col_of["slope15_down"], device=dev), torch.full((n,), col_of["slope15_up"], device=dev))
+    levels = torch.arange(n, device=dev) % gen.num_rows
+    terrain.terrain_levels[:] = levels
+    terrain.terrain_types[:] = types
+    terrain.env_origins[:] = terrain.terrain_origins[levels, types]
+  env.reset()
+  obs = venv.get_observations()
+  yaw0 = robot.data.heading_w.clone()
+  head = torch.stack((torch.cos(yaw0), torch.sin(yaw0)), dim=1)
+  p0 = robot.data.root_link_pos_w[:, :2].clone()
+  fell = torch.zeros(n, dtype=torch.bool, device=dev)
+  cur = torch.zeros(n, device=dev)
+  if a.scene == "stairs_stop":
+    stop_k = torch.full((n,), -1, dtype=torch.long, device=dev)   # the step the stop began
+    p_stop = torch.zeros(n, 2, device=dev)
+    moved = torch.zeros(n, device=dev)
+    fell_stop = torch.zeros(n, dtype=torch.bool, device=dev)
+    T = int(math.ceil((SETTLE_S + 3.6 / a.vx * 2.0 + STOP_S) / dt))
+  elif a.scene == "slope":
+    srt = extra["srt"]
+    T = int(math.ceil((SETTLE_S + srt.JUDGED / a.vx * 1.5 + 2.0) / dt))
+  else:
+    T = int(math.ceil((SETTLE_S + a.seconds) / dt))
+  stop_steps = int(round(STOP_S / dt))
+  settle_steps = int(round(STOP_SETTLE_S / dt))
+  for k in range(T):
+    t = k * dt
+    rel = robot.data.root_link_pos_w[:, :2] - p0
+    along = (rel * head).sum(dim=1)
+    if a.scene == "stairs_stop":
+      d = (robot.data.root_link_pos_w[:, :2] - terrain.env_origins[:, :2]).abs().max(dim=1).values
+      start = (stop_k < 0) & (d >= STOP_D) & ~fell
+      stop_k = torch.where(start, torch.full_like(stop_k, k), stop_k)
+      p_stop = torch.where(start[:, None], robot.data.root_link_pos_w[:, :2], p_stop)
+      stopping = (stop_k >= 0) & (k - stop_k < stop_steps)
+      settled = stopping & (k - stop_k >= settle_steps)
+      at_ref = (stop_k >= 0) & (k - stop_k == settle_steps)
+      p_stop = torch.where(at_ref[:, None], robot.data.root_link_pos_w[:, :2], p_stop)   # the reference after the braking
+      going = (t >= SETTLE_S) & (stop_k < 0) & ~fell
+      want = torch.where(going, torch.full((n,), a.vx, device=dev), torch.zeros(n, device=dev))
+      vy = torch.zeros(n, device=dev)
+      window = settled & ~fell
+    elif a.scene == "slope":
+      going = (t >= SETTLE_S) & (along < srt.JUDGED) & ~fell
+      want = torch.where(going, torch.full((n,), a.vx, device=dev), torch.zeros(n, device=dev))
+      lateral = -head[:, 1] * rel[:, 0] + head[:, 0] * rel[:, 1]
+      vy = torch.where(going, (-lateral).clamp(-0.2, 0.2), torch.zeros(n, device=dev))
+      on_ramp = (along >= srt.START / 2) & (along <= srt.START / 2 + srt.RUN)
+      window = going & on_ramp
+    else:
+      going = (t >= SETTLE_S) & ~fell
+      want = torch.where(going, torch.full((n,), -a.vx, device=dev), torch.zeros(n, device=dev))
+      vy = torch.zeros(n, device=dev)
+      window = (t >= SETTLE_S + 1.0) & ~fell
+    step_v = LIN_ACCEL * dt
+    cur = torch.where(want == 0, want, cur + (want - cur).clamp(-step_v, step_v))
+    yaw = robot.data.heading_w
+    herr = torch.atan2(torch.sin(yaw0 - yaw), torch.cos(yaw0 - yaw))
+    cmd.vel_command_b[:, 0] = cur
+    cmd.vel_command_b[:, 1] = vy
+    cmd.vel_command_b[:, 2] = torch.where(going, herr.clamp(-0.5, 0.5), torch.zeros(n, device=dev))
+    cmd.time_left[:] = 1e9
+    with torch.no_grad():
+      obs, _, dones, extras = venv.step(policy(obs))
+    terminated = dones.bool() & ~extras.get("time_outs", torch.zeros_like(dones)).bool()
+    first = terminated & ~fell
+    if a.scene == "stairs_stop":
+      fell_stop |= first & stopping
+      sp = robot.data.root_link_pos_w[:, :2] - p_stop
+      moved = torch.where(settled & ~at_ref & ~fell & ~first, (sp * head).sum(dim=1).abs().maximum(moved), moved)
+    att.step(terminated, first, window & ~first)
+    fell |= terminated
+  if a.scene == "stairs_stop":
+    stopped = stop_k >= 0
+    bad = stopped & ((moved > SLIDE_M) | fell_stop)
+    good = stopped & ~bad & ~fell
+    att.add_windows(bad, good)
+    info = (f"stops {int(stopped.sum())} of {n} (up {int((stopped & up).sum())}, down {int((stopped & ~up).sum())}); bad "
+            f"{int(bad.sum())} (moved > {SLIDE_M} m after {STOP_SETTLE_S:g} s: {int((stopped & (moved > SLIDE_M)).sum())}, fell in the stop: "
+            f"{int(fell_stop.sum())}; up {int((bad & up).sum())}, down {int((bad & ~up).sum())}); good {int(good.sum())}")
+  else:
+    att.add_windows(torch.zeros(n, dtype=torch.bool, device=dev), ~fell)
+    info = f"robots {n}; never fell {int((~fell).sum())}"
+  rows = att.table()
+  print(f"checkpoint {a.checkpoint}\ntask {a.task}, scene {a.scene}, vx {a.vx}, payload {os.environ.get('U_PAYLOAD', '(task default)')}, "
+        f"scan {os.environ.get('U_SCAN', '(task default)')}")
+  print(f"{info}; falls {att.falls} (their last {FALL_S:g} s are bad windows): causes {att.causes or '-'}")
+  print(f"robot-steps: bad {att.bad_n:.0f}, good {att.good_n:.0f}")
+  if att.bad_n == 0 or att.good_n == 0:
+    print(f"no {'bad' if att.bad_n == 0 else 'good'} windows in this run: nothing to compare (more robots, or another scene)")
+    if a.out:
+      Path(a.out).write_text(json.dumps({"scene": a.scene, "checkpoint": a.checkpoint, "info": info, "falls": att.falls,
+                                         "causes": att.causes, "bad_n": att.bad_n, "good_n": att.good_n, "rows": []}, indent=1))
+    env.close()
+    return 0
+  print(f"{'term':34s} {'weight':>9s} {'good':>9s} {'bad':>9s} {'bad-good':>9s} {'sh.good':>7s} {'sh.bad':>7s}  push")
+  for r in rows[: a.top]:
+    print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
+          f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
+  if len(rows) > a.top:
+    print(f"... {len(rows) - a.top} more (most punishing last):")
+    for r in rows[-5:]:
+      print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
+            f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
+  if a.out:
+    Path(a.out).write_text(json.dumps({"scene": a.scene, "checkpoint": a.checkpoint, "info": info, "falls": att.falls,
+                                       "causes": att.causes, "bad_n": att.bad_n, "good_n": att.good_n, "rows": rows}, indent=1))
+  env.close()
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())
