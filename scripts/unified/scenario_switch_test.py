@@ -44,6 +44,7 @@ out = {
 }
 sp = cfg.curriculum.get("u_stairs_share")
 out["shares"] = dict(sp.params.get("other_shares") or {}) if sp else None
+out["stair_shares"] = dict(sp.params.get("stair_shares") or {}) if sp else None
 out["gate"] = {k: {"max_riser": cfg.rewards[k].params.get("max_riser"), "min_gain": cfg.rewards[k].params.get("min_gain"),
                    "cmd": cfg.rewards[k].params.get("min_lin_cmd"), "ahead": cfg.rewards[k].params.get("riser_ahead")}
                for k in ("wheel_riser_lift", "foothold_height_gain") if k in cfg.rewards}
@@ -259,5 +260,23 @@ pe = probe(U_POSE_EVEN="1")
 check("error" not in pe and "('even_only', True)" in pe["rewards"]["pose"][1] and "even_only" not in b1["rewards"]["pose"][1]
       and {k: v for k, v in pe["rewards"].items() if k != "pose"} == {k: v for k, v in b1["rewards"].items() if k != "pose"},
       f"pose pays on even ground only, every other term as B1's ({pe.get('error', '')[-120:]})")
+print("(15) U_STAIR_TILE_SHARE (go2-home's P3, w27d's walled_up 0.30):")
+ts = probe(U_STAIR_TILE_SHARE="walled_up:0.6")
+check("error" not in ts and ts["stair_shares"] == {"walled_up": 0.6} and b1["stair_shares"] == {}
+      and same_but(b1, ts, curriculum=("u_stairs_share",)), f"walled_up 0.6 of the stairs episodes, the rest as B1's ({ts.get('stair_shares', ts.get('error', '')[-120:])})")
+for bad in ("flat:0.5", "walled_up:1.2", "walled_up:0.7,walled_down:0.5"):
+  x = probe(U_STAIR_TILE_SHARE=bad)
+  check("error" in x and "U_STAIR_TILE_SHARE" in x["error"], f"U_STAIR_TILE_SHARE={bad} stops the build")
+import torch
+sys.path.insert(0, os.getcwd())
+from src.tasks.unified.curriculum import share_column_weights
+# map3's tiles over 20 columns (blind_env_cfg: stairs 0.65, walled_up 0.20 -> 4 columns; the other stairs 9; other ground 7)
+stair = torch.tensor([True] * 13 + [False] * 7)
+wu = torch.zeros(20, dtype=torch.bool); wu[9:13] = True
+w = share_column_weights({"walled_up": wu}, stair, {"walled_up": 0.6})
+check(abs(float(w[wu].sum()) - 0.6) < 1e-6 and abs(float(w[stair & ~wu].sum()) - 0.4) < 1e-6 and float(w[~stair].sum()) == 0.0
+      and torch.allclose(w[stair & ~wu], w[0].expand(9)),
+      f"weights: walled_up {float(w[wu].sum()):.2f} (each of its 4 columns {float(w[9]):.3f}), the other 9 stairs columns "
+      f"{float(w[stair & ~wu].sum()):.2f} alike, the other ground 0")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

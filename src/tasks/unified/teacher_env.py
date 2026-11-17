@@ -2145,6 +2145,24 @@ def _drop_terms(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
                                                                         and r.get("name") in drop)]
 
 
+def _stair_tile_share(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_STAIR_TILE_SHARE=<tile>:<share>[,...] (2026-11-17, go2-home's P3, w27d's tile mix: its lineage ran walled_up on
+  0.30 of its tiles, the unified draw gives walled_up 4 of 13 stairs columns -- 0.15 of the episodes at the stairs
+  share 0.5): each named stairs tile gets its share of the stairs episodes (curriculum.progress_stairs_share
+  stair_shares; walled_up:0.6 -> 0.30 of all at the share 0.5), the other stairs tiles the rest by column. The
+  training builds (the stairs share curriculum)."""
+  v = os.environ.get("U_STAIR_TILE_SHARE") or ""
+  if not v or "u_stairs_share" not in cfg.curriculum:
+    return
+  shares = {}
+  for kv in v.split(","):
+    k, _, s = kv.strip().partition(":")
+    assert k in MAP3_STAIR_TERRAIN_NAMES and s, f"U_STAIR_TILE_SHARE={v}: <stairs tile>:<share>, tiles {MAP3_STAIR_TERRAIN_NAMES}"
+    shares[k] = float(s)
+  assert all(0.0 < s <= 1.0 for s in shares.values()) and sum(shares.values()) <= 1.0, f"U_STAIR_TILE_SHARE={v}: shares in (0, 1], sum <= 1"
+  cfg.curriculum["u_stairs_share"].params["stair_shares"] = shares
+
+
 def _wad_near(cfg: ManagerBasedRlEnvCfg) -> None:
   """U_WAD_NEAR=<x> (2026-11-17, go2-home's W3 for the stalls at the flights' ends): wheel_air_drivable's near_scale,
   the factor on a lifted wheel that stands on even ground (its own 0.236 m ahead, mdp.wheel_uneven_mask) while the
@@ -2270,6 +2288,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
       _round_switches(cfg, robot)
       _min_recipe(cfg, robot)
       _drop_terms(cfg, robot)
+      _stair_tile_share(cfg)
   # else: a check's terrain ("flat", "stairs"; the blind builder leaves out the training schedule there): the
   # observations, actions and physics are the training ones, the rewards and curriculum are not used
   if terrain != "map3":

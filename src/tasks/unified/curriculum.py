@@ -291,6 +291,42 @@ def other_column_weights(env: ManagerBasedRlEnv, shares: dict[str, float], stair
   return w
 
 
+def share_column_weights(masks: dict[str, torch.Tensor], stair_mask: torch.Tensor, shares: dict[str, float]) -> torch.Tensor:
+  """(columns,) each stairs column's chance for an episode on the stairs: each named stairs tile (`masks`: its columns)
+  its share split evenly over its columns, the unnamed stairs columns the rest evenly (the plain draw's per-column
+  chance among them); 0 off the stairs. The pure part of stair_column_weights."""
+  w = torch.zeros(len(stair_mask), device=stair_mask.device)
+  named = torch.zeros_like(stair_mask)
+  for name, share in shares.items():
+    cols = masks[name]
+    assert bool(cols.any()) and bool((~cols | stair_mask).all()), f"stairs tile {name!r}: no stairs columns"
+    w[cols] = float(share) / float(cols.sum())
+    named |= cols
+  rest = stair_mask & ~named
+  left = 1.0 - float(sum(shares.values()))
+  assert left >= -1e-9 and (left > 1e-9 or not bool(rest.any())), f"stairs tile shares {shares}: sum <= 1, < 1 with tiles left"
+  if bool(rest.any()):
+    w[rest] = left / float(rest.sum())
+  return w / w.sum()
+
+
+def stair_column_weights(env: ManagerBasedRlEnv, shares: dict[str, float], stair_mask: torch.Tensor) -> torch.Tensor:
+  """(columns,) share_column_weights on the env's terrain (2026-11-17, the unified U_STAIR_TILE_SHARE: w27d's lineage
+  ran walled_up on 0.30 of its tiles; the unified draw picks the stairs columns alike, walled_up 4 of 13 -- 0.15 of the
+  episodes at the stairs share 0.5). Kept on the env."""
+  w = getattr(env, "u_stair_col_w", None)
+  if w is None:
+    from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
+
+    masks = {}
+    for name in shares:
+      cols = sub_terrain_column_mask(env, (name,))
+      assert cols is not None, f"stairs tile {name!r}: not in the terrain"
+      masks[name] = cols
+    w = env.u_stair_col_w = share_column_weights(masks, stair_mask, shares)
+  return w
+
+
 def rows_from(state_rows: dict | None, n: int) -> dict | None:
   """A checkpoint's rows as {"up", "down", "other"} lists (one from before the climbing / descending split: both
   from its stairs row); None when they do not fit n robots."""
@@ -642,6 +678,7 @@ def progress_stairs_share(
   other_shares: dict[str, float] | None = None,
   eval_step_max: float = EVAL_STEP_MAX,
   eval_fail_alpha: float = EVAL_FAIL_ALPHA,
+  stair_shares: dict[str, float] | None = None,
 ) -> dict[str, torch.Tensor]:
   """mdp.stairs_share's draw (each resetting robot to a stairs column with probability s), with s = start -> end as
   env.u_progress goes p_start -> p_end. Each robot has three difficulty rows (env.u_rows, module docstring): for the
@@ -653,7 +690,9 @@ def progress_stairs_share(
   per stairs family over the evaluation robots on their fixed rows (env.u_eval_fail, eval_<family>_fail; split by
   the payload class and the scan mode in env.u_eval_split, eval_<family>_fail_<class>).
   other_shares ({tile name: share}): an episode on the other ground goes to each tile with its share (the sloped
-  tiles' fixed share, teacher_env._add_slopes); None: every other column alike."""
+  tiles' fixed share, teacher_env._add_slopes); None: every other column alike. stair_shares ({stairs tile name:
+  share}, the unified U_STAIR_TILE_SHARE): an episode on the stairs goes to each named tile with its share, the
+  other stairs tiles the rest by column (stair_column_weights); None: every stairs column alike."""
   from src.tasks.velocity.mdp.terrain_utils import sub_terrain_column_mask
 
   terrain = env.scene.terrain
@@ -719,7 +758,10 @@ def progress_stairs_share(
     other_cols = (~mask).nonzero().flatten()
     n = len(env_ids)
     on_stairs = torch.rand(n, device=env.device) < s
-    pick_s = stair_cols[torch.randint(len(stair_cols), (n,), device=env.device)]
+    if stair_shares:
+      pick_s = torch.multinomial(stair_column_weights(env, stair_shares, mask), n, replacement=True)
+    else:
+      pick_s = stair_cols[torch.randint(len(stair_cols), (n,), device=env.device)]
     if other_shares:
       pick_o = torch.multinomial(other_column_weights(env, other_shares, mask), n, replacement=True)
     else:
