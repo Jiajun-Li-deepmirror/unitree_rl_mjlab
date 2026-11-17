@@ -92,6 +92,26 @@ class WalledCrossStairsTerrainCfg(SubTerrainCfg):
   """> 0 (up flights only): a wall this high above ground closes each flight at the tile edge, past the exit run,
   like map3's stairwell wall 1.325 m beyond the top landing (2026-11-05: depth students that never saw it lifted
   their front wheels on that landing in tinynav-sim, B2W 2.0 per climb; 0.3 with the wall taken out)."""
+  last_riser_scale: tuple[float, float] | None = None
+  """None: every riser as drawn. (lo, hi) (2026-11-17, the unified U_LAST_RISER): each flight's last riser -- onto the
+  exit run going up, down onto ground level going down -- uniform in [lo, hi] x the flight's mean rise, the difference
+  spread evenly over its other risers (the flight's height and the junction stay); map3's R1 ends with 9.5 cm after
+  ~17 cm risers. Drawn from a generator seeded off the tile's (not advancing it): every other draw as without it."""
+
+  def _last_riser(self, rises: np.ndarray, rng: np.random.Generator, flight: int = 0) -> np.ndarray:
+    """`rises` with the last riser redrawn (last_riser_scale); the flight's sum kept. `flight` (0-3) picks the flight's
+    own draw: the four flights are built from one state of the tile's generator."""
+    if self.last_riser_scale is None or len(rises) < 2:
+      return rises
+    lo, hi = self.last_riser_scale
+    seed = int(rng.bit_generator.state["state"]["state"]) % (2 ** 63)
+    side = np.random.default_rng([seed, flight])
+    mean = float(np.sum(rises)) / len(rises)
+    last = max(0.03, mean * side.uniform(lo, hi))
+    out = rises.copy()
+    out[:-1] += (rises[-1] - last) / (len(rises) - 1)
+    out[-1] = last
+    return out
 
   def function(
     self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
@@ -143,6 +163,7 @@ class WalledCrossStairsTerrainCfg(SubTerrainCfg):
       ((0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)), flights, strict=True
     ):
       rises = rises * (total / float(np.sum(rises)))
+      rises = self._last_riser(rises, rng, axis * 2 + (sign > 0))
 
       def add_local(u0, u1, z0, z1, axis=axis, sign=sign):
         """Box across the flight: u outward from the junction edge."""

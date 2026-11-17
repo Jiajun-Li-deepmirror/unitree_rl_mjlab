@@ -48,6 +48,8 @@ out["gate"] = {k: {"max_riser": cfg.rewards[k].params.get("max_riser"), "min_gai
                    "cmd": cfg.rewards[k].params.get("min_lin_cmd"), "ahead": cfg.rewards[k].params.get("riser_ahead")}
                for k in ("wheel_riser_lift", "foothold_height_gain") if k in cfg.rewards}
 out["topflat"] = cfg.rewards["wheel_lift_flat_ahead"].weight if "wheel_lift_flat_ahead" in cfg.rewards else None
+gen = cfg.scene.terrain.terrain_generator if cfg.scene.terrain is not None else None
+out["last_riser"] = {n: getattr(s, "last_riser_scale", None) for n, s in (gen.sub_terrains.items() if gen else ()) if n.startswith("walled")}
 pp = cfg.rewards["pose"].params if "pose" in cfg.rewards else {}
 out["pose"] = {"radius": pp.get("uneven_radius"), "feet": None if pp.get("uneven_feet_cfg") is None else list(pp["uneven_feet_cfg"].site_names)}
 bp = cfg.events["base_payload"].params
@@ -174,5 +176,15 @@ check("error" not in pc and pc["pose"]["feet"] == ["FR", "FL", "RR", "RL"], "the
 for bad in ("r:0.6", "edge"):
   x = probe(U_POSE_UNEVEN=bad)
   check("error" in x and "U_POSE_UNEVEN" in x["error"], f"U_POSE_UNEVEN={bad} stops the build")
+print("(7) U_LAST_RISER (go2-home's L6):")
+check(b1["last_riser"] and all(v is None for v in b1["last_riser"].values()), f"B1: every riser as drawn ({b1['last_riser']})")
+lr = probe(U_LAST_RISER="0.4,1.0")
+check("error" not in lr and lr["last_riser"] == {"walled_down": [0.4, 1.0], "walled_up": [0.4, 1.0]} and same_but(b1, lr),
+      f"the training build: walled_up / walled_down's last riser 0.4-1.0 x the mean, the rest as B1's ({lr.get('last_riser') or lr.get('error')})")
+lp = probe(play=True, task="Unitree-Go2W-U-Teacher", U_LAST_RISER="0.4,1.0")
+check("error" not in lp and all(v is None for v in lp["last_riser"].values()), f"the play build unchanged ({lp.get('last_riser')})")
+for bad in ("0.1,1.0", "1.0,0.5"):
+  x = probe(U_LAST_RISER=bad)
+  check("error" in x and "U_LAST_RISER" in x["error"], f"U_LAST_RISER={bad} stops the build")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

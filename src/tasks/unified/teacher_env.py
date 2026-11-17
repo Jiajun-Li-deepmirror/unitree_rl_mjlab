@@ -2073,6 +2073,25 @@ def _riser_gate(cfg: ManagerBasedRlEnvCfg) -> None:
                 "min_lin_cmd": RISER_GATE_CMD}
 
 
+def _last_riser(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
+  """U_LAST_RISER=<lo>,<hi> (2026-11-17, go2-home's L6 for items 21 / 28: the landing lifts are half the last-riser
+  struggle -- a wheel at the landing's edge that has not stood on it; item 21's lifts all are -- and map3's flights end
+  with a short riser, R1's 9.5 cm after ~17 cm): the walled flights' (walled_up / walled_down,
+  mdp.WalledCrossStairsTerrainCfg) last riser uniform in [lo, hi] x the flight's mean rise, the rest of the flight
+  taking the difference evenly. The training builds only (play and the checks unchanged); the open stairs (mjlab's
+  pyramid stairs) are not changed."""
+  v = os.environ.get("U_LAST_RISER") or ""
+  if not v or play:
+    return
+  lo, hi = (float(x) for x in v.split(","))
+  assert 0.2 <= lo <= hi <= 1.5, f"U_LAST_RISER={v}: <lo>,<hi>, 0.2 <= lo <= hi <= 1.5"
+  subs = cfg.scene.terrain.terrain_generator.sub_terrains
+  names = [n for n in ("walled_up", "walled_down") if n in subs]
+  assert names, "U_LAST_RISER: no walled flights in the build"
+  for n in names:
+    subs[n] = replace(subs[n], last_riser_scale=(lo, hi))
+
+
 def _pose_uneven(cfg: ManagerBasedRlEnvCfg) -> None:
   """U_POSE_UNEVEN (2026-11-17, go2-home's L5 for items 21 / 28: pose -- mdp.variable_posture_terrain_aware -- takes the
   walking tolerance where the terrain within 0.45 m of the base spans > 5 cm, so a robot standing on a level landing next
@@ -2113,6 +2132,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     # (the training terrain's slopes: robots.TERRAINS -- terrain=wide, the Go2W: 0.36 in training; play SLOPE_MAX)
     tw = None if play else training_terrain(robot)
     other_shares = _add_slopes(cfg, TERRAINS[tw]["slope_range"][1] if tw else SLOPE_MAX)
+    _last_riser(cfg, play)
     _add_riser_keepout(cfg, robot)
     _add_body_clear(cfg, robot)
     _add_stair_park(cfg)
