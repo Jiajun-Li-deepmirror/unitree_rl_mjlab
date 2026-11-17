@@ -276,6 +276,15 @@ def main() -> int:
   feet_cfg = _SEC("robot", site_names=_FSN)
   feet_cfg.resolve(env.scene)
   um = [0.0, 0.0, 0.0]   # pose's uneven mask in the scene's window: steps, the 0.45 m circle, the feet (U_POSE_UNEVEN)
+  # the slope's whole ramp (go2-home 2026-11-17: do the upright-leg costs fight the ramp before the tip?): every robot's
+  # term sums per ramp third (entry / mid / exit), each step added FALL_S late so a fall's last FALL_S never counts;
+  # at the end the robots that fell against those that never did
+  T_ = len(att.names)
+  W_ = att.W
+  ramp_sum = torch.zeros(n, 3, T_, device=dev)
+  ramp_n = torch.zeros(n, 3, device=dev)
+  dl_r = torch.zeros(n, W_, T_, device=dev)
+  dl_s = torch.full((n, W_), -1, dtype=torch.long, device=dev)   # the ramp third of each delayed step (-1: none)
   settle_steps = int(round(STOP_SETTLE_S / dt))
   for k in range(T):
     t = k * dt
@@ -323,6 +332,16 @@ def main() -> int:
       sp = robot.data.root_link_pos_w[:, :2] - p_stop
       moved = torch.where(settled & ~at_ref & ~fell & ~first, (sp * head).sum(dim=1).abs().maximum(moved), moved)
     att.step(terminated, first, window & ~first)
+    if a.scene == "slope":
+      j = k % W_
+      old_s, old_r = dl_s[:, j].clone(), dl_r[:, j].clone()
+      ok_old = (old_s >= 0) & ~fell & ~first   # (a robot down by now: its delayed steps are its last FALL_S)
+      ramp_sum += torch.nn.functional.one_hot(old_s.clamp(min=0), 3).float()[:, :, None] * old_r[:, None, :] * ok_old.float()[:, None, None]
+      ramp_n += torch.nn.functional.one_hot(old_s.clamp(min=0), 3).float() * ok_old.float()[:, None]
+      third = ((along - srt.START / 2) / (srt.RUN / 3)).floor().long().clamp(0, 2)
+      on = on_ramp & ~fell & ~first
+      dl_s[:, j] = torch.where(on, third, torch.full_like(third, -1))
+      dl_r[:, j] = att.rm._step_reward.detach()
     if a.scene != "flat_reverse":
       wm = window & ~first
       um[0] += float(wm.sum())
@@ -340,11 +359,37 @@ def main() -> int:
   else:
     att.add_windows(torch.zeros(n, dtype=torch.bool, device=dev), ~fell)
     info = f"robots {n}; never fell {int((~fell).sum())}"
+  if a.scene == "slope":
+    for j in range(W_):   # the never-fallen robots' last delayed steps count
+      s_, r_ = dl_s[:, j], dl_r[:, j]
+      ok_ = (s_ >= 0) & ~fell
+      ramp_sum += torch.nn.functional.one_hot(s_.clamp(min=0), 3).float()[:, :, None] * r_[:, None, :] * ok_.float()[:, None, None]
+      ramp_n += torch.nn.functional.one_hot(s_.clamp(min=0), 3).float() * ok_.float()[:, None]
+    ramp_lines = []
+    for nm in ("stance_leg_tilt", "pose", "body_orientation", "com_support", "track_linear_velocity", "standing_feet_contact"):
+      if nm not in att.names:
+        ramp_lines.append(f"  {nm:22s} (not in this build)")
+        continue
+      i = att.names.index(nm)
+      cells = []
+      for s_i, s_nm in enumerate(("entry", "mid", "exit")):
+        nf = ramp_n[~fell, s_i].sum().clamp(min=1)
+        ff = ramp_n[fell, s_i].sum()
+        mn = float(ramp_sum[~fell, s_i, i].sum() / nf)
+        mf = float(ramp_sum[fell, s_i, i].sum() / ff.clamp(min=1)) if ff > 0 else float("nan")
+        cells.append(f"{s_nm} {mn:+.3f} / {mf:+.3f}")
+      ramp_lines.append(f"  {nm:22s} " + " | ".join(cells))
+    counts = " | ".join(f"{s_nm} {int(ramp_n[~fell, s_i].sum())} / {int(ramp_n[fell, s_i].sum())}"
+                        for s_i, s_nm in enumerate(("entry", "mid", "exit")))
   rows = att.table()
   print(f"checkpoint {a.checkpoint}\ntask {a.task}, scene {a.scene}, vx {a.vx}, payload {os.environ.get('U_PAYLOAD', '(task default)')}, "
         f"scan {os.environ.get('U_SCAN', '(task default)')}")
   print(f"{info}; falls {att.falls} (their last {FALL_S:g} s are bad windows): causes {att.causes or '-'}")
   print(f"robot-steps: bad {att.bad_n:.0f}, good {att.good_n:.0f}")
+  if a.scene == "slope":
+    print(f"the whole ramp before any tip (each fall's last {FALL_S:g} s left out), never fell / later fell, the terms' "
+          f"means per ramp third (robot-steps {counts}):")
+    print("\n".join(ramp_lines))
   if um[0]:
     print(f"pose's uneven mask in the window ({um[0]:.0f} robot-steps): the 0.45 m circle {100 * um[1] / um[0]:.1f} %, "
           f"the ground under the feet {100 * um[2] / um[0]:.1f} %")
