@@ -360,9 +360,56 @@ class progress:
     cls = getattr(self._env, "u_pay_class", None)   # (teacher_env.sticky_payload: the rows are the class's)
     if cls is not None:
       out["pay_class"] = cls.cpu().tolist()
+    # each payload class's fail rate per stairs family (progress_stairs_share; 2026-11-17: not saved before, so a
+    # resume started them on the first finished episodes -- the falls come first -- and logged heavy / mid up fail
+    # 0.98 at FT-ctrl's 3050)
+    out["class_fail"] = dict(getattr(self._env, "u_class_fail", None) or {})
+    return out
+
+  @staticmethod
+  def _fit_robots(state: dict, n: int) -> dict:
+    """`state` with its per-robot arrays -- the terrain levels and columns, the difficulty rows, the payload classes --
+    for n robots (2026-11-17, go2-home's fix 3). A checkpoint of another robot count (a 2048-robot fine-tune of a
+    4096-robot run) is resampled: evaluation robots from its evaluation robots, training robots from its training
+    robots (constraints.eval_count), one draw for all the arrays, so a robot keeps its level, column, rows and class
+    together; without replacement when there are fewer robots, with it when there are more. Before this, a count that
+    differed drew every robot around the mean level -- no class split, the columns as the fresh environment drew them
+    (FT-ctrl from B1 s0's model_3000: up level 5.65 for all three classes against B1's light 6.13 / mid 5.74 / heavy
+    5.21, then up level 4.77 against B1's 5.51 at 4500)."""
+    m = len(state.get("terrain_levels") or [])
+    if m == 0 or m == n:
+      return state
+    from .constraints import eval_count   # (constraints imports this module)
+
+    g = torch.Generator().manual_seed(1_000_003 * m + n)
+
+    def pick(lo: int, hi: int, k: int) -> list[int]:
+      span = hi - lo
+      if k <= 0 or span <= 0:
+        return []
+      if k <= span:
+        return (lo + torch.randperm(span, generator=g)[:k]).tolist()
+      return (lo + torch.randint(span, (k,), generator=g)).tolist()
+
+    e_old, e_new = eval_count(m), eval_count(n)
+    idx = pick(0, e_old, e_new) if e_old > 0 else pick(0, m, e_new)
+    idx += pick(e_old, m, n - len(idx))
+    assert len(idx) == n, (m, n, len(idx))
+    out = dict(state)
+    for key in ("terrain_levels", "terrain_types", "pay_class"):
+      v = state.get(key)
+      if v is not None and len(v) == m:
+        out[key] = [v[i] for i in idx]
+    if state.get("rows"):
+      out["rows"] = {k: ([v[i] for i in idx] if len(v) == m else v) for k, v in state["rows"].items()}
+    print(f"[unified] the checkpoint's {m} robots resampled to {n} (evaluation robots {e_old} -> {e_new}): their "
+          "levels, columns, rows and payload classes kept together")
     return out
 
   def load(self, state: dict, env: ManagerBasedRlEnv) -> None:
+    terrain = getattr(env.scene, "terrain", None)
+    if terrain is not None and getattr(terrain, "terrain_levels", None) is not None:
+      state = self._fit_robots(state, terrain.terrain_levels.shape[0])
     self.p, self.level, self.level0 = state["p"], state["level"], state["level0"]
     # a checkpoint from before the clock: it starts at the restored step count
     self.clock = state.get("clock") if state.get("clock") is not None else float(env.common_step_counter)
@@ -370,6 +417,13 @@ class progress:
     self.fail_mode = dict(state.get("fail_mode") or {})
     if state.get("family_fail"):
       env.u_family_fail = dict(state["family_fail"])
+    if state.get("class_fail"):
+      env.u_class_fail = dict(state["class_fail"])
+    elif state.get("family_fail"):
+      # a checkpoint from before they were saved: each class starts at its family's restored rate, not at the first
+      # finished episodes after the resume (the falls finish first)
+      env.u_class_fail = {f"{c}_{k}_fail": float(v) for k, v in state["family_fail"].items() if k in ("up", "down")
+                          for c in PAY_CLASSES}
     if state.get("eval_stat"):   # (a checkpoint from before the fixed rows has none: counted afresh)
       env.u_eval_fail = dict(state.get("eval_fail") or {})
       env.u_eval_stat = {k: {"rate": [float(x) for x in v["rate"]], "n": [int(x) for x in v["n"]]}
