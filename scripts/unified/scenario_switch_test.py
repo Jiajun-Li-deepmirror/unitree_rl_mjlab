@@ -24,9 +24,10 @@ PROBE = r'''
 import dataclasses, json, os, sys
 sys.path.insert(0, os.getcwd())
 play = sys.argv[1] == "1"
+task = sys.argv[2] if len(sys.argv) > 2 else None
 import mjlab.tasks, src.tasks
 from mjlab.tasks.registry import load_env_cfg
-cfg = load_env_cfg("Unitree-Go2W-U-Teacher-Flat" if play else "Unitree-Go2W-U-Teacher", play=play)
+cfg = load_env_cfg(task or ("Unitree-Go2W-U-Teacher-Flat" if play else "Unitree-Go2W-U-Teacher"), play=play)
 t = cfg.commands["twist"]
 import re
 strip = lambda s: re.sub(r" at 0x[0-9a-f]+", "", s)
@@ -43,6 +44,10 @@ out = {
 }
 sp = cfg.curriculum.get("u_stairs_share")
 out["shares"] = dict(sp.params.get("other_shares") or {}) if sp else None
+out["gate"] = {k: {"max_riser": cfg.rewards[k].params.get("max_riser"), "min_gain": cfg.rewards[k].params.get("min_gain"),
+                   "cmd": cfg.rewards[k].params.get("min_lin_cmd"), "ahead": cfg.rewards[k].params.get("riser_ahead")}
+               for k in ("wheel_riser_lift", "foothold_height_gain") if k in cfg.rewards}
+out["topflat"] = cfg.rewards["wheel_lift_flat_ahead"].weight if "wheel_lift_flat_ahead" in cfg.rewards else None
 bp = cfg.events["base_payload"].params
 out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ()))}
 print("JSON" + json.dumps(out))
@@ -57,10 +62,10 @@ def check(good: bool, text: str) -> None:
   print(("  ok    " if good else "  FAIL  ") + text)
 
 
-def probe(play=False, **env):
+def probe(play=False, task=None, **env):
   e = {k: v for k, v in os.environ.items() if not k.startswith("U_")}
   e.update(UNIFIED_TASKS="1", U_ROBOTS="Go2W", U_CMD_WIDE="1.25", U_DR_WIDE="1.25", PYTHONPATH=os.getcwd(), **env)
-  r = subprocess.run([sys.executable, "-c", PROBE, "1" if play else "0"], env=e, capture_output=True, text=True)
+  r = subprocess.run([sys.executable, "-c", PROBE, "1" if play else "0"] + ([task] if task else []), env=e, capture_output=True, text=True)
   for line in r.stdout.splitlines():
     if line.startswith("JSON"):
       return json.loads(line[4:])
@@ -127,5 +132,31 @@ check("error" not in h and h["payload"]["on"] == 0.8 and sorted(h["payload"]["na
 check(same_but(b1, h, events=("base_payload",)), "the rest of the build as B1's")
 x = probe(U_HEAVY_SLOPE="0.3")
 check("error" in x and "U_HEAVY_SLOPE" in x["error"], "U_HEAVY_SLOPE=0.3 (not above the event's 0.5) stops the build")
+print("(4) U_RISER_GATE:")
+check(b1["gate"].get("wheel_riser_lift", {}).get("max_riser") is None, f"B1: no gate ({b1['gate']})")
+rg = probe(U_RISER_GATE="1")
+check("error" not in rg and rg["gate"]["wheel_riser_lift"]["max_riser"] == 0.30
+      and rg["gate"]["foothold_height_gain"]["min_gain"] == 0.05 and rg["gate"]["wheel_riser_lift"]["cmd"] == 0.1
+      and rg["gate"]["wheel_riser_lift"]["ahead"] is True and rg["gate"]["foothold_height_gain"]["cmd"] == 0.1,
+      f"the training build: riser <= 0.30 m and ahead, record gain >= 0.05 m, both with a planar command >= 0.1 ({rg.get('gate') or rg.get('error')})")
+check(same_but({**b1, "rewards": {k: v for k, v in b1["rewards"].items() if k not in ("wheel_riser_lift", "foothold_height_gain")}},
+               {**rg, "rewards": {k: v for k, v in rg["rewards"].items() if k not in ("wheel_riser_lift", "foothold_height_gain")}}),
+      "the rest of the build as B1's (the two terms' weights unchanged too)")
+check(all(b1["rewards"][k][0] == rg["rewards"][k][0] for k in ("wheel_riser_lift", "foothold_height_gain")), "their weights unchanged")
+rp = probe(play=True, task="Unitree-Go2W-U-Teacher-Stairs", U_RISER_GATE="1")
+check("error" not in rp and rp["gate"].get("wheel_riser_lift", {}).get("max_riser") == 0.30
+      and rp["gate"].get("foothold_height_gain", {}).get("min_gain") == 0.05, f"the -Stairs check build too ({rp.get('gate') or rp.get('error')})")
+x = probe(U_RISER_GATE="2")
+check("error" in x and "U_RISER_GATE" in x["error"], "U_RISER_GATE=2 stops the build")
+print("(5) U_KEYS_ADD=topflat / topflat30 on the 68-term recipe (go2-home's L1 / L2):")
+check(b1["topflat"] is None, "B1: no wheel_lift_flat_ahead")
+k1 = probe(U_KEYS_ADD="topflat")
+check("error" not in k1 and k1["topflat"] == -8.0
+      and same_but(b1, {**k1, "rewards": {k: v for k, v in k1["rewards"].items() if k != "wheel_lift_flat_ahead"}}, curriculum=("u_quality",)),
+      f"topflat: wheel_lift_flat_ahead at {k1.get('topflat')} (-8), the rest as B1's but u_quality ({k1.get('error', '')[:120]})")
+check("wheel_lift_flat_ahead" in k1["curriculum"]["u_quality"] and "wheel_lift_flat_ahead" not in b1["curriculum"]["u_quality"],
+      "it comes in with the stairs quality (u_quality: the M keys have not got it, so it rises from ~0 to its P weight along q)")
+k2 = probe(U_KEYS_ADD="topflat,topflat30")
+check("error" not in k2 and k2["topflat"] == -30.0, f"topflat30: at {k2.get('topflat')} (-30) ({k2.get('error', '')[:120]})")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

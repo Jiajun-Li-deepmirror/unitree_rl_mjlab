@@ -1239,7 +1239,16 @@ class wheel_riser_lift:
     max_speed_ratio: float | None = None,
     land_share: float = 0.0,
     land_tolerance: float = 0.02,
+    max_riser: float | None = None,
+    min_lin_cmd: float | None = None,
+    riser_ahead: bool = False,
   ) -> torch.Tensor:
+    """The unified U_RISER_GATE (2026-11-17: the top-landing lifts were paid by this term, reward_attribution's landing
+    scene, also with every wheel at the landing's level): `max_riser`, a riser counts only when its top is at most that
+    above the wheel's highest stable foothold (a step, not a wall or a rail); `min_lin_cmd`, only while the planar
+    command is at least that (no stand, no turn in place) -- a window already open pays nothing then either;
+    `riser_ahead`, only when the riser's top (the highest scan hit within `radius`) lies ahead of the wheel along the
+    commanded planar direction."""
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
     scan: RayCastSensor = env.scene[scan_sensor_name]
@@ -1257,7 +1266,12 @@ class wheel_riser_lift:
     hit_pos = scan.data.hit_pos_w  # [B, N, 3]
     offset = hit_pos[:, None, :, :2] - foot_pos[:, :, None, :2]  # [B, W, N, 2]
     near = (torch.norm(offset, dim=-1) < radius) & (scan.data.distances >= 0.0)[:, None, :]
-    top_z = torch.where(near, hit_pos[:, None, :, 2], -torch.inf).amax(dim=-1)  # [B, W]
+    top_h = torch.where(near, hit_pos[:, None, :, 2], -torch.inf)  # [B, W, N]
+    top_z, top_i = top_h.max(dim=-1)  # [B, W]
+    moving = None
+    if min_lin_cmd is not None or riser_ahead:
+      cmd_b = env.command_manager.get_command(command_name)[:, :2]
+      moving = torch.norm(cmd_b, dim=1) >= (min_lin_cmd or 0.0)
 
     active = ~_zero_command_mask(env, command_name, command_threshold)
     # A clean landing on the pending riser's top (judged before this step's trigger moves it on).
@@ -1273,6 +1287,16 @@ class wheel_riser_lift:
 
     blocked = in_contact & (force_xy > torch.clamp(ratio * force_z, min=min_force))
     riser = blocked & (top_z > self.record_z + tolerance)
+    if max_riser is not None:
+      riser = riser & (top_z <= self.record_z + max_riser)
+    if moving is not None:
+      riser = riser & moving[:, None]
+    if riser_ahead:
+      yaw = asset.data.heading_w
+      c, s = torch.cos(yaw), torch.sin(yaw)
+      d = torch.stack((c * cmd_b[:, 0] - s * cmd_b[:, 1], s * cmd_b[:, 0] + c * cmd_b[:, 1]), dim=1)   # world frame
+      top_off = offset.gather(2, top_i[..., None, None].expand(-1, -1, 1, 2)).squeeze(2)  # [B, W, 2]
+      riser = riser & ((top_off * d[:, None, :]).sum(dim=-1) > 0.0)
     new = riser & ~(torch.abs(top_z - self.riser_top) <= tolerance)
     self.land_paid = torch.where(new, False, self.land_paid)
     self.riser_top = torch.where(new, top_z, self.riser_top)
@@ -1292,6 +1316,8 @@ class wheel_riser_lift:
     gain = torch.where(lifting, torch.clamp(fraction - self.best, min=0.0), 0.0)
     self.best = self.best + gain
     gain = (1.0 - land_share) * gain + land_gain
+    if moving is not None and min_lin_cmd is not None:
+      gain = torch.where(moving[:, None], gain, 0.0)
     if max_speed_ratio is not None:
       command = env.command_manager.get_command(command_name)
       assert command is not None
@@ -2521,6 +2547,7 @@ class feet_foothold_height_gain:
     max_speed_ratio: float | None = None,
     step_average: bool = False,
     min_gain: float = 0.0,
+    min_lin_cmd: float | None = None,
   ) -> torch.Tensor:
     """A foothold counts when the contact force is mostly vertical.
 
@@ -2574,6 +2601,8 @@ class feet_foothold_height_gain:
     self.record_odometer = torch.where(held, self.odometer[:, None], self.record_odometer)
     self.record_clock = torch.where(held, self.clock[:, None], self.record_clock)
     active = ~_zero_command_mask(env, command_name, command_threshold)
+    if min_lin_cmd is not None:   # (the unified U_RISER_GATE: no pay in a stand or a turn in place)
+      active = active & (torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) >= min_lin_cmd)
     return torch.sum(gain, dim=1) * active.float() / env.step_dt
 
 

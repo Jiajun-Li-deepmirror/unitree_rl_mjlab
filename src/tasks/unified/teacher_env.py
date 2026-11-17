@@ -1007,6 +1007,7 @@ sticky_payload.recompute = mdp.base_payload_point.recompute
 
 # ---- slopes (2026-11-12; the user, through the students' session: "斜坡可以稍微加一点，你定") ----
 SLOPE_SHARE = 0.10   # of the episodes on the other ground (not stairs), half on each sloped tile
+RISER_GATE_MAX, RISER_GATE_MIN, RISER_GATE_CMD = 0.30, 0.05, 0.1   # U_RISER_GATE (_riser_gate)
 SLOPE_MAX = 0.25     # the top row's gradient along the tile's axes (14 deg; 16 deg at most, between them)
 
 
@@ -2050,6 +2051,28 @@ def unified_teacher_env_cfg(robot: URobot, play: bool = False, lean: bool = Fals
     return _teacher_env_cfg(robot, play, lean, student, terrain)
 
 
+def _riser_gate(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_RISER_GATE=1 (2026-11-17, go2-home's L3 for items 21 / 28: the top-landing lifts were paid by wheel_riser_lift and
+  foothold_height_gain, reward_attribution's landing scene): the climb rewards pay for real steps only --
+  wheel_riser_lift's riser at most RISER_GATE_MAX above the wheel's highest stable foothold (a wall or a rail is not a
+  step) and ahead of the wheel along the planar command, foothold_height_gain's new record at least RISER_GATE_MIN above
+  the old one; both only while the planar command is at least RISER_GATE_CMD (a stand or a turn in place pays nothing:
+  with every wheel at the landing's level the lifts were still paid 0.23 / 0.11 per s -- map3's landings have the next
+  flight beside them). Every build (training and the checks: the attribution reads them)."""
+  g = os.environ.get("U_RISER_GATE") or "0"
+  assert g in ("0", "1"), f"U_RISER_GATE={g}: 1 or unset"
+  if g != "1":
+    return
+  # (a build without the terms -- a student's -- has nothing to gate)
+  if "wheel_riser_lift" in cfg.rewards:
+    r = cfg.rewards["wheel_riser_lift"]
+    r.params = {**r.params, "max_riser": RISER_GATE_MAX, "min_lin_cmd": RISER_GATE_CMD, "riser_ahead": True}
+  if "foothold_height_gain" in cfg.rewards:
+    r = cfg.rewards["foothold_height_gain"]
+    r.params = {**r.params, "min_gain": max(float(r.params.get("min_gain", 0.0)), RISER_GATE_MIN),
+                "min_lin_cmd": RISER_GATE_CMD}
+
+
 def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None, terrain: str) -> ManagerBasedRlEnvCfg:
   cfg = base_env_cfg(robot, play=play, terrain=terrain)
   metrics_mj.add_sensor(cfg)   # the shared metrics' contact sensor (points and normals)
@@ -2120,6 +2143,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
     # -- the user's "统一成 0.4–1.0"); the students' builds set it too (students.CHECK_FRICTION)
     if robot.kind in CHECK_FRICTION and "foot_friction" in cfg.events:
       cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
+  _riser_gate(cfg)
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:

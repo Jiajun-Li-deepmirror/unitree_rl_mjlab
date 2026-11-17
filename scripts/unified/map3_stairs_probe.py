@@ -177,6 +177,14 @@ def main() -> int:
           f"step, and the 1 s before the falls in phases 2-6 ({attr['bad_n']:.0f} robot-steps); good = the drive-up, stands "
           f"and turn with every wheel / foot down, {attr['good_robots']} of {attr['robots']} robots that did not fall "
           f"({attr['good_n']:.0f} robot-steps) ==")
+    if attr.get("riser_h"):
+      h = np.concatenate(attr["riser_h"])
+      print(f"wheel_riser_lift's risers while it pays on the landing (top over the wheel's record, m; {len(h)} wheel-steps): "
+            f"p10 {np.percentile(h, 10):.3f} p50 {np.percentile(h, 50):.3f} p90 {np.percentile(h, 90):.3f} max {h.max():.3f}")
+    cm = np.asarray(attr["climb_sum"]) / max(attr["climb_n"], 1.0)
+    print("the climb (phases 0 and 2, " + f"{attr['climb_n']:.0f} robot-steps): " + ", ".join(
+      f"{nm} {cm[i]:.4f}" for i, nm in enumerate(attr["names"]) if nm in ("wheel_riser_lift", "foothold_height_gain",
+                                                                          "wheel_lift_flat_ahead", "pose")))
     if attr["bad_n"] == 0 or attr["good_n"] == 0:
       print(f"no {'bad' if attr['bad_n'] == 0 else 'good'} windows: nothing to compare")
       arows = []
@@ -320,7 +328,9 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
   # item-28 step (any, phases 2-4, > TOP_AIR_S and > TOP_LIFT_M), and the FALL_S before a fall in phases 2-6. Good: the
   # steps of the drive-up, stands and turn (phases 3-6) with every wheel / foot down (no air episode), of the robots that
   # do not fall -- per step, not per robot: on B1 s1's model_1800 every climb had extra steps (10 per climb), so no
-  # robot was free of them.
+  # robot was free of them. Both windows only while every wheel / foot is at the landing's level: the reward terms are
+  # summed over the feet, and a rear one still climbing the last riser pays the climb terms legitimately (the first
+  # version's bad windows held them: wheel_riser_lift 0.59, unchanged by U_RISER_GATE).
   if attr is not None:
     rm = env.reward_manager
     names = list(rm.active_terms)
@@ -334,6 +344,12 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     ring = torch.zeros(n, W, T, device=dev)
     kk = 0
     bad_sum, bad_n = torch.zeros(T, device=dev), 0.0
+    cl_sum, cl_n = torch.zeros(T, device=dev), 0.0   # the climb (phases 0 and 2): what the climb terms pay there
+    # what wheel_riser_lift takes for a riser on the landing: its state (riser top over the wheel's record) for the wheels
+    # it pays, every step of phases 3-6 with every wheel at the landing's level
+    wrl = rm._term_cfgs[names.index("wheel_riser_lift")].func if "wheel_riser_lift" in names else None
+    riser_h: list = []
+    z_stand = torch.full((n, 4), -float("inf"), device=dev)   # each wheel / foot's height at its last contact
     ep_lifts = 0
   land_dur = [d for d, _ in LANDING]
   max_steps = int(round(sum(d for d, *_ in sc.segments) / dt))
@@ -436,7 +452,13 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
         if 2 <= int(fell_phase[i]) <= 6:
           bad_sum += ring[i].sum(dim=0)
           bad_n += min(kk, W)
-      in_ep = air_on.any(dim=1) & alive
+      # (every wheel / foot standing at the landing's level -- its last contact there, an airborne one included: a rear
+      # one still climbing the last riser earns wheel_riser_lift / foothold_height_gain legitimately, the terms are
+      # summed over the feet, and by its current height a wheel in the air over the last riser passed for one on the
+      # landing -- on R1 the paid risers were the last riser's 9.5 cm)
+      z_stand = torch.where(c4, z4, z_stand)
+      level4 = (z_stand >= (z_floor + rise - TOP_LEVEL_TOL)[:, None]).all(dim=1)
+      in_ep = air_on.any(dim=1) & alive & level4
       ep_sum += r * in_ep.float()[:, None]
       ep_n += in_ep.float()
       lift21 = (land_now[:, :2] & a_win[:, None] & (z_apex[:, :2] - z_take[:, :2] > WALL_LIFT_M)).any(dim=1)
@@ -450,7 +472,14 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
       ep_sum = torch.where(ended[:, None], torch.zeros_like(ep_sum), ep_sum)
       ep_n = torch.where(ended, torch.zeros_like(ep_n), ep_n)
       ep_bad = ep_bad & ~ended
-      gw = ((phase >= 3) & (phase <= 6) & alive & ~in_ep).float()
+      gw = ((phase >= 3) & (phase <= 6) & alive & level4 & c4.all(dim=1)).float()   # every wheel / foot down
+      if wrl is not None and hasattr(wrl, "riser_top"):
+        pay = (wrl.time_left > 0.0) & wrl.airborne & ((phase >= 3) & (phase <= 6) & alive & level4)[:, None]
+        if bool(pay.any()):
+          riser_h.append((wrl.riser_top - wrl.record_z)[pay].detach().cpu())
+      cw = (((phase == 0) | (phase == 2)) & alive).float()
+      cl_sum += (r * cw[:, None]).sum(dim=0)
+      cl_n += float(cw.sum())
       gd_sum += r * gw[:, None]
       gd_n += gw
     air_on = air_on & ~c4 & win
@@ -486,6 +515,10 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict 
     attr["good_n"] = attr.get("good_n", 0.0) + float(gd_n[good].sum())
     attr["weights"] = [float(rm.get_term_cfg(nm).weight) for nm in names]
     attr["episodes"] = attr.get("episodes", 0) + ep_lifts
+    attr["climb_sum"] = attr.get("climb_sum", 0.0) + np_(cl_sum)
+    attr["climb_n"] = attr.get("climb_n", 0.0) + cl_n
+    if riser_h:
+      attr.setdefault("riser_h", []).append(torch.cat(riser_h).numpy())
     attr["good_robots"] = attr.get("good_robots", 0) + int(good.sum())
     attr["robots"] = attr.get("robots", 0) + n
   return {"name": sc.name[:-3], "rise": rise, "stopped": np_(stopped), "brake": np_(disp1),
