@@ -237,12 +237,17 @@ def constraint_items(kind: str) -> list[dict]:
   if v:
     # the named stairs-quality items' multipliers go up to their own cap, whatever U_Q_SCALE_MAX says ("own_cap").
     # A name this kind of robot has no item of is skipped: every robot's tasks are registered at import.
+    # 2026-11-17 (go2-home's W1): an item outside the stairs quality with costs too -- its cap replaces max_scale (3);
+    # wheels_down:1.34 holds B1's multiplier at its 3000 value (B1 s0 1.34 -> 1.61, s1 1.44 -> 1.77 at 5900, the one
+    # multiplier that rose after 3000, while idling at the flights' ends and the map3 reach worsened)
     caps = {k.strip(): float(x) for k, x in (kv.split(":") for kv in v.split(","))}
     assert all(1.0 <= x <= 10.0 for x in caps.values()), f"U_ITEM_CAP {v}: caps 1-10"
     for item in items:
       if item["name"] in caps:
-        assert item["by"] == "q" and item["terms"], f"U_ITEM_CAP: {item['name']} is not a stairs-quality item with costs"
-        item["max_scale"], item["own_cap"] = caps[item["name"]], True
+        assert item["terms"], f"U_ITEM_CAP: {item['name']} has no costs to scale"
+        item["max_scale"] = caps[item["name"]]
+        if item["by"] == "q":
+          item["own_cap"] = True
   v = os.environ.get("U_ITEM_FLOOR")   # a probe's switch (_probe_switches): "<item>:<floor>,..."
   if v:
     # the named stairs-quality items' multipliers start from a floor (the first update clamps a checkpoint's
@@ -2080,6 +2085,24 @@ def _riser_gate(cfg: ManagerBasedRlEnvCfg) -> None:
                 "min_lin_cmd": RISER_GATE_CMD}
 
 
+def _wad_near(cfg: ManagerBasedRlEnvCfg) -> None:
+  """U_WAD_NEAR=<x> (2026-11-17, go2-home's W3 for the stalls at the flights' ends): wheel_air_drivable's near_scale,
+  the factor on a lifted wheel that stands on even ground (its own 0.236 m ahead, mdp.wheel_uneven_mask) while the
+  robot's 0.45 m scan circle holds a riser (mdp.uneven_terrain_mask) -- the rear wheels on the start landing before
+  the first riser and the front wheels on the top landing. B1 has 4 (pilot wheelstep4, against the near-stairs lifts
+  and the top-landing steps), times wheels_down's multiplier (1.34 at 3000 -> 1.6-1.8 at 5900); 0: those lifts free.
+  Every build with the per-wheel term (the reward only; the acceptance reads no reward)."""
+  v = os.environ.get("U_WAD_NEAR")
+  if not v:
+    return
+  x = float(v)
+  assert 0.0 <= x <= 4.0, f"U_WAD_NEAR={v}: 0-4"
+  term = cfg.rewards.get("wheel_air_drivable")
+  if term is None or term.params.get("wheel_cfg") is None:   # (a legged robot's or a flat build: every robot's tasks
+    return                                                    # are registered at import)
+  term.params = {**term.params, "near_scale": x}
+
+
 def _last_riser(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
   """U_LAST_RISER=<lo>,<hi> (2026-11-17, go2-home's L6 for items 21 / 28: the landing lifts are half the last-riser
   struggle -- a wheel at the landing's edge that has not stood on it; item 21's lifts all are -- and map3's flights end
@@ -2197,6 +2220,7 @@ def _teacher_env_cfg(robot: URobot, play: bool, lean: bool, student: str | None,
       cfg.events["foot_friction"].params["ranges"] = CHECK_FRICTION[robot.kind]
   _riser_gate(cfg)
   _pose_uneven(cfg)
+  _wad_near(cfg)
   if student is not None:
     cfg.events["u_scan_mask"].params["mode"] = "off" if student == "blind" else "on"
     if "u_progress" in cfg.curriculum:

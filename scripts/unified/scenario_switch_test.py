@@ -52,6 +52,10 @@ gen = cfg.scene.terrain.terrain_generator if cfg.scene.terrain is not None else 
 out["last_riser"] = {n: getattr(s, "last_riser_scale", None) for n, s in (gen.sub_terrains.items() if gen else ()) if n.startswith("walled")}
 pp = cfg.rewards["pose"].params if "pose" in cfg.rewards else {}
 out["pose"] = {"radius": pp.get("uneven_radius"), "feet": None if pp.get("uneven_feet_cfg") is None else list(pp["uneven_feet_cfg"].site_names)}
+wd = cfg.rewards.get("wheel_air_drivable")
+out["wad_near"] = None if wd is None else wd.params.get("near_scale")
+cons = cfg.curriculum.get("u_constraints")
+out["caps"] = {i["name"]: i["max_scale"] for i in cons.params["items"]} if cons is not None else {}
 bp = cfg.events["base_payload"].params
 out["payload"] = {"heavy_share": bp["heavy_share"], "on": bp.get("heavy_share_on"), "names": list(bp.get("heavy_terrain_names", ())),
                   "groups": [[sorted(g), s] for g, s in bp.get("heavy_share_groups", ())]}
@@ -201,5 +205,18 @@ hb = probe(U_HEAVY_STAIRS="0.8", U_HEAVY_SLOPE="0.8")
 check("error" not in hb and hb["payload"]["on"] == 0.8 and hb["payload"]["groups"] == [[want, 0.8]], "beside U_HEAVY_SLOPE: both")
 x = probe(U_HEAVY_STAIRS="0.4")
 check("error" in x and "U_HEAVY_STAIRS" in x["error"], "U_HEAVY_STAIRS=0.4 stops the build")
+print("(10) U_WAD_NEAR (go2-home's W3):")
+check(b1["wad_near"] == 4.0, f"B1: near_scale {b1['wad_near']}")
+wn = probe(U_WAD_NEAR="0")
+check("error" not in wn and wn["wad_near"] == 0.0 and same_but(b1, {**wn, "rewards": {**wn["rewards"], "wheel_air_drivable": b1["rewards"]["wheel_air_drivable"]}}),
+      f"U_WAD_NEAR=0: near_scale 0, the rest as B1's ({wn.get('wad_near', wn.get('error', '')[:100])})")
+x = probe(U_WAD_NEAR="5")
+check("error" in x and "U_WAD_NEAR" in x["error"], "U_WAD_NEAR=5 stops the build")
+print("(11) U_ITEM_CAP=wheels_down:1.34 (go2-home's W1):")
+check(b1["caps"].get("wheels_down") == 3.0, f"B1: wheels_down cap {b1['caps'].get('wheels_down')}")
+wc = probe(U_ITEM_CAP="wheels_down:1.34")
+check("error" not in wc and wc["caps"]["wheels_down"] == 1.34 and {k: v for k, v in wc["caps"].items() if k != "wheels_down"}
+      == {k: v for k, v in b1["caps"].items() if k != "wheels_down"},
+      f"wheels_down's cap 1.34, every other item's as B1's ({wc.get('caps', {}).get('wheels_down', wc.get('error', '')[:100])})")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
