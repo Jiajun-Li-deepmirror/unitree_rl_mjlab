@@ -13,6 +13,13 @@ Scenes (each robot in one cell; payload from U_PAYLOAD, scan mode from U_SCAN, a
                 the stop; good: the robots that hold. The window: the stop after STOP_SETTLE_S. -Stairs task.
   slope         slope_rough_test's 15 deg ramps (up and down), walked at VX. Bad: the FALL_S before a fall; good: the
                 robots that never fall, on the ramp (the 6 m run). -Stairs task.
+  climb         the climbing stair tiles (4 bands x narrow / wide, spawned square to the steps), forward VX from the
+                tile centre to past the last step (CLIMB_END m of Chebyshev distance), heading held (go2-home
+                2026-11-17: B1 loses map3 reach 95 -> 74 % from 3000 to 5900, slower climbs, idling at the flights'
+                ends). Bad: the robot-steps while a robot stalls -- no CLIMB_PROGRESS_M of progress for CLIMB_STALL_S
+                before it is through -- or has turned back (CLIMB_BACK_M below its furthest point), and the falls;
+                good: the climbing robot-steps of the robots that go through without a stall, turn or fall. --rows
+                picks the bands judged (default 3: 15-18 cm); every band's counts and stall places are printed. -Stairs.
   flat_reverse  flat ground, the command (-VX, 0, 0) (default 1.0: w27d's full-load fall case) after a 1 s stand,
                 slewed at 2 m/s^2, for SECONDS. Bad: the FALL_S before a fall; good: the robots that never fall, from
                 2 s on. -Flat task.
@@ -55,6 +62,11 @@ SLIDE_M = 0.05
 FALL_S = 1.0
 LIN_ACCEL = 2.0
 SETTLE_S = 1.0
+CLIMB_END = 3.6        # m of Chebyshev distance: past the last step (eval_stairs' traverse)
+CLIMB_PROGRESS_M = 0.05
+CLIMB_STALL_S = 2.0
+CLIMB_BACK_M = 0.3
+STEP_RANGE = (0.05, 0.18)   # (eval_stairs' bands: row r of NUM_ROWS spans lo + (hi - lo) * r / NUM_ROWS ...)
 
 
 def attribution_rows(names, weights, good_sum, good_n, bad_sum, bad_n) -> list[dict]:
@@ -160,11 +172,12 @@ def build(a):
   cfg.seed = a.seed
   cfg.events.pop("push_robot", None)
   extra = {}
-  if a.scene == "stairs_stop":
+  if a.scene in ("stairs_stop", "climb"):
     from src.tasks.velocity.blind_env_cfg import STAIR_TERRAIN_NAMES
 
     gen = cfg.scene.terrain.terrain_generator
-    gen.sub_terrains = {k: v for k, v in gen.sub_terrains.items() if k in STAIR_TERRAIN_NAMES}
+    keep = [n for n in STAIR_TERRAIN_NAMES if a.scene == "stairs_stop" or "up" in n]
+    gen.sub_terrains = {k: v for k, v in gen.sub_terrains.items() if k in keep}
     for v in gen.sub_terrains.values():
       v.proportion = 1.0
     gen.num_rows = NUM_ROWS
@@ -206,19 +219,20 @@ def build(a):
 
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  ap.add_argument("--scene", required=True, choices=("stairs_stop", "slope", "flat_reverse"))
+  ap.add_argument("--scene", required=True, choices=("stairs_stop", "climb", "slope", "flat_reverse"))
   ap.add_argument("--task", required=True)
   ap.add_argument("checkpoint")
   ap.add_argument("--envs-per-cell", type=int, default=None,
-                  help="robots per tile (stairs_stop: 16 per band x direction x tread; slope: 128 per ramp; flat: 256)")
+                  help="robots per tile (stairs_stop: 16 per band x direction x tread; climb 32; slope: 128 per ramp; flat: 256)")
+  ap.add_argument("--rows", default="3", help="climb: the bands judged (rows 0-3 = 5-8 / 8-12 / 12-15 / 15-18 cm)")
   ap.add_argument("--vx", type=float, default=None, help="m/s (stairs_stop 0.5, slope 1.0, flat_reverse 1.0)")
   ap.add_argument("--seconds", type=float, default=10.0, help="flat_reverse: the reverse's length")
   ap.add_argument("--seed", type=int, default=0)
   ap.add_argument("--top", type=int, default=20, help="table rows printed (every term in --out)")
   ap.add_argument("--out", default=None, help="the table as JSON")
   a = ap.parse_args()
-  a.envs_per_cell = a.envs_per_cell or {"stairs_stop": 16, "slope": 128, "flat_reverse": 256}[a.scene]
-  a.vx = a.vx or {"stairs_stop": 0.5, "slope": 1.0, "flat_reverse": 1.0}[a.scene]
+  a.envs_per_cell = a.envs_per_cell or {"stairs_stop": 16, "climb": 32, "slope": 128, "flat_reverse": 256}[a.scene]
+  a.vx = a.vx or {"stairs_stop": 0.5, "climb": 0.5, "slope": 1.0, "flat_reverse": 1.0}[a.scene]
   cfg, env, venv, policy, extra = build(a)
   dev, dt, n = env.device, env.step_dt, env.num_envs
   robot = env.scene["robot"]
@@ -229,7 +243,7 @@ def main() -> int:
   em.set_command(env, 0.0, 0.0, 0.0)
   att = Attribution(env, dt)
   info = ""
-  if a.scene == "stairs_stop":
+  if a.scene in ("stairs_stop", "climb"):
     gen = cfg.scene.terrain.terrain_generator
     names = list(gen.sub_terrains.keys())
     cum = np.cumsum(np.full(len(names), 1.0 / len(names)))
@@ -258,6 +272,19 @@ def main() -> int:
   p0 = robot.data.root_link_pos_w[:, :2].clone()
   fell = torch.zeros(n, dtype=torch.bool, device=dev)
   cur = torch.zeros(n, device=dev)
+  if a.scene == "climb":
+    judged = torch.zeros(n, dtype=torch.bool, device=dev)
+    for r_ in (int(x) for x in a.rows.split(",")):
+      judged |= levels == r_
+    best = torch.zeros(n, device=dev)        # the furthest Chebyshev distance so far
+    ref = torch.zeros(n, device=dev)         # the distance at the last progress
+    t_ref = torch.zeros(n, device=dev)
+    through = torch.zeros(n, dtype=torch.bool, device=dev)
+    ever_stall = torch.zeros(n, dtype=torch.bool, device=dev)
+    ever_back = torch.zeros(n, dtype=torch.bool, device=dev)
+    stall_d = torch.full((n,), float("nan"), device=dev)   # where a robot's first stall began (its best distance)
+    stall_steps = torch.zeros(n, device=dev)
+    T = int(math.ceil((SETTLE_S + CLIMB_END / a.vx * 2.5 + 4.0) / dt))
   if a.scene == "stairs_stop":
     stop_k = torch.full((n,), -1, dtype=torch.long, device=dev)   # the step the stop began
     p_stop = torch.zeros(n, 2, device=dev)
@@ -303,6 +330,25 @@ def main() -> int:
       want = torch.where(going, torch.full((n,), a.vx, device=dev), torch.zeros(n, device=dev))
       vy = torch.zeros(n, device=dev)
       window = settled & ~fell
+    elif a.scene == "climb":
+      d = (robot.data.root_link_pos_w[:, :2] - terrain.env_origins[:, :2]).abs().max(dim=1).values
+      through |= d >= CLIMB_END
+      going = (t >= SETTLE_S) & ~through & ~fell
+      best = torch.maximum(best, d)
+      moved_on = d > ref + CLIMB_PROGRESS_M
+      ref = torch.where(moved_on | (t < SETTLE_S), d, ref)
+      t_ref = torch.where(moved_on | (t < SETTLE_S), torch.full_like(t_ref, t), t_ref)
+      stalled = going & (t - t_ref >= CLIMB_STALL_S)
+      back = going & (d < best - CLIMB_BACK_M)
+      new_stall = stalled & ~ever_stall
+      stall_d = torch.where(new_stall, best, stall_d)
+      ever_stall |= stalled
+      ever_back |= back
+      bad_now = (stalled | back) & judged
+      stall_steps += (stalled | back).float()
+      want = torch.where(going, torch.full((n,), a.vx, device=dev), torch.zeros(n, device=dev))
+      vy = torch.zeros(n, device=dev)
+      window = going & ~stalled & ~back & judged   # (good: kept for the robots that go through clean)
     elif a.scene == "slope":
       going = (t >= SETTLE_S) & (along < srt.JUDGED) & ~fell
       want = torch.where(going, torch.full((n,), a.vx, device=dev), torch.zeros(n, device=dev))
@@ -331,7 +377,14 @@ def main() -> int:
       fell_stop |= first & stopping
       sp = robot.data.root_link_pos_w[:, :2] - p_stop
       moved = torch.where(settled & ~at_ref & ~fell & ~first, (sp * head).sum(dim=1).abs().maximum(moved), moved)
-    att.step(terminated, first, window & ~first)
+    if a.scene == "climb":
+      att.step(terminated, first & judged, window & ~first)
+      bm = bad_now & ~first
+      if bool(bm.any()):
+        att.bad += att.rm._step_reward.detach()[bm].sum(dim=0)
+        att.bad_n += float(bm.sum())
+    else:
+      att.step(terminated, first, window & ~first)
     if a.scene == "slope":
       j = k % W_
       old_s, old_r = dl_s[:, j].clone(), dl_r[:, j].clone()
@@ -348,6 +401,23 @@ def main() -> int:
       um[1] += float((wm & _mdp.uneven_terrain_mask(env, "terrain_scan", 0.45, 0.05)).sum())
       um[2] += float((wm & _mdp.uneven_feet_mask(env, "terrain_scan", feet_cfg, 0.05)).sum())
     fell |= terminated
+  if a.scene == "climb":
+    clean = through & ~ever_stall & ~ever_back & ~fell & judged
+    att.add_windows(torch.zeros(n, dtype=torch.bool, device=dev), clean)
+    lo_, hi_ = STEP_RANGE
+    lines = []
+    for r_ in range(gen.num_rows):
+      m_ = levels == r_
+      band = f"{100 * (lo_ + (hi_ - lo_) * r_ / gen.num_rows):.0f}-{100 * (lo_ + (hi_ - lo_) * (r_ + 1) / gen.num_rows):.0f}cm"
+      sd = stall_d[m_ & ever_stall]
+      q = (lambda x: " / ".join(f"{float(v):.2f}" for v in torch.quantile(x, torch.tensor([0.1, 0.5, 0.9], device=dev))) if len(x) else "-")
+      lines.append(f"  {band:>9} {'*' if r_ in [int(x) for x in a.rows.split(',')] else ' '} robots {int(m_.sum()):4d}: through "
+                   f"{int((m_ & through).sum()):4d}, clean {int((m_ & through & ~ever_stall & ~ever_back & ~fell).sum()):4d}, stalled "
+                   f"{int((m_ & ever_stall).sum()):4d}, turned back {int((m_ & ever_back).sum()):4d}, fell {int((m_ & fell).sum()):4d}; "
+                   f"first stall at the furthest distance p10 / p50 / p90 {q(sd)} m (flight {1.0:.1f}-{CLIMB_END:.1f})")
+    info = (f"climb at {a.vx} m/s, bands judged {a.rows} (*); stall = no {CLIMB_PROGRESS_M} m of progress for {CLIMB_STALL_S:g} s, "
+            f"turned back = {CLIMB_BACK_M} m below the furthest point\n" + "\n".join(lines) +
+            f"\n  judged: bad = stalled / turned-back robot-steps + falls, good = the clean robots' climbing steps ({int(clean.sum())} robots)")
   if a.scene == "stairs_stop":
     stopped = stop_k >= 0
     bad = stopped & ((moved > SLIDE_M) | fell_stop)
@@ -356,7 +426,7 @@ def main() -> int:
     info = (f"stops {int(stopped.sum())} of {n} (up {int((stopped & up).sum())}, down {int((stopped & ~up).sum())}); bad "
             f"{int(bad.sum())} (moved > {SLIDE_M} m after {STOP_SETTLE_S:g} s: {int((stopped & (moved > SLIDE_M)).sum())}, fell in the stop: "
             f"{int(fell_stop.sum())}; up {int((bad & up).sum())}, down {int((bad & ~up).sum())}); good {int(good.sum())}")
-  else:
+  elif a.scene != "climb":
     att.add_windows(torch.zeros(n, dtype=torch.bool, device=dev), ~fell)
     info = f"robots {n}; never fell {int((~fell).sum())}"
   if a.scene == "slope":
