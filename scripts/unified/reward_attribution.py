@@ -16,7 +16,7 @@ Scenes (each robot in one cell; payload from U_PAYLOAD, scan mode from U_SCAN, a
   flat_reverse  flat ground, the command (-VX, 0, 0) (default 1.0: w27d's full-load fall case) after a 1 s stand,
                 slewed at 2 m/s^2, for SECONDS. Bad: the FALL_S before a fall; good: the robots that never fall, from
                 2 s on. -Flat task.
-  (The wall probe's landing: not yet -- its guard drive-up lives in map3_stairs_probe.py.)
+  (The wall probe's landing: map3_stairs_probe.py --attribution OUT, the same table -- its guard drive-up lives there.)
 Falls in every scene also count as bad windows (the FALL_S before the termination), with their termination terms.
 
 Per term: the mean over the good and over the bad robot-steps, bad - good, each window's share of the sum of the
@@ -55,6 +55,39 @@ SLIDE_M = 0.05
 FALL_S = 1.0
 LIN_ACCEL = 2.0
 SETTLE_S = 1.0
+
+
+def attribution_rows(names, weights, good_sum, good_n, bad_sum, bad_n) -> list[dict]:
+  """The table: per term (weight != 0, acting in either window) the good / bad means over their robot-steps, bad - good,
+  each window's share of the sum of the terms' absolute means and the push; sorted by bad - good, highest first. Also
+  map3_stairs_probe.py --attribution's (the landing scene)."""
+  g = np.asarray(good_sum, dtype=float) / max(float(good_n), 1.0)
+  b = np.asarray(bad_sum, dtype=float) / max(float(bad_n), 1.0)
+  gs, bs = np.abs(g).sum() or 1.0, np.abs(b).sum() or 1.0
+  rows = []
+  for i, nm in enumerate(names):
+    w = float(weights[i])
+    if w == 0.0 or (g[i] == 0.0 and b[i] == 0.0):   # (a term that never acted in either window)
+      continue
+    d = float(b[i] - g[i])
+    rows.append({"term": nm, "weight": w, "good": float(g[i]), "bad": float(b[i]), "bad_minus_good": d,
+                 "share_good": float(abs(g[i]) / gs), "share_bad": float(abs(b[i]) / bs),
+                 "push": "rewards the failure" if d > 0 else "punishes it" if d < 0 else "-"})
+  rows.sort(key=lambda x: -x["bad_minus_good"])
+  return rows
+
+
+def print_rows(rows: list[dict], top: int) -> None:
+  print(f"{'term':34s} {'weight':>9s} {'good':>9s} {'bad':>9s} {'bad-good':>9s} {'sh.good':>7s} {'sh.bad':>7s}  push")
+  show = rows if len(rows) <= top + 5 else rows[:top]
+  for r in show:
+    print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
+          f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
+  if len(rows) > len(show):
+    print(f"... {len(rows) - top - 5} more; the most punishing:")
+    for r in rows[-5:]:
+      print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
+            f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
 
 
 class Attribution:
@@ -111,20 +144,8 @@ class Attribution:
     self.good_n += float(self.win_n[good].sum())
 
   def table(self) -> list[dict]:
-    g = (self.good / max(self.good_n, 1.0)).cpu().numpy()
-    b = (self.bad / max(self.bad_n, 1.0)).cpu().numpy()
-    gs, bs = np.abs(g).sum() or 1.0, np.abs(b).sum() or 1.0
-    rows = []
-    for i, nm in enumerate(self.names):
-      w = float(self.rm.get_term_cfg(nm).weight)
-      if w == 0.0 or (g[i] == 0.0 and b[i] == 0.0):   # (a term that never acted in either window)
-        continue
-      d = float(b[i] - g[i])
-      rows.append({"term": nm, "weight": w, "good": float(g[i]), "bad": float(b[i]), "bad_minus_good": d,
-                   "share_good": float(abs(g[i]) / gs), "share_bad": float(abs(b[i]) / bs),
-                   "push": "rewards the failure" if d > 0 else "punishes it" if d < 0 else "-"})
-    rows.sort(key=lambda x: -x["bad_minus_good"])
-    return rows
+    return attribution_rows(self.names, [self.rm.get_term_cfg(nm).weight for nm in self.names],
+                            self.good.cpu().numpy(), self.good_n, self.bad.cpu().numpy(), self.bad_n)
 
 
 def build(a):
@@ -320,15 +341,7 @@ def main() -> int:
                                          "causes": att.causes, "bad_n": att.bad_n, "good_n": att.good_n, "rows": []}, indent=1))
     env.close()
     return 0
-  print(f"{'term':34s} {'weight':>9s} {'good':>9s} {'bad':>9s} {'bad-good':>9s} {'sh.good':>7s} {'sh.bad':>7s}  push")
-  for r in rows[: a.top]:
-    print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
-          f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
-  if len(rows) > a.top:
-    print(f"... {len(rows) - a.top} more (most punishing last):")
-    for r in rows[-5:]:
-      print(f"{r['term'][:34]:34s} {r['weight']:9.3g} {r['good']:9.4f} {r['bad']:9.4f} {r['bad_minus_good']:+9.4f} "
-            f"{100 * r['share_good']:6.1f}% {100 * r['share_bad']:6.1f}%  {r['push']}")
+  print_rows(rows, a.top)
   if a.out:
     Path(a.out).write_text(json.dumps({"scene": a.scene, "checkpoint": a.checkpoint, "info": info, "falls": att.falls,
                                        "causes": att.causes, "bad_n": att.bad_n, "good_n": att.good_n, "rows": rows}, indent=1))

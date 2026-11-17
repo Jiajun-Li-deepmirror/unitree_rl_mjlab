@@ -84,6 +84,9 @@ def main() -> int:
   ap.add_argument("--flights", nargs="*", default=None, help="flight names (default: every up flight)")
   ap.add_argument("--teacher-scan", action=argparse.BooleanOptionalAction, default=None)
   ap.add_argument("--falls", action="store_true", help="print every fall and the stop's wheel placement")
+  ap.add_argument("--attribution", default=None,
+                  help="also the reward terms' attribution on the landing (reward_attribution.py's table, as JSON here; "
+                       "one process: not through map3_stairs_par.py)")
   ap.add_argument("--list", action="store_true", help="print the up flights' names and stop (map3_stairs_par.py)")
   ap.add_argument("--dump", default=None, help="also pickle the flights' per-robot rows to this file (a shard)")
   ap.add_argument("--merge", nargs="+", default=None,
@@ -134,6 +137,7 @@ def main() -> int:
         f"{a.payload + ' (--payload)' if a.payload else os.environ.get('U_PAYLOAD', '(task default)')}, up {a.up_vx} m/s, {a.num_envs} robots per flight, "
         f"teacher scan boxes {teacher_scan}, {len(ups)} up flights")
   rows = []
+  attr = {} if a.attribution else None
   for sc in ups:
     rise = float(sc.success.split(":")[1]) / GOAL_SHARE
     climb_s = sum(d for d, vx, *_ in sc.segments if vx)
@@ -152,7 +156,7 @@ def main() -> int:
       for leg in ("FL", "FR", "RL", "RR"))
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
     venv, policy = em.load_policy(env, a.checkpoint, a.task)
-    rows.append(run_flight(env, venv, policy, sc, bx, rise, a.up_vx))
+    rows.append(run_flight(env, venv, policy, sc, bx, rise, a.up_vx, attr))
     env.close()
     del env, venv, policy
     gc.collect()
@@ -164,6 +168,24 @@ def main() -> int:
   report(rows)
   if a.falls:
     falls_report(rows)
+  if attr is not None:
+    import json
+
+    from reward_attribution import attribution_rows, print_rows
+    arows = attribution_rows(attr["names"], attr["weights"], attr["good_sum"], attr["good_n"], attr["bad_sum"], attr["bad_n"])
+    print(f"\n== reward attribution on the landing: bad = {attr['episodes']} air episodes with an item-21 lift or an item-28 "
+          f"step, and the 1 s before the falls in phases 2-6 ({attr['bad_n']:.0f} robot-steps); good = the drive-up, stands "
+          f"and turn with every wheel / foot down, {attr['good_robots']} of {attr['robots']} robots that did not fall "
+          f"({attr['good_n']:.0f} robot-steps) ==")
+    if attr["bad_n"] == 0 or attr["good_n"] == 0:
+      print(f"no {'bad' if attr['bad_n'] == 0 else 'good'} windows: nothing to compare")
+      arows = []
+    else:
+      print_rows(arows, 20)
+    Path(a.attribution).write_text(json.dumps({"scene": "landing", "checkpoint": a.checkpoint, "bad_n": attr["bad_n"],
+                                               "good_n": attr["good_n"], "episodes": attr["episodes"],
+                                               "good_robots": attr["good_robots"], "robots": attr["robots"],
+                                               "rows": arows}, indent=1))
   return 0
 
 
@@ -171,7 +193,7 @@ def np_cpu(t):
   return t.detach().cpu().numpy()
 
 
-def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
+def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float, attr: dict | None = None) -> dict:
   import eval_map3 as em
 
   dev, dt, n = env.device, env.step_dt, env.num_envs
@@ -292,6 +314,27 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
   top_steps = torch.zeros(n, 4, device=dev)
   t_run = 0.0
   state["stop_feet"] = stop_feet
+  # --attribution (2026-11-17, go2-home: which reward terms pay for the landing's lifts): every term's per-step value
+  # (the reward manager's _step_reward). Bad: an air episode (from a take-off at the landing's level to the moment no
+  # wheel / foot is in the air) with an item-21 lift (a front one, the drive-up or the first stand, > WALL_LIFT_M) or an
+  # item-28 step (any, phases 2-4, > TOP_AIR_S and > TOP_LIFT_M), and the FALL_S before a fall in phases 2-6. Good: the
+  # steps of the drive-up, stands and turn (phases 3-6) with every wheel / foot down (no air episode), of the robots that
+  # do not fall -- per step, not per robot: on B1 s1's model_1800 every climb had extra steps (10 per climb), so no
+  # robot was free of them.
+  if attr is not None:
+    rm = env.reward_manager
+    names = list(rm.active_terms)
+    attr.setdefault("names", names)
+    assert attr["names"] == names, "the flights' reward terms differ"
+    T = len(names)
+    ep_sum, ep_n = torch.zeros(n, T, device=dev), torch.zeros(n, device=dev)
+    ep_bad = torch.zeros(n, dtype=torch.bool, device=dev)
+    gd_sum, gd_n = torch.zeros(n, T, device=dev), torch.zeros(n, device=dev)
+    W = max(1, int(round(1.0 / dt)))
+    ring = torch.zeros(n, W, T, device=dev)
+    kk = 0
+    bad_sum, bad_n = torch.zeros(T, device=dev), 0.0
+    ep_lifts = 0
   land_dur = [d for d, _ in LANDING]
   max_steps = int(round(sum(d for d, *_ in sc.segments) / dt))
   for _ in range(max_steps):
@@ -377,13 +420,39 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
     z_apex = torch.where(start, z4, torch.where(air_on, torch.maximum(z_apex, z4), z_apex))
     t_air = torch.where(start, torch.zeros_like(t_air), torch.where(air_on, t_air + dt, t_air))
     land_now = air_on & c4
-    top_steps += (land_now & (t_air > TOP_AIR_S) & (z_apex - z_take > TOP_LIFT_M)).float()
+    top_now = land_now & (t_air > TOP_AIR_S) & (z_apex - z_take > TOP_LIFT_M)
+    top_steps += top_now.float()
     a_win = (((phase == 3) | (phase == 4)) & alive)
     rise_f = torch.where(air_on[:, :2], z_apex[:, :2] - z_take[:, :2], torch.zeros_like(z_take[:, :2]))
     rise_now, which = rise_f.max(dim=1)
     better = a_win & (rise_now > app_lift)
     app_take = torch.where(better, z_take[:, :2].gather(1, which[:, None])[:, 0], app_take)   # (diagnostic)
     app_lift = torch.where(better, rise_now, app_lift)
+    if attr is not None:
+      r = rm._step_reward.detach()
+      ring[:, kk % W] = r
+      kk += 1
+      for i in new_fall.nonzero(as_tuple=False).flatten().tolist():
+        if 2 <= int(fell_phase[i]) <= 6:
+          bad_sum += ring[i].sum(dim=0)
+          bad_n += min(kk, W)
+      in_ep = air_on.any(dim=1) & alive
+      ep_sum += r * in_ep.float()[:, None]
+      ep_n += in_ep.float()
+      lift21 = (land_now[:, :2] & a_win[:, None] & (z_apex[:, :2] - z_take[:, :2] > WALL_LIFT_M)).any(dim=1)
+      ep_bad |= lift21 | top_now.any(dim=1)
+      done_ep = in_ep & ~(air_on & ~c4 & win).any(dim=1)   # no wheel / foot left in the air after this step
+      ended = done_ep | (~alive & (ep_n > 0))
+      for i in (ended & ep_bad).nonzero(as_tuple=False).flatten().tolist():
+        bad_sum += ep_sum[i]
+        bad_n += float(ep_n[i])
+        ep_lifts += 1
+      ep_sum = torch.where(ended[:, None], torch.zeros_like(ep_sum), ep_sum)
+      ep_n = torch.where(ended, torch.zeros_like(ep_n), ep_n)
+      ep_bad = ep_bad & ~ended
+      gw = ((phase >= 3) & (phase <= 6) & alive & ~in_ep).float()
+      gd_sum += r * gw[:, None]
+      gd_n += gw
     air_on = air_on & ~c4 & win
     prev4 = c4
     c = torch.stack([(torch.norm(f.data.force_history.reshape(n, -1, 3), dim=-1).max(dim=1).values > FORCE_N)
@@ -409,6 +478,16 @@ def run_flight(env, venv, policy, sc, bx, rise: float, up_vx: float) -> dict:
       land[f"{tag}_off"] += (m & off).float()
       land[f"{tag}_lift"] += torch.where(m, lifts, zero)
   np_ = lambda t: t.cpu().numpy()
+  if attr is not None:
+    good = ~fell
+    for k_, v_ in (("bad_sum", np_(bad_sum)), ("good_sum", np_(gd_sum[good].sum(dim=0)))):
+      attr[k_] = attr.get(k_, 0.0) + v_
+    attr["bad_n"] = attr.get("bad_n", 0.0) + bad_n
+    attr["good_n"] = attr.get("good_n", 0.0) + float(gd_n[good].sum())
+    attr["weights"] = [float(rm.get_term_cfg(nm).weight) for nm in names]
+    attr["episodes"] = attr.get("episodes", 0) + ep_lifts
+    attr["good_robots"] = attr.get("good_robots", 0) + int(good.sum())
+    attr["robots"] = attr.get("robots", 0) + n
   return {"name": sc.name[:-3], "rise": rise, "stopped": np_(stopped), "brake": np_(disp1),
           "disp2": np_(disp3 - disp1), "back_min": np_(back_min),
           "v": np_(v_acc / v_n.clamp(min=1)), "v_n": np_(v_n), "fell_stop": np_(fell_stop), "reached": np_(reached),
