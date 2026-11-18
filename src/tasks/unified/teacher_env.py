@@ -2115,7 +2115,15 @@ def _drop_terms(cfg: ManagerBasedRlEnvCfg, robot: URobot) -> None:
   missing = [k for k in names if k not in cfg.rewards]
   if missing:
     print(f"[unified] U_DROP_TERMS: not in this build (skipped): {missing}")
-  drop = set(found)
+  # a logging / meter term (|weight| <= LOG_WEIGHT: u_stop_creep, u_stop_place, the meters) pays nothing and the
+  # constraints' trackers read it by name (2026-11-18, go2-home: dropping u_stop_creep broke constraints._tracker in
+  # the lgo_stand smoke): kept as it is, listed
+  logged = sorted(k for k in found if abs(cfg.rewards[k].weight) <= LOG_WEIGHT)
+  if logged:
+    print(f"[unified] U_DROP_TERMS: logging terms kept (they pay nothing; the trackers read them): {logged}")
+  drop = set(found) - set(logged)
+  if not drop:
+    return
   kept = set(cfg.rewards) - drop
   logs = {k for k in kept if abs(cfg.rewards[k].weight) <= LOG_WEIGHT}
   sources = _log_sources(cfg, logs) & drop

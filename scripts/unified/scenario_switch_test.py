@@ -255,6 +255,9 @@ check("error" not in x and "u_heavy_spin" not in x["rewards"], "a name the build
 xp = probe(play=True, U_DROP_TERMS=",".join(R1))
 bp_ = probe(play=True)
 check("error" not in xp and xp["rewards"] == bp_["rewards"], "the play / check build unchanged")
+lg = probe(U_DROP_TERMS="u_stop_creep,u_heavy_spin")
+check("error" not in lg and lg["rewards"].get("u_stop_creep") == b1["rewards"].get("u_stop_creep") and "u_heavy_spin" not in lg["rewards"],
+      f"a logging term (u_stop_creep {b1['rewards'].get('u_stop_creep', ['?'])[0]:g}) is kept as it is, the others dropped")
 print("(14) U_POSE_EVEN=1 (go2-home's R2):")
 pe = probe(U_POSE_EVEN="1")
 check("error" not in pe and "('even_only', True)" in pe["rewards"]["pose"][1] and "even_only" not in b1["rewards"]["pose"][1]
