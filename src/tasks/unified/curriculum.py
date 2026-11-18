@@ -643,6 +643,15 @@ class progress:
     self.q_last_step = step
     if force_q:   # smoke runs only: q follows the forced progress, so every switch-on runs
       self.q = max(self.q, ramp(self.p, 0.3, 0.8))
+    # U_Q_CAP=<x> (2026-11-18, go2-home after Q1: the fine-tune at a fixed q 0.25 was the first candidate to pass the
+    # keep rules -- map3 reach 97 / 96 / 89 against ctrl2's 79 / 70 / 53, falls lower at every load): q follows its
+    # own clock and gate as before but never goes above x, so a run from zero meets the quality stage only up to x
+    # (at x = 0.25: half the M -> P weights, the fall price 5.5x, the entropy bonus halfway) and the early learning
+    # is untouched (U_QUALITY fixes q from iteration 0 instead)
+    cap = os.environ.get("U_Q_CAP") or ""
+    if cap:
+      assert 0.0 < float(cap) <= 1.0, f"U_Q_CAP={cap}: in (0, 1]"
+      self.q = min(self.q, float(cap))
     fixed_q = os.environ.get("U_QUALITY", "")
     if fixed_q not in ("", "auto"):
       self.q = min(1.0, max(0.0, float(fixed_q)))
